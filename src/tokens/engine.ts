@@ -17,6 +17,8 @@ import { isRecord } from '../utils/type-guards.ts'
 import { easingToCss, resolveSpringBounce, springToCssLinear } from '../targets/django/easing/index.ts'
 import { toNativeFiles } from './native.ts'
 import { sourceColorCss, sourceColorOf } from './color.ts'
+import { cellKey, foldThemeSources, normalizeThemeAxesSpec, orderAxes, type ThemeAxesSpec, type ThemeAxis } from './theme-axes.ts'
+import { cellName, deriveLegacy, materializeStructure, normalizeStructure, type ExportStructure, type Materialized } from './structure.ts'
 
 /* ------------------------------------------------------------------ types */
 
@@ -33,6 +35,10 @@ export interface TokenGraphCollection {
   /** A product's own collection while its package is built: it claims token names first, so a
    * base collection's same-named token is the one that yields. */
   product?: boolean
+  /** Never emitted (the designer hid it), so it claims token names last: a hidden `One` must not
+   * push the theme collection's `background/base` to `-2`. Ordering only — unlike `inlineOnly`,
+   * a value reached through it still counts as reached through the file's own layer. */
+  yields?: boolean
 }
 
 export interface TokenGraphVariable {
@@ -112,8 +118,39 @@ export interface W3CToken {
       /** Held an alias into a layer of this file that `shapeForCode` hid, and now holds its value
        * — a semantic token, never a primitive, however raw that value looks. */
       resolved?: true
+      /** See `UnitWitness`. */
+      unitWitness?: UnitWitness
     }
   }
+}
+
+/**
+ * The link of an alias chain that `shapeForCode` cut out with a layer it does not emit, kept
+ * because it said what the number at the end measures: an unscoped `button/fade` over a hidden
+ * `opacity/30` holds a bare `30` afterwards, and only the primitive's OPACITY scope said that is
+ * 30%. Recorded only on a number whose own `$type` and scopes say nothing, as the token
+ * `unitWitness` would have picked had the chain survived — and beside the token's scopes, never in
+ * them, since the designer did not scope it.
+ */
+export interface UnitWitness {
+  path: string[]
+  $type: string
+  scopes?: readonly string[]
+}
+
+/** All a number's unit is decided by: a `$type`, Figma's scopes and a recorded `UnitWitness`. A
+ * `W3CToken` is one; so is the link a `UnitWitness` stands for. */
+export interface UnitEvidence {
+  readonly $type?: string
+  readonly $extensions?: {
+    readonly figma?: { readonly scopes?: readonly string[]; readonly unitWitness?: UnitWitness }
+  }
+}
+
+/** A token as `unitWitness` weighs it: a name to fall back on and the evidence it carries. */
+export interface UnitLink {
+  readonly path: readonly string[]
+  readonly token: UnitEvidence
 }
 
 export type TokenTree = { [key: string]: TokenTree | W3CToken }
@@ -161,7 +198,7 @@ export interface TokenPackage {
    * the resolved theme order — i.e. exactly the variables this package declares. Consumers that
    * document the package (DESIGN.md) must read this rather than re-deriving it, or they describe
    * variables the CSS doesn't have. Empty tree when the file had no tokens. */
-  emitted: { tree: TokenTree; themes: string[]; defaultTheme: string }
+  emitted: { tree: TokenTree; themes: string[]; defaultTheme: string; grid?: ThemeGrid }
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -281,7 +318,7 @@ export function resolveCanonicalPaths(
       // push a name the file owns to `-2`.
       const rank = (id: string) => {
         const c = collectionById.get(id)
-        return c?.product ? -1 : c?.inlineOnly ? 1 : 0
+        return c?.product ? -1 : c?.inlineOnly || c?.yields ? 1 : 0
       }
       const ia = rank(a.v.collectionId)
       const ib = rank(b.v.collectionId)
@@ -765,23 +802,34 @@ export function isTextMetricKind(kind: TokenKind): boolean {
   return TEXT_METRIC_KINDS.has(kind)
 }
 
+function scopesOf(token: UnitEvidence): readonly string[] {
+  const figma = token.$extensions?.figma
+  return figma && Array.isArray(figma.scopes) ? figma.scopes : []
+}
+
+/** The kind a token's own `$type` or scope states — `undefined` when only its name could guess.
+ * This is the line between evidence and heuristic that `unitWitness` walks an alias chain by. */
+function provenKind(token: UnitEvidence): TokenKind | undefined {
+  if (token.$type === 'color') return 'color'
+  if (token.$type === 'boolean') return 'boolean'
+  if (token.$type === 'duration') return 'duration'
+  for (const scope of scopesOf(token)) {
+    const kind = KIND_BY_SCOPE[scope]
+    if (kind) return kind
+  }
+  return undefined
+}
+
 /** `$type` and `scopes` first, the name only when neither has an answer. `path` alone is what the
  * CSS emitter has, which is why the name half has to stand on its own. */
 export function tokenKind(
-  token: Pick<W3CToken, '$type' | '$extensions'> | undefined,
+  token: UnitEvidence | undefined,
   path: readonly string[] = []
 ): TokenKind {
   if (token) {
-    if (token.$type === 'color') return 'color'
-    if (token.$type === 'boolean') return 'boolean'
-    if (token.$type === 'duration') return 'duration'
-    const figma = token.$extensions?.figma
-    const scopes = figma && Array.isArray(figma.scopes) ? figma.scopes : []
-    for (const scope of scopes) {
-      const kind = KIND_BY_SCOPE[scope]
-      if (kind) return kind
-    }
-    if (token.$type === 'string' && scopes.length === 0) {
+    const proven = provenKind(token)
+    if (proven) return proven
+    if (token.$type === 'string' && scopesOf(token).length === 0) {
       // A string token with no scope to speak for it: the name is the only witness, and a family
       // is the only string kind a generator treats specially.
       for (const [pattern, kind] of KIND_BY_NAME) {
@@ -810,39 +858,72 @@ export function isLengthKind(kind: TokenKind, value: number): boolean {
 }
 
 /**
- * An opacity token as the 0–1 fraction CSS `opacity`, SwiftUI `.opacity()` and Compose `alpha`
- * take. Figma binds opacity variables as a percentage, so `Opacity/10` holds `10` — emitted as is,
- * `opacity: var(--opacity-10)` clamps to 1 and the layer turns fully opaque. A fraction never
- * exceeds 1, so anything above it is a percentage; the one value both readings share is `1`,
- * left as the fully-opaque fraction.
+ * Whether a number token means pixels. Kept as the CSS-shaped question — it has only a path to go
+ * on — and now answered through `tokenKind` so the heuristic exists once.
  */
-export function opacityFraction(value: number): number {
-  return value > 1 ? value / 100 : value
+export function isLengthToken(value: number, path?: readonly string[]): boolean {
+  return isLengthKind(tokenKind(undefined, path ?? []), value)
+}
+
+/** Whether the variable's own scope says OPACITY or COLOR_OPACITY — the one proof that Figma stored
+ * the number as a percentage (30 renders 30%). The name is no proof: a scope-less file's
+ * `…opacity…` may hold a fraction already. Every emitter asks this same question. */
+export function hasOpacityScope(token: UnitEvidence): boolean {
+  const scopes = scopesOf(token)
+  return scopes.includes('OPACITY') || scopes.includes('COLOR_OPACITY')
+}
+
+/**
+ * Whether an opacity token's number is Figma's percentage rather than the 0–1 fraction CSS
+ * `opacity`, SwiftUI `.opacity()` and Compose `alpha` take. The OPACITY / COLOR_OPACITY scope proves
+ * it whatever the value. Without the scope the name is the only evidence, and a fraction never
+ * exceeds 1 — so `Opacity/10` holding `10` is a percentage (emitted as is, `opacity: 10` clamps to
+ * fully opaque), while a scope-less `overlay/opacity: 0.5` is a fraction already and stays.
+ */
+export function isOpacityPercent(token: UnitEvidence | undefined, value: number): boolean {
+  return (token !== undefined && hasOpacityScope(token)) || value > 1
+}
+
+/** An opacity token's number as the 0–1 fraction code takes — see `isOpacityPercent`. */
+export function opacityFraction(value: number, token?: UnitEvidence): number {
+  return isOpacityPercent(token, value) ? value / 100 : value
 }
 
 /** `token`, when the caller has it, lets Figma's scopes decide the unit the way they already do
  * for the native packages — without it a `COLOR_OPACITY` or `OPACITY` float with a plain name came
- * out as pixels here and as a bare number in Swift. */
-export function cssValue(value: TokenValue, path?: readonly string[], token?: Pick<W3CToken, '$type' | '$extensions'>): string {
+ * out as pixels here and as a bare number in Swift. A token holding a number `shapeForCode`
+ * substituted out of a hidden layer is read by the link it recorded, as `unitWitness` reads a
+ * chain: `button/fade` alone says nothing about its `30`. */
+export function cssValue(value: TokenValue, path?: readonly string[], token?: UnitEvidence): string {
   const alias = aliasTarget(value)
   if (alias) return `var(--${varName(alias)})`
   if (typeof value === 'number') {
-    const kind = tokenKind(token, path ?? [])
-    const rounded = roundEmitted(kind === 'opacity' ? opacityFraction(value) : value)
+    const rounded = roundEmitted(value)
     if (rounded === 0) return '0'
+    if (token) {
+      const witness = unitWitness([{ path: path ?? [], token }])
+      const kind = tokenKind(witness.token, witness.path)
+      if (kind === 'duration') return `${rounded}ms`
+      // Figma stores an OPACITY / COLOR_OPACITY variable as a percentage (30 renders 30%); CSS
+      // `opacity: 30` is fully opaque.
+      if (kind === 'opacity') return String(roundEmitted(opacityFraction(value, witness.token)))
+      return isLengthKind(kind, value) ? `${rounded}px` : String(rounded)
+    }
     // A duration is the one numeric kind whose CSS unit is not `px`. Emitting `200px` for
     // `motion/duration/fast` made every `transition-duration` referencing it invalid — the
     // Python port had this right and this side did not, which is what the parity goldens exist
     // to catch.
+    const kind = tokenKind(undefined, path ?? [])
     if (kind === 'duration') return `${rounded}ms`
-    return isLengthKind(kind, value) ? `${rounded}px` : String(rounded)
+    if (kind === 'opacity') return String(roundEmitted(opacityFraction(value)))
+    return isLengthToken(value, path) ? `${rounded}px` : String(rounded)
   }
   if (typeof value === 'boolean') return String(value)
   if (typeof value === 'string') return value
   return String(value != null ? value : '')
 }
 
-function isAliasValue(value: TokenValue): value is string {
+export function isAliasValue(value: TokenValue): value is string {
   return typeof value === 'string' && /^\{.+\}$/.test(value)
 }
 
@@ -1052,6 +1133,74 @@ export function extractTypographyScale(tree: TokenTree, options: { typoNaming?: 
 
 /* ------------------------------------------------------------------ inline primitives */
 
+/**
+ * `value` (`leaf`'s value in `theme`) followed through every alias `follows` admits, to the value
+ * it ends on. A target that is missing, already visited or refused stops the walk with that alias
+ * in hand. `chain` is `leaf` and each token passed through after it — the evidence `unitWitness`
+ * reads, which the value alone has lost: a `30` says nothing about being a percentage.
+ */
+export function followAliases(
+  byName: ReadonlyMap<string, TokenLeaf>,
+  leaf: TokenLeaf,
+  value: TokenValue,
+  theme: string,
+  follows: (target: string) => boolean = () => true
+): { value: TokenValue; chain: TokenLeaf[] } {
+  const chain = [leaf]
+  const seen = new Set<string>()
+  let current = value
+  while (isAliasValue(current)) {
+    const target = aliasTarget(current)!.join('.')
+    const entry = byName.get(target)
+    if (!entry || seen.has(target) || !follows(target)) break
+    seen.add(target)
+    chain.push(entry)
+    current = valueForTheme(entry.token, theme)
+  }
+  return { value: current, chain }
+}
+
+/**
+ * The token in an alias chain whose `$type` or scope says what the number at its end measures:
+ * the consumer first — its scope is where the designer applies the value — then each token it
+ * passed through. `button/opacity/disabled` scoped OPACITY over a scope-less `opacity/30` is 30%,
+ * and asking only the primitive answered `30`. A chain with no such statement falls back to the
+ * token the value came from, read by name, as the inline step always has.
+ *
+ * A token that recorded a `UnitWitness` had the rest of its chain cut by `shapeForCode`; the
+ * record stands right after it, where the hidden links stood, so the rule reads the same whether
+ * the primitive layer is inlined or hidden.
+ */
+export function unitWitness(chain: readonly UnitLink[]): UnitLink {
+  const links = chain.flatMap((link): UnitLink[] => {
+    const cut = link.token.$extensions?.figma?.unitWitness
+    if (!cut) return [link]
+    const scopes = cut.scopes ? { figma: { scopes: cut.scopes } } : undefined
+    return [link, { path: cut.path, token: { $type: cut.$type, ...(scopes ? { $extensions: scopes } : {}) } }]
+  })
+  return links.find((link) => provenKind(link.token) !== undefined) ?? links[links.length - 1]
+}
+
+/**
+ * The `UnitWitness` a token keeps when `shapeForCode` substitutes it: for each value it resolved
+ * (the default first), the witness of the links that were cut — the first of them that proves a
+ * kind, else the default value's origin, read by name, as `unitWitness` falls back. Nothing for a
+ * token whose own `$type` or scope proves its kind, which is its own witness, nor for anything but
+ * a number, the one value whose rendering the unit decides.
+ */
+function cutWitness(token: W3CToken, cuts: readonly TokenLeaf[][]): UnitWitness | undefined {
+  if (token.$type !== 'number' || provenKind(token) !== undefined) return undefined
+  const witnesses = cuts.filter((links) => links.length > 0).map((links) => unitWitness(links))
+  const witness = witnesses.find((link) => provenKind(link.token) !== undefined) ?? witnesses[0]
+  if (!witness) return undefined
+  const scopes = scopesOf(witness.token)
+  return {
+    path: [...witness.path],
+    $type: witness.token.$type ?? token.$type,
+    ...(scopes.length > 0 ? { scopes: [...scopes] } : {}),
+  }
+}
+
 export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): TokenTree {
   const all = leaves(tree)
   const byName = new Map<string, TokenLeaf>()
@@ -1078,17 +1227,14 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
     for (const k of Object.keys(modes)) noteRef(modes[k])
   }
 
-  const inline = (value: TokenValue, theme: string, seen: Set<string>, originPath?: string[], originToken?: W3CToken): TokenValue => {
-    if (!isAliasValue(value)) {
-      return originPath && typeof value === 'number' ? cssValue(value, originPath, originToken) : value
-    }
-    const target = aliasTarget(value)!.join('.')
-    if (!byName.has(target) || seen.has(target)) return value
-    if (!flattenAll && !primitive.has(target)) return value
-    const entry = byName.get(target)!
-    const next = new Set(seen)
-    next.add(target)
-    return inline(valueForTheme(entry.token, theme), theme, next, entry.path, entry.token)
+  const follows = (target: string) => flattenAll || primitive.has(target)
+  // The number is rendered here, while the chain that decides its unit is still known: past this
+  // point it is the CSS string, which is why the native files resolve from the source tree.
+  const inline = (leaf: TokenLeaf, value: TokenValue, theme: string): TokenValue => {
+    const end = followAliases(byName, leaf, value, theme, follows)
+    if (end.chain.length < 2 || typeof end.value !== 'number') return end.value
+    const witness = unitWitness(end.chain)
+    return cssValue(end.value, witness.path, witness.token)
   }
 
   const out: TokenTree = {}
@@ -1102,10 +1248,10 @@ export function inlinePrimitivesTree(tree: TokenTree, flattenAll: boolean): Toke
     const token = e.token
     const modes = modesOf(token)
     const newModes: Record<string, TokenValue> = {}
-    for (const k of Object.keys(modes)) newModes[k] = inline(modes[k], k, new Set())
+    for (const k of Object.keys(modes)) newModes[k] = inline(e, modes[k], k)
     const defMode = collectionDefaultModeOf(token)
     const themeForDefault = defMode && defMode in modes ? defMode : Object.keys(modes)[0]
-    const newDefault = inline(token.$value, themeForDefault, new Set())
+    const newDefault = inline(e, token.$value, themeForDefault)
     const $extensions = { ...token.$extensions, modes: newModes }
     setToken(out, e.path, { $type: token.$type, $value: newDefault, $extensions })
   }
@@ -1131,10 +1277,20 @@ export interface CodeShapeOptions {
  * classify tokens for DESIGN.md — see `parseCollectionRoles`): `Primitives: hidden`,
  * `Breakpoints: breakpoints`.
  */
-export function parseCollectionModes(raw: string | undefined): { hidden: string[]; breakpoints: string[]; products: string[] } {
+export interface CollectionModeRoles {
+  hidden: string[]
+  breakpoints: string[]
+  products: string[]
+  /** The collection whose modes ARE the themes (`Product: themes` — One Light, Business Dark, …).
+   * With one declared, no other collection's modes become a theme. */
+  themes: string[]
+}
+
+export function parseCollectionModes(raw: string | undefined): CollectionModeRoles {
   const hidden: string[] = []
   const breakpoints: string[] = []
   const products: string[] = []
+  const themes: string[] = []
   for (const pair of String(raw ?? '').split(/[,;\n]+/)) {
     const separator = pair.indexOf(pair.indexOf(':') !== -1 ? ':' : '=')
     if (separator === -1) continue
@@ -1144,8 +1300,69 @@ export function parseCollectionModes(raw: string | undefined): { hidden: string[
     if (role === 'hidden' || role === 'hide') hidden.push(collection)
     else if (role === 'breakpoints' || role === 'breakpoint' || role === 'bp') breakpoints.push(collection)
     else if (role === 'product') products.push(collection)
+    else if (role === 'themes' || role === 'theme') themes.push(collection)
   }
-  return { hidden, breakpoints, products }
+  return { hidden, breakpoints, products, themes }
+}
+
+/**
+ * The graph as the collection roles say it should be read, before any name is claimed.
+ *
+ * - A hidden collection yields its names (see `yields`), so the collection that IS emitted keeps
+ *   `background/base` instead of `background/base-3`.
+ * - With a `themes` collection, its modes are the only themes: it claims names first, and every
+ *   other multi-mode collection is read at its default mode — otherwise the old `One` collection's
+ *   Light/Dark would sit beside `One Light` / `One Dark` as two more themes.
+ * - With `slugThemes`, theme mode names become selector-friendly (`One Light` → `one-light`), so
+ *   `[data-theme-name="one-light"]` is what a developer types. Off by default: an existing
+ *   consumer's `[data-theme-name="Dark"]` must not change under it.
+ */
+export function prepareRoleGraph(
+  graph: TokenGraph,
+  roles: CollectionModeRoles,
+  options: { slugThemes?: boolean } = {}
+): { graph: TokenGraph; themeDefault?: string; notes: string[] } {
+  const lower = (name: string) => name.trim().toLowerCase()
+  const hidden = new Set(roles.hidden.map(lower))
+  const themeNames = new Set(roles.themes.map(lower))
+  const bpNames = new Set(['breakpoints', ...roles.breakpoints.map(lower)])
+  const collections = graph.collections || []
+  const themeCollections = collections.filter((c) => themeNames.has(lower(c.name)))
+  const notes: string[] = []
+  for (const name of roles.themes) {
+    if (!themeCollections.some((c) => lower(c.name) === lower(name))) notes.push(`"${name}" is set as the themes collection, but the file has no collection by that name`)
+  }
+  const pinned = new Map<string, string>() // collection id → the one mode it keeps
+  const themed = new Set<string>()
+  for (const c of collections) {
+    if (c.inlineOnly || bpNames.has(lower(c.name)) || hidden.has(lower(c.name))) continue
+    if (c.modes.length < 2) continue
+    if (themeCollections.length > 0 && !themeNames.has(lower(c.name))) {
+      const keep = c.defaultModeId ?? c.modes[0].modeId
+      pinned.set(c.id, keep)
+      notes.push(`${c.name} read at its default mode (${c.modes.find((m) => m.modeId === keep)?.name}): only ${themeCollections.map((t) => t.name).join(', ')} supplies themes`)
+    } else themed.add(c.id)
+  }
+  const slug = (name: string) => (options.slugThemes ? themeSlug(name) : name)
+  const out: TokenGraph = {
+    ...graph,
+    collections: collections.map((c) => {
+      let next: TokenGraphCollection = c
+      if (hidden.has(lower(c.name))) next = { ...next, yields: true }
+      if (themeNames.has(lower(c.name))) next = { ...next, product: true }
+      if (pinned.has(c.id)) next = { ...next, modes: c.modes.filter((m) => m.modeId === pinned.get(c.id)) }
+      if (themed.has(c.id) && options.slugThemes) next = { ...next, modes: next.modes.map((m) => ({ ...m, name: slug(m.name) })) }
+      return next
+    }),
+    variables: (graph.variables || []).map((v) =>
+      pinned.has(v.collectionId)
+        ? { ...v, valuesByMode: { [pinned.get(v.collectionId)!]: v.valuesByMode[pinned.get(v.collectionId)!] } }
+        : v
+    ),
+  }
+  const first = themeCollections[0]
+  const themeDefault = first ? slug(first.modes.find((m) => m.modeId === first.defaultModeId)?.name ?? first.modes[0]?.name ?? '') : undefined
+  return { graph: out, themeDefault, notes }
 }
 
 /**
@@ -1180,15 +1397,16 @@ export function shapeForCode(graph: TokenGraph, tree: TokenTree, options: CodeSh
   // through a library it consumes. The first makes it a semantic token over a hidden primitive;
   // the second leaves a primitive a primitive (a consumer file's own `colors/b/800` aliasing the library).
   let throughOwnLayer = false
-  const resolve = (value: TokenValue, mode: string, seen: Set<string>): TokenValue => {
+  // `through` collects the dropped tokens the value passes on its way: the part of its alias
+  // chain this substitution cuts, and with it the only scope that may say what the number means.
+  const resolve = (value: TokenValue, mode: string, through: TokenLeaf[]): TokenValue => {
     if (!isAliasValue(value)) return value
     const target = aliasTarget(value)!.join('.')
     const entry = byName.get(target)
-    if (!entry || !isDropped(entry.token) || seen.has(target)) return value
+    if (!entry || !isDropped(entry.token) || through.includes(entry)) return value
     if (!entry.token.$extensions?.figma?.inlineOnly) throughOwnLayer = true
-    const next = new Set(seen)
-    next.add(target)
-    return resolve(valueForTheme(entry.token, mode), mode, next)
+    through.push(entry)
+    return resolve(valueForTheme(entry.token, mode), mode, through)
   }
 
   const out: TokenTree = {}
@@ -1197,11 +1415,18 @@ export function shapeForCode(graph: TokenGraph, tree: TokenTree, options: CodeSh
     if (dropTextStyles && collectionOf(e.token) === TEXT_STYLE_COLLECTION) continue
     const modes = modesOf(e.token)
     throughOwnLayer = false
+    const cuts: TokenLeaf[][] = []
     const newModes: Record<string, TokenValue> = {}
-    for (const k of Object.keys(modes)) newModes[k] = resolve(modes[k], k, new Set())
+    for (const k of Object.keys(modes)) {
+      const through: TokenLeaf[] = []
+      newModes[k] = resolve(modes[k], k, through)
+      cuts.push(through)
+    }
     const defMode = collectionDefaultModeOf(e.token) || Object.keys(modes)[0] || ''
-    const $value = resolve(e.token.$value, defMode, new Set())
+    const defThrough: TokenLeaf[] = []
+    const $value = resolve(e.token.$value, defMode, defThrough)
     const wasAlias = throughOwnLayer
+    const witness = cutWitness(e.token, [defThrough, ...cuts])
     const figma = e.token.$extensions.figma
     setToken(out, e.path, {
       ...e.token,
@@ -1209,7 +1434,15 @@ export function shapeForCode(graph: TokenGraph, tree: TokenTree, options: CodeSh
       $extensions: {
         ...e.token.$extensions,
         modes: newModes,
-        ...(figma && wasAlias ? { figma: { ...figma, resolved: true as const } } : {}),
+        ...(figma && (wasAlias || witness)
+          ? {
+              figma: {
+                ...figma,
+                ...(wasAlias ? { resolved: true as const } : {}),
+                ...(witness ? { unitWitness: witness } : {}),
+              },
+            }
+          : {}),
       },
     })
   }
@@ -1229,9 +1462,40 @@ export function shapeForCode(graph: TokenGraph, tree: TokenTree, options: CodeSh
   return out
 }
 
+/**
+ * One custom property per name. Two variables can spell the same one — `font-weight/regular`
+ * (400) and `font/weight/regular` ("regular", a font style name kept for text styles) are both
+ * `--font-weight-regular` — and a stylesheet declaring both lets the later win, so the page gets
+ * `font-weight: regular`. The value CSS can use is kept: a number or a color over a string, else
+ * the first; the rest are dropped and named in `dropped`. `tokens.json` keeps every variable.
+ */
+export function uniqueVarNames(tree: TokenTree): { tree: TokenTree; dropped: string[] } {
+  const all = leaves(tree)
+  const byName = new Map<string, TokenLeaf[]>()
+  for (const leaf of all) {
+    const name = varName(leaf.path)
+    byName.set(name, [...(byName.get(name) ?? []), leaf])
+  }
+  const clashes = [...byName.entries()].filter(([, same]) => same.length > 1)
+  if (clashes.length === 0) return { tree, dropped: [] }
+  const out: TokenTree = {}
+  const keep = new Set<TokenLeaf>()
+  const dropped: string[] = []
+  for (const [name, same] of byName) {
+    const kept = same.find((leaf) => leaf.token.$type !== 'string') ?? same[0]
+    keep.add(kept)
+    if (same.length > 1) {
+      const show = (leaf: TokenLeaf) => `${leaf.path.join('/')} (${JSON.stringify(leaf.token.$value)})`
+      dropped.push(`--${name} is ${same.length} variables in Figma — kept ${show(kept)}, left out ${same.filter((l) => l !== kept).map(show).join(', ')}`)
+    }
+  }
+  for (const leaf of all) if (keep.has(leaf)) setToken(out, leaf.path, leaf.token)
+  return { tree: out, dropped }
+}
+
 /* ------------------------------------------------------------------ theme ordering */
 
-function themeDeclarations(allLeaves: TokenLeaf[], theme: string): string[] {
+function themeDeclarations(allLeaves: TokenLeaf[], theme: string, label = true): string[] {
   const order: string[] = []
   const groups = new Map<string, TokenLeaf[]>()
   for (const leaf of allLeaves) {
@@ -1242,7 +1506,7 @@ function themeDeclarations(allLeaves: TokenLeaf[], theme: string): string[] {
     }
     groups.get(col)!.push(leaf)
   }
-  const labeled = order.some((c) => c !== '')
+  const labeled = label && order.some((c) => c !== '')
   const lines: string[] = []
   for (const col of order) {
     if (labeled && col) lines.push(`  /* ${col} */`)
@@ -1377,6 +1641,496 @@ export function toTokensCss(
   // covers every theme.
   const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames))
   return blocks.join('\n\n') + '\n' + (legacy === '' ? '' : '\n' + legacy)
+}
+
+/* ------------------------------------------------------------------ theme axes */
+
+export { parseThemeAxes, type ThemeAxis, type ThemeAxesSpec } from './theme-axes.ts'
+export { materializeStructure, migrateStructure, normalizeStructure, deriveLegacy, type ExportStructure, type Materialized } from './structure.ts'
+
+/** The themes laid out as a grid of attributes, the nested one last. Values are what the
+ * attributes say (slugs unless the spec renames them). */
+export interface ThemeGrid {
+  axes: Array<{ attribute: string; values: string[] }>
+  /** The theme (mode name) at these attribute values, in axis order. */
+  theme: (coords: readonly string[]) => string
+  /** The attribute values applied with nothing set, in axis order. */
+  defaults: string[]
+  /** The last attribute may be set again on a subtree (a dark card in a light page), and the
+   * others below an element that sets it. Off: every attribute sits on one element, and the
+   * stylesheet needs nothing but plain compound selectors. */
+  nested?: boolean
+}
+
+/** Every cell of a grid as attribute values, the defaults first on every axis. */
+export function gridCoords(grid: ThemeGrid): string[][] {
+  let cells: string[][] = [[]]
+  grid.axes.forEach((axis, n) => {
+    const ordered = [grid.defaults[n], ...axis.values.filter((v) => v !== grid.defaults[n])]
+    cells = cells.flatMap((cell) => ordered.map((v) => [...cell, v]))
+  })
+  return cells
+}
+
+/** A grid over materialized axes: cells named `cellName` style (`one-light`), base first. */
+export function gridFromAxes(axes: ReadonlyArray<{ attribute: string; labels: string[]; values: string[]; base: string; nested?: boolean }>, name: (cell: readonly string[]) => string): ThemeGrid {
+  const byValue = new Map<string, string>()
+  let cells: string[][] = [[]]
+  for (const axis of axes) cells = cells.flatMap((cell) => axis.labels.map((l) => [...cell, l]))
+  for (const cell of cells) byValue.set(cell.map((l, n) => axes[n].values[axes[n].labels.indexOf(l)]).join('\u0000'), name(cell))
+  return {
+    axes: axes.map((a) => ({ attribute: a.attribute, values: [...a.values] })),
+    theme: (coords) => byValue.get(coords.join('\u0000'))!,
+    defaults: axes.map((a) => a.values[a.labels.indexOf(a.base)]),
+    ...(axes.some((a) => a.nested) ? { nested: true } : {}),
+  }
+}
+
+/**
+ * Places every theme in a cell of the grid the spec describes, or says why it cannot.
+ *
+ * A cell is filled, in order of authority: by the fold (`fixedCells`, collections as a product
+ * axis), by the spec's own `cells` (names that do not spell their cell), by reading the theme's
+ * name as one value per attribute (`one-light` is One × Light, and nothing else may be left
+ * over), and last by `sameAs` — a value or a cell that shows another. Every theme must land in
+ * a cell and every cell must be filled: a mode the grid leaves out would silently never ship,
+ * and an empty cell is a selector pair nobody can fill.
+ */
+export function resolveThemeGrid(
+  ordered: readonly string[],
+  defaultTheme: string,
+  spec: ThemeAxesSpec,
+  fixedCells: Record<string, string> = {}
+): { grid: ThemeGrid } | { problem: string } {
+  const placed = placeThemes(ordered, spec, fixedCells)
+  if (placed.problems.length > 0) return { problem: placed.problems[0] }
+  const { outer, inner } = orderAxes(spec)
+  const slug = (name: string) => varName([name]) || ''
+  const valueOf = (v: { label: string; value?: string }) => (v.value ? v.value.replace(/[^A-Za-z0-9_-]/g, '') : slug(v.label))
+  const axes = (outer ? [outer, inner] : [inner]).map((axis) => ({ attribute: axis.attribute, labels: axis.values.map((v) => v.label), values: axis.values.map(valueOf) }))
+  for (const axis of axes) {
+    const twice = axis.values.find((v, n) => axis.values.indexOf(v) !== n)
+    if (twice !== undefined) return { problem: `two values of one attribute both read "${twice}"` }
+  }
+  const cell = placed.cells
+  const byValue = new Map<string, string>()
+  const outerLabels = outer ? axes[0].labels : ['_']
+  outerLabels.forEach((o, n) =>
+    inner.values.forEach((i, m) => {
+      const coords = outer ? [axes[0].values[n], axes[1].values[m]] : [axes[0].values[m]]
+      byValue.set(coords.join('\u0000'), cell[cellKey(o, i.label)])
+    })
+  )
+  let defaults = axes.map((a) => a.values[0])
+  search: for (let n = 0; n < outerLabels.length; n++) {
+    for (let m = 0; m < inner.values.length; m++) {
+      if (cell[cellKey(outerLabels[n], inner.values[m].label)] === defaultTheme) {
+        defaults = outer ? [axes[0].values[n], axes[1].values[m]] : [axes[0].values[m]]
+        break search
+      }
+    }
+  }
+  return {
+    grid: {
+      axes: axes.map((a) => ({ attribute: a.attribute, values: a.values })),
+      theme: (coords) => byValue.get(coords.join('\u0000'))!,
+      defaults,
+      ...(spec.axes.some((axis) => axis.nested === true) ? { nested: true } : {}),
+    },
+  }
+}
+
+/**
+ * Every cell the spec can fill and every reason one cannot, in the order of authority
+ * `resolveThemeGrid` describes — kept apart from building the grid so the panel can draw a grid
+ * that is still half-filled, with the empty cells marked, instead of only the first complaint.
+ */
+export function placeThemes(
+  ordered: readonly string[],
+  spec: ThemeAxesSpec,
+  fixedCells: Record<string, string> = {}
+): { cells: Record<string, string>; how: Record<string, 'fixed' | 'set' | 'name' | 'same'>; problems: string[] } {
+  const { outer, inner } = orderAxes(spec)
+  const axes = outer ? [outer, inner] : [inner]
+  const slug = (name: string) => varName([name]) || ''
+  const segments = (name: string) => slug(name).split('-').filter((s) => s !== '')
+  const themeBySlug = new Map(ordered.map((theme) => [slug(theme), theme]))
+  const outerLabels = outer ? outer.values.map((v) => v.label) : ['_']
+  const cells: Record<string, string> = {}
+  const how: Record<string, 'fixed' | 'set' | 'name' | 'same'> = {}
+  const problems: string[] = []
+
+  for (const [source, entries] of [['fixed', fixedCells], ['set', spec.cells ?? {}]] as const) {
+    for (const [k, mode] of Object.entries(entries)) {
+      const theme = themeBySlug.get(slug(mode))
+      if (!theme) problems.push(`the cell ${k.replace('|', ' × ')} names the mode "${mode}", which is not one of the themes`)
+      else {
+        cells[k] = theme
+        how[k] = source
+      }
+    }
+  }
+  const placed = new Set(Object.values(cells))
+  for (const theme of ordered) {
+    if (placed.has(theme)) continue
+    const parts = segments(theme)
+    const used = new Array<boolean>(parts.length).fill(false)
+    const picked: string[] = []
+    let why = ''
+    for (const axis of axes) {
+      const hits: Array<{ label: string; at: number; length: number }> = []
+      for (const value of axis.values) {
+        const words = segments(value.label)
+        for (let at = 0; words.length > 0 && at + words.length <= parts.length; at++) {
+          if (words.every((word, n) => parts[at + n] === word)) hits.push({ label: value.label, at, length: words.length })
+        }
+      }
+      const distinct = [...new Set(hits.map((hit) => hit.label))]
+      if (distinct.length !== 1) {
+        why =
+          distinct.length === 0
+            ? `the mode "${theme}" names no value of ${axis.attribute} (${axis.values.map((v) => v.label).join(', ')})`
+            : `the mode "${theme}" names more than one value of ${axis.attribute} (${distinct.join(', ')})`
+        break
+      }
+      const hit = hits[0]
+      for (let n = hit.at; n < hit.at + hit.length; n++) {
+        if (used[n]) why = `the mode "${theme}" spells two attributes with the same word`
+        used[n] = true
+      }
+      picked.push(hit.label)
+    }
+    if (!why && used.some((u) => !u)) why = `the mode "${theme}" has words no attribute accounts for`
+    if (why) {
+      problems.push(why)
+      continue
+    }
+    const k = outer ? cellKey(picked[0], picked[1]) : cellKey('_', picked[0])
+    if (cells[k]) {
+      problems.push(`the modes "${cells[k]}" and "${theme}" are the same ${k.replace('|', ' × ')}`)
+      continue
+    }
+    cells[k] = theme
+    how[k] = 'name'
+  }
+
+  // A value that shows another: every cell of it the names left empty.
+  for (const axis of axes) {
+    for (const value of axis.values) {
+      if (!value.sameAs) continue
+      for (const o of outerLabels) {
+        for (const i of inner.values.map((v) => v.label)) {
+          const here = cellKey(o, i)
+          const there = axis === outer ? cellKey(value.sameAs, i) : cellKey(o, value.sameAs)
+          if (!cells[here] && (axis === outer ? o : i) === value.label && cells[there]) {
+            cells[here] = cells[there]
+            how[here] = 'same'
+          }
+        }
+      }
+    }
+  }
+  for (const [here, there] of Object.entries(spec.sameAs ?? {})) {
+    if (!cells[here] && cells[there]) {
+      cells[here] = cells[there]
+      how[here] = 'same'
+    }
+  }
+  for (const o of outerLabels) {
+    for (const i of inner.values) {
+      if (!cells[cellKey(o, i.label)]) problems.push(`no mode is ${outer ? `${slug(o)} × ` : ''}${slug(i.label)} — pick what it shows`)
+    }
+  }
+  return { cells, how, problems }
+}
+
+/** The string form's grid — `resolveThemeGrid` over `parseThemeAxes`, last axis nested. */
+export function splitThemeGrid(
+  ordered: readonly string[],
+  defaultTheme: string,
+  axes: readonly ThemeAxis[]
+): { grid: ThemeGrid } | { problem: string } {
+  if (axes.length < 1 || axes.length > 2) return { problem: `theme axes take one or two attributes, ${axes.length} given` }
+  const spec: ThemeAxesSpec = {
+    axes: axes.map((axis, n) => ({ attribute: axis.attribute, ...(n === axes.length - 1 ? { nested: true } : {}), values: axis.values.map((label) => ({ label })) })),
+  }
+  return resolveThemeGrid(ordered, defaultTheme, spec)
+}
+
+/**
+ * The graph and roles a theme axes spec reads: when an attribute takes its values from
+ * collections, those collections are folded into one whose modes are the grid
+ * (`foldThemeSources`), and it becomes the themes collection — a collection that had that role
+ * (a merged copy like a `Product` collection beside its sources) is left out, said in a note, since it would ship the same
+ * names twice.
+ */
+export function applyThemeAxesSources(
+  graph: TokenGraph,
+  roles: CollectionModeRoles,
+  themeAxes: unknown,
+  structure?: ExportStructure | null
+): { graph: TokenGraph; roles: CollectionModeRoles; cells?: Record<string, string>; found?: Record<string, Record<string, string[]>>; grid?: ThemeGrid; materialized?: Materialized; notes: string[]; problem?: string } {
+  if (structure) {
+    // The structure stands in for every older setting: the roles it derives are the ones read.
+    const made = materializeStructure(graph, structure)
+    if (made.problems.length > 0) return { graph, roles, notes: [], problem: made.problems.join('; ') }
+    const next: CollectionModeRoles = { hidden: made.roles.hidden, breakpoints: made.roles.breakpoints, products: made.roles.products, themes: made.roles.themes }
+    const grid = made.axes.length > 0 ? gridFromAxes(made.axes, (cell) => cellName(made.axes, cell)) : undefined
+    return { graph: made.graph, roles: next, ...(grid ? { grid } : {}), materialized: made, notes: made.notes }
+  }
+  const { spec, problems } = normalizeThemeAxesSpec(themeAxes)
+  if (problems.length > 0) return { graph, roles, notes: [], problem: problems.join('; ') }
+  if (!spec) return { graph, roles, notes: [] }
+  const fold = foldThemeSources(graph, spec)
+  if (!fold) return { graph, roles, notes: [] }
+  if ('problems' in fold) return { graph, roles, notes: [], problem: fold.problems.join('; ') }
+  const notes = [...fold.notes, `Themes read from ${fold.consumed.join(', ')}, merged at export time`]
+  const superseded = roles.themes.filter((name) => !fold.consumed.some((c) => c.toLowerCase() === name.trim().toLowerCase()))
+  if (superseded.length > 0) notes.push(`${superseded.join(', ')} left out: the themes come from ${fold.consumed.join(', ')} now`)
+  return {
+    graph: fold.graph,
+    roles: { ...roles, themes: [fold.collection], hidden: [...roles.hidden, ...superseded] },
+    cells: fold.cells,
+    found: fold.found,
+    notes,
+  }
+}
+
+/**
+ * One part of the stylesheet for themes that are a grid of attributes, named the way a person
+ * says it: the variables that are the same everywhere, the ones a theme changes, and what a
+ * product overrides. `tokens.css` is every layer in order; each is also its own module file.
+ */
+export interface AxesLayer {
+  /** The module file's name without `.module.css`: `base`, `light`, `dark`, `business`. */
+  name: string
+  /** The comment above the layer in `tokens.css` and atop its module file. */
+  title: string
+  blocks: Array<{ selectors: string[]; body: string }>
+}
+
+/**
+ * The layers of `tokens.css` for themes that are a grid of attributes — `data-product` ×
+ * `data-theme` — instead of one combined name. The last axis is the inner one (the theme), the
+ * others outer (the product). Each token is declared under the narrowest selector it needs:
+ *
+ * - `base` — `:root`: every token that is the same in every cell.
+ * - the default theme — `:root, [inner=default]`: every other token, at the default of every axis.
+ * - each other theme — `[inner=x]`: every token that changes with the inner axis anywhere.
+ * - each other product — `[O]`: what O changes at the default theme, then `[O][inner=x]`: what
+ *   only the pair says. Products that change exactly the same things share one layer.
+ *
+ * With every attribute on one element (`<html data-product data-theme>`) that is all. A `nested`
+ * grid also lets the inner attribute be set again on any subtree (a dark card in a light page)
+ * and the outer ones below an element that set it (`<html data-theme>` with `<body
+ * data-product>`): the product blocks then add `[O] [inner=x]` and `[inner=x] [O]:not([inner])`.
+ * Two layouts stay out of reach of selectors even so, since CSS picks by specificity and source
+ * order, never by which ancestor is nearer: an outer axis switched again inside itself, and outer
+ * values split over two elements.
+ */
+export function axesLayers(tree: TokenTree, grid: ThemeGrid): AxesLayer[] {
+  const allLeaves = leaves(tree)
+  if (allLeaves.length === 0) return []
+  const nested = grid.nested === true
+  const n = grid.axes.length
+  const inner = grid.axes[n - 1]
+  const outerAxes = grid.axes.slice(0, n - 1)
+  const i0 = grid.defaults[n - 1]
+  const o0 = grid.defaults.slice(0, n - 1)
+  const nonDefault = (o: readonly string[]) => o.filter((v, k) => v !== o0[k]).length
+  const combos = gridCoords({ axes: outerAxes, theme: () => '', defaults: o0 }).sort((x, y) => nonDefault(x) - nonDefault(y))
+  const key = (o: readonly string[]) => o.join('\u0000')
+  const value = (leaf: TokenLeaf, o: readonly string[], i: string) => cssValue(valueForTheme(leaf.token, grid.theme([...o, i])), leaf.path, leaf.token)
+  const sel = (attribute: string, v: string) => `[${attribute}="${cssAttrValue(v)}"]`
+  const O = (o: readonly string[]) => outerAxes.map((axis, k) => (o[k] === o0[k] ? '' : sel(axis.attribute, o[k]))).join('')
+  const I = (v: string) => sel(inner.attribute, v)
+  // The combinations under `o`: `o` itself and every one with some of its values reset.
+  const under = (o: readonly string[]) => combos.filter((c) => c.every((v, k) => v === o[k] || v === o0[k]))
+  const isRoot = (o: readonly string[]) => key(o) === key(o0)
+  const declarations = (declared: TokenLeaf[], theme: string) => themeDeclarations(declared, theme, false).join('\n')
+
+  const constant = new Set(allLeaves.filter((leaf) => new Set(gridCoords(grid).map((cell) => value(leaf, cell.slice(0, n - 1), cell[n - 1]))).size === 1))
+  const changesWithInner = new Set(allLeaves.filter((leaf) => combos.some((o) => new Set(inner.values.map((i) => value(leaf, o, i))).size > 1)))
+  // What each block declares, filled in emission order, so a block states only what the blocks
+  // already below it would get wrong — in each layout the selectors support.
+  const outerDeclared = new Map<string, Set<TokenLeaf>>([[key(o0), new Set(allLeaves)]])
+  const pairDeclared = new Map<string, Set<TokenLeaf>>()
+  for (const i of inner.values) if (i !== i0) pairDeclared.set(`${key(o0)}|${i}`, changesWithInner)
+  type Candidate = [spec: number, order: number, value: string]
+  const best = (cands: Candidate[]) => cands.reduce<Candidate | undefined>((acc, c) => (!acc || c[0] > acc[0] || (c[0] === acc[0] && c[1] > acc[1]) ? c : acc), undefined)?.[2]
+  /** The value the cascade yields for `leaf` at (o, i) from the blocks declared so far: with the
+   * outer values and the inner on one element (`same`), with the inner switched on a subtree
+   * below the outer (`nested`), and with the outer set below an element switching the inner
+   * (`below`). A layout that matches nothing inherits from its ancestor. */
+  const effective = (leaf: TokenLeaf, o: readonly string[], i: string, layout: 'same' | 'nested' | 'below'): string | undefined => {
+    const cands: Candidate[] = []
+    // Source order is the tie-break at equal specificity, and it is the order the layers are
+    // emitted in: root, the inner blocks, then each product in `combos` order — its own block,
+    // then its pairs in the order of the inner values.
+    const position = (b: readonly string[]) => combos.findIndex((c) => key(c) === key(b))
+    const outerOf = (b: readonly string[], extra: number) => {
+      if (!isRoot(b) && outerDeclared.get(key(b))?.has(leaf)) cands.push([nonDefault(b) + extra, 10 + position(b) * 1000, value(leaf, b, i0)])
+    }
+    const pairOf = (b: readonly string[], extra: number) => {
+      if (i !== i0 && pairDeclared.get(`${key(b)}|${i}`)?.has(leaf)) {
+        cands.push([(isRoot(b) ? 0 : nonDefault(b)) + 1 + extra, isRoot(b) ? 1 : 11 + position(b) * 1000 + inner.values.indexOf(i), value(leaf, b, i)])
+      }
+    }
+    if (layout === 'same') {
+      cands.push([1, 0, value(leaf, o0, i0)])
+      for (const b of under(o)) {
+        outerOf(b, 0)
+        pairOf(b, 0)
+      }
+      return best(cands)
+    }
+    if (layout === 'nested') {
+      // The subtree element carries only the inner: `[inner=i]`, `O(b) [inner=i]`, and for the
+      // default inner the root's `[inner=i0]` and `O(b) [inner=i0]`.
+      if (i === i0) {
+        cands.push([1, 0, value(leaf, o0, i0)])
+        for (const b of under(o)) outerOf(b, 1)
+      } else for (const b of under(o)) pairOf(b, 0)
+      return cands.length ? best(cands) : effective(leaf, o, i0, 'same')
+    }
+    // `below`: the element carries the outer values under an ancestor that set the inner.
+    for (const b of under(o)) {
+      outerOf(b, 0)
+      pairOf(b, 1)
+    }
+    return cands.length ? best(cands) : i === i0 ? value(leaf, o0, i0) : effective(leaf, o0, i, 'same')
+  }
+  const outerLayouts = nested ? (['same', 'nested'] as const) : (['same'] as const)
+  const pairLayouts = nested ? (['same', 'nested', 'below'] as const) : (['same'] as const)
+
+  const layers: AxesLayer[] = []
+  const rootTheme = grid.theme([...o0, i0])
+  const common = allLeaves.filter((leaf) => constant.has(leaf))
+  if (common.length > 0) layers.push({ name: 'base', title: 'base — the same in every theme', blocks: [{ selectors: [':root'], body: declarations(common, rootTheme) }] })
+  const themed = allLeaves.filter((leaf) => !constant.has(leaf))
+  if (themed.length > 0) {
+    layers.push({ name: i0, title: `${i0} — ${I(i0)}, the default`, blocks: [{ selectors: [':root', I(i0)], body: declarations(themed, rootTheme) }] })
+  }
+  for (const i of inner.values) {
+    if (i === i0) continue
+    const declared = allLeaves.filter((leaf) => changesWithInner.has(leaf))
+    if (declared.length > 0) layers.push({ name: i, title: `${i} — ${I(i)}`, blocks: [{ selectors: [I(i)], body: declarations(declared, grid.theme([...o0, i])) }] })
+  }
+
+  const others = combos.filter((o) => !isRoot(o))
+  const own = new Map<string, AxesLayer['blocks']>()
+  for (const o of others) {
+    const declared = allLeaves.filter((leaf) => outerLayouts.some((layout) => value(leaf, o, i0) !== effective(leaf, o, i0, layout)))
+    outerDeclared.set(key(o), new Set(declared))
+    own.set(key(o), declared.length === 0 ? [] : [{ selectors: nested ? [O(o), `${O(o)} ${I(i0)}`] : [O(o)], body: declarations(declared, grid.theme([...o, i0])) }])
+  }
+  for (const o of others) {
+    for (const i of inner.values) {
+      if (i === i0) continue
+      const declared = allLeaves.filter((leaf) => pairLayouts.some((layout) => value(leaf, o, i) !== effective(leaf, o, i, layout)))
+      pairDeclared.set(`${key(o)}|${i}`, new Set(declared))
+      if (declared.length === 0) continue
+      const selectors = nested ? [`${O(o)}${I(i)}`, `${O(o)} ${I(i)}`, `${I(i)} ${O(o)}:not([${inner.attribute}])`] : [`${O(o)}${I(i)}`]
+      own.get(key(o))!.push({ selectors, body: declarations(declared, grid.theme([...o, i])) })
+    }
+  }
+  // Products that change exactly the same things (Platform = Business today) share one layer —
+  // only with one outer axis, where no element can match two of them; with more
+  // (`[product=business]` and `[density=compact]`) each keeps its own place.
+  const shared: Array<{ names: string[]; blocks: AxesLayer['blocks'] }> = []
+  for (const o of others) {
+    const blocks = own.get(key(o))!
+    if (blocks.length === 0) continue
+    const name = o.filter((v, k) => v !== o0[k]).join('-')
+    const same = outerAxes.length === 1 ? shared.find((layer) => layer.blocks.length === blocks.length && layer.blocks.every((b, k) => b.body === blocks[k].body)) : undefined
+    if (same) {
+      same.names.push(name)
+      same.blocks.forEach((b, k) => b.selectors.push(...blocks[k].selectors))
+    } else shared.push({ names: [name], blocks: blocks.map((b) => ({ selectors: [...b.selectors], body: b.body })) })
+  }
+  const what = outerAxes.map((axis) => axis.attribute).join(', ')
+  for (const layer of shared) layers.push({ name: layer.names[0], title: `${layer.names.join(', ')} — what ${what} changes`, blocks: layer.blocks })
+  return layers
+}
+
+const renderBlocks = (blocks: AxesLayer['blocks'], wrap: (selector: string) => string = (s) => s) =>
+  blocks.map((block) => `${block.selectors.map(wrap).join(',\n')} {\n${block.body}\n}`).join('\n\n')
+
+/** `tokens.css` for a grid: every layer of `axesLayers` in order, each under its title. */
+export function toAxesCss(tree: TokenTree, grid: ThemeGrid, renames?: RenameMap): string {
+  const layers = axesLayers(tree, grid)
+  if (layers.length === 0) return ''
+  const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames))
+  return layers.map((layer) => `/* ${layer.title} */\n${renderBlocks(layer.blocks)}`).join('\n\n') + '\n' + (legacy === '' ? '' : '\n' + legacy)
+}
+
+/** The layers of `tokens.css`, one CSS Module each (`base.module.css`, `dark.module.css`,
+ * `business.module.css`): base plus a theme plus a product is one theme of one product, and all of
+ * them together are `tokens.css`. The renamed-token aliases ride with the first file. */
+export function toAxesModuleFiles(tree: TokenTree, grid: ThemeGrid, useGlobal?: boolean, renames?: RenameMap): Record<string, string> {
+  const wrap = useGlobal ? (sel: string) => `:global(${sel})` : (sel: string) => sel
+  const files: Record<string, string> = {}
+  const used = new Set<string>()
+  axesLayers(tree, grid).forEach((layer, n) => {
+    const base = varName([layer.name]) || 'theme'
+    let name = base
+    for (let k = 2; used.has(name); k++) name = `${base}-${k}`
+    used.add(name)
+    const legacy = n === 0 ? toLegacyAliasCss(legacyAliasPairs(tree, renames), wrap(':root')) : ''
+    files[`${name}.module.css`] = `/* ${layer.title} */\n${renderBlocks(layer.blocks, wrap)}\n` + (legacy === '' ? '' : '\n' + legacy)
+  })
+  return files
+}
+
+/**
+ * The stylesheet for a tree: one block per theme, or — with theme axes the themes actually fit —
+ * one attribute per axis (`toAxesCss`). `note` says why axes that were asked for were not used,
+ * so the export can tell the designer instead of silently going flat; `grid` is what every other
+ * document of the package describes.
+ */
+export function toStylesheet(
+  tree: TokenTree,
+  ordered: string[],
+  defaultTheme: string,
+  options: { themeAttr?: string; themeAxes?: unknown; renames?: RenameMap; cells?: Record<string, string>; problem?: string; grid?: ThemeGrid }
+): { css: string; note?: string; grid?: ThemeGrid } {
+  const flat = () => toTokensCss(tree, ordered, defaultTheme, options.themeAttr, options.renames)
+  const fallback = (why: string) => ({
+    css: flat(),
+    note: `Theme axes not used — ${why}; tokens.css has one [${options.themeAttr || 'data-theme-name'}] block per mode instead`,
+  })
+  if (options.problem) return fallback(options.problem)
+  // A materialized structure already knows its grid; the themes are its cells by construction.
+  if (options.grid) return ordered.length > 1 ? { css: toAxesCss(tree, options.grid, options.renames), grid: options.grid } : { css: flat() }
+  const { spec, problems } = normalizeThemeAxesSpec(options.themeAxes)
+  if (problems.length > 0) return fallback(problems.join('; '))
+  if (!spec || ordered.length < 2) return { css: flat() }
+  const resolved = resolveThemeGrid(ordered, defaultTheme, spec, options.cells)
+  if ('problem' in resolved) return fallback(resolved.problem)
+  return { css: toAxesCss(tree, resolved.grid, options.renames), grid: resolved.grid }
+}
+
+/** The grid theme axes lay over these themes (default first), or undefined when the setting is
+ * empty or does not fit — for callers that hold the setting but not the package's grid. */
+export function themeGridOf(ordered: readonly string[], themeAxes: unknown, defaultTheme = ordered[0], cells?: Record<string, string>): ThemeGrid | undefined {
+  const { spec } = normalizeThemeAxesSpec(themeAxes)
+  if (!spec || ordered.length < 2) return undefined
+  const resolved = resolveThemeGrid(ordered, defaultTheme, spec, cells)
+  return 'grid' in resolved ? resolved.grid : undefined
+}
+
+/** A structure's grid names its cells as the file does (`Dark`); with slugged themes the tree
+ * knows them as `dark`, and a cell read under the other name would silently show the default. */
+export function slugGridThemes(grid: ThemeGrid | undefined, slugThemes: boolean): ThemeGrid | undefined {
+  return grid && slugThemes ? { ...grid, theme: (coords) => themeSlug(grid.theme(coords)) } : grid
+}
+
+/** `[data-product="business"][data-theme="dark"]` — the selector of one theme of a grid. */
+export function gridSelector(grid: ThemeGrid, theme: string): string {
+  for (const coords of gridCoords(grid)) {
+    if (grid.theme(coords) === theme) return grid.axes.map((axis, n) => `[${axis.attribute}="${cssAttrValue(coords[n])}"]`).join('')
+  }
+  return `:root`
 }
 
 export function toThemeModuleCssFiles(tree: TokenTree, ordered: string[], defaultTheme: string, attr?: string, useGlobal?: boolean, renames?: RenameMap): Record<string, string> {
@@ -1632,7 +2386,42 @@ function readmeExample(tree: TokenTree | undefined): string {
   return `\n\n\`\`\`css\n.button {\n${lines.join('\n')}\n}\n\`\`\``
 }
 
-export function buildReadme(summary: TokenSummary, options: NormalizedOptions, tree?: TokenTree, renames?: RenameMap): string {
+/** How a consumer sets the theme attributes — the README's half of `toAxesCss`. */
+function axesReadme(grid: ThemeGrid): string {
+  const list = (values: string[]) => values.map((v) => `\`${v}\``).join(', ')
+  const other = (n: number) => grid.axes[n].values.find((v) => v !== grid.defaults[n]) ?? grid.defaults[n]
+  const inner = grid.axes[grid.axes.length - 1]
+  const n = grid.axes.length - 1
+  if (grid.axes.length === 1) {
+    return (
+      `\n\nThemes are one attribute, \`${inner.attribute}\` (${list(inner.values)}); with none set, \`${grid.defaults[0]}\` applies.\n\n` +
+      `\`\`\`html\n<html ${inner.attribute}="${other(0)}">\n\`\`\`\n\nIt can be set again on any element inside (a \`${other(0)}\` card in a \`${grid.defaults[0]}\` page).`
+    )
+  }
+  const outer = grid.axes.slice(0, -1)
+  const example = grid.axes.map((axis, k) => `${axis.attribute}="${other(k)}"`).join(' ')
+  const head =
+    `\n\nThemes are ${grid.axes.length} attributes: ${grid.axes.map((axis) => `\`${axis.attribute}\` (${list(axis.values)})`).join(', ')}. With none set, ` +
+    `${grid.defaults.map((d) => `\`${d}\``).join(' × ')} applies.\n\n\`\`\`html\n<html ${example}>\n\`\`\`\n\n`
+  if (!grid.nested) return head + `Set ${grid.axes.length === 2 ? 'both' : 'all of them'} on the same element — \`<html>\`, or the root of an app.`
+  return (
+    head +
+    `\`${inner.attribute}\` can be set again on any element inside (a \`${other(n)}\` card in a \`${grid.defaults[n]}\` page), and ` +
+    `${outer.map((a) => `\`${a.attribute}\``).join(', ')} may sit on the same element as \`${inner.attribute}\` or below it (\`<body>\` under a themed \`<html>\`). ` +
+    `Not supported: ${outer.map((a) => `\`${a.attribute}\``).join(' or ')} switched again inside itself, split over two elements, or set below two different \`${inner.attribute}\` ancestors.`
+  )
+}
+
+/** `base`, `light`, `dark`, `business` — the layers a grid's stylesheet is cut into, as the
+ * README lists them. */
+function layerList(tree: TokenTree | undefined, grid: ThemeGrid): string {
+  if (!tree) return ''
+  return axesLayers(tree, grid)
+    .map((layer) => `\`${varName([layer.name]) || 'theme'}\``)
+    .join(', ')
+}
+
+export function buildReadme(summary: TokenSummary, options: NormalizedOptions, tree?: TokenTree, renames?: RenameMap, themeGrid?: ThemeGrid): string {
   const attr = options.themeAttr
   const themeList = summary.themes.map((t) => `\`${t}\``).join(', ')
   const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(', ')
@@ -1647,14 +2436,29 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
     .join('\n')
   const defaultTheme = summary.themes[0] || 'Light'
   const others = summary.themes.filter((t) => t !== defaultTheme)
-  const switchExample = others.length
+  const grid = themeGrid ?? themeGridOf(summary.themes, options.themeAxes)
+  const switchExample = grid
+    ? axesReadme(grid)
+    : others.length
     ? `\n\nSwitch theme by setting the attribute on any ancestor (e.g. \`<html>\`):\n\n\`\`\`html\n<html ${attr}="${others[0]}">\n\`\`\``
     : ''
 
+  const blockNote = grid
+    ? '\n\nThe file is cut into layers, each under a comment: `base` holds what is the same in every theme, then one layer per theme, then what each product changes. ' +
+      'A variable sits in the narrowest layer it needs, so a component written with `var(--…)` follows every attribute without knowing any.'
+    : `\n\nEach \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling\nthe attribute swaps the whole set.`
+  const axesNames = grid ? grid.axes.map((axis) => `\`${axis.attribute}\``).join(' × ') : ''
+  const layers = grid ? layerList(tree, grid) : ''
+  const cssRow = grid
+    ? `CSS custom properties, switched by ${axesNames}, in layers: ${layers}. The one file for runtime switching.`
+    : 'CSS custom properties. One self-contained block per theme. The merged single file.'
   const rootSel = options.cssModulesGlobal ? ':global(:root)' : ':root'
-  const moduleSel = options.cssModulesGlobal ? `:global([${attr}="…"])` : `[${attr}="…"]`
+  const pairSel = grid ? grid.axes.map((axis) => `[${axis.attribute}="…"]`).join('') : `[${attr}="…"]`
+  const moduleSel = options.cssModulesGlobal ? `:global(${pairSel})` : pairSel
   const moduleRow = options.emitModuleFiles
-    ? `\n| \`<theme>.module.css\` | The same blocks, one file per theme (${moduleList}). Every variable under \`${moduleSel}\` — the default theme also on \`${rootSel}\`. Concatenated, they reproduce \`tokens.css\`. |`
+    ? grid
+      ? `\n| \`<layer>.module.css\` | The layers of \`tokens.css\`, one file each (${layers.replace(/`([^`]+)`/g, '`$1.module.css`')}). Together they are \`tokens.css\`. |`
+      : `\n| \`<theme>.module.css\` | The same blocks, one file per theme (${moduleList}). Every variable under \`${moduleSel}\` — the default theme also on \`${rootSel}\`. Concatenated, they reproduce \`tokens.css\`. |`
     : ''
 
   const inlineNote = !options.inlinePrimitives
@@ -1670,7 +2474,7 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
     options.typoExtract ? `scale only \`${options.typoScaleOnly ? 'on' : 'off'}\`` : null,
     options.typoExtract ? `scale names \`${options.typoNaming === 'value' ? 'by value' : 't-shirt'}\`` : null,
     options.typoExtract && !options.typoScaleOnly ? `font shorthand \`${options.typoShorthand ? 'on' : 'off'}\`` : null,
-    `theme attribute \`${attr}\``,
+    grid ? `theme axes ${axesNames}` : `theme attribute \`${attr}\``,
     `per-theme modules \`${options.emitModuleFiles ? 'on' : 'off'}\``,
     options.emitModuleFiles ? `\`:global()\` \`${options.cssModulesGlobal ? 'on' : 'off'}\`` : null,
   ]
@@ -1693,7 +2497,14 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
         .join('\n')}${aliasPairs.length > 6 ? `\n/* …and ${aliasPairs.length - 6} more */` : ''}\n\`\`\`\n\nThey are aliases, not a second source of truth — migrate to the new names when convenient. \`tokens.ts\` only carries the current names.`
     : ''
 
-  const moduleSection = options.emitModuleFiles
+  const moduleSection = options.emitModuleFiles && grid
+    ? `\n\n## CSS Modules\n\nThe layers of \`tokens.css\`, one file each — ${layers.replace(/`([^`]+)`/g, '`$1.module.css`')}${
+        options.cssModulesGlobal ? ' — wrapped in `:global(…)` for CSS-Modules projects (Next.js, etc.)' : ''
+      }. Import them in the order of \`tokens.css\`:\n\n\`\`\`ts\n${layers
+        .split(', ')
+        .map((name) => `import "./${name.replace(/`/g, '')}.module.css";`)
+        .join('\n')}\n\`\`\`\n\nA build that never shows a theme or a product may leave its layer out; \`base\` and the default theme (\`${grid.defaults[grid.axes.length - 1]}\`) are always needed.`
+    : options.emitModuleFiles
     ? `\n\n## Per-theme CSS Modules\n\nThe same blocks are also emitted one file per theme — ${moduleList}${
         options.cssModulesGlobal ? ' — wrapped in `:global(…)` for CSS-Modules projects (Next.js, etc.)' : ''
       }. Concatenated (or merged by your bundler), they reproduce \`tokens.css\`.\n\n\`\`\`ts\n// build-time: pick one theme, the bundler inlines it\nimport "./${varName([defaultTheme])}.module.css";\n\`\`\`\n\nFor **runtime** switching keep every theme present (use \`tokens.css\`, or import\nall \`*.module.css\`) and toggle \`${attr}\` on an ancestor.`
@@ -1701,7 +2512,7 @@ export function buildReadme(summary: TokenSummary, options: NormalizedOptions, t
 
   return `# AllCrew Figma Workspace Design Tokens\n\nGenerated by the **AllCrew Figma Workspace** Figma plugin from **${summary.fileName}**.\n\n- ${summary.totalVariables} variables across ${summary.collections.length} collection(s)${
     summary.textStyleCount ? `\n- ${summary.textStyleCount} text styles → \`typography/…\` tokens` : ''
-  }\n- Themes (modes): ${themeList || '`default`'}\n- Settings: ${settingsLine}\n\n## Files\n\n| File | What it is |\n|------|------------|\n| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}\n| \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |\n| \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |\n\n${inlineNote}${typoNote}\n\n## Collections\n\n${collLines}\n\n## Using the tokens\n\nImport the stylesheet once:\n\n\`\`\`css\n@import "./tokens.css";\n\`\`\`\n\nThe default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}\n\nEach \`[${attr}="…"]\` block re-declares **every** variable for that theme, so toggling\nthe attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleSection}\n`
+  }\n- Themes (modes): ${themeList || '`default`'}\n- Settings: ${settingsLine}\n\n## Files\n\n| File | What it is |\n|------|------------|\n| \`tokens.css\` | ${cssRow} |${moduleRow}\n| \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |\n| \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--…)\` refs) + \`themes\` / \`Theme\`. |\n\n${inlineNote}${typoNote}\n\n## Collections\n\n${collLines}\n\n## Using the tokens\n\nImport the stylesheet once:\n\n\`\`\`css\n@import "./tokens.css";\n\`\`\`\n\nThe default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}${blockNote}${readmeExample(tree)}${aliasSection}${moduleSection}\n`
 }
 
 /* ------------------------------------------------------------------ options + buildPackage */
@@ -1722,6 +2533,15 @@ export interface NormalizedOptions {
   typoShorthand: boolean
   /** The `Collection roles` setting; `hidden` and `breakpoints` change what is emitted. */
   collectionRoles: string
+  /** Theme names as selector slugs (`One Light` → `one-light`). See `prepareRoleGraph`. */
+  slugThemes: boolean
+  /** How themes become attributes — the picker's spec or its string form (`data-product: One,
+   * Business; data-theme: Light, Dark`). See `theme-axes.ts`; empty: one attribute per mode. */
+  themeAxes: string | ThemeAxesSpec
+  /** The export structure — how collections, groups and modes become the package. When set it
+   * supersedes collection roles, the theme table, the theme attribute and the theme axes. See
+   * `structure.ts`. */
+  structure: ExportStructure | null
   delivery: NormalizedDelivery
 }
 
@@ -1751,6 +2571,9 @@ export const DEFAULT_OPTIONS: NormalizedOptions = {
   typoShorthand: false,
   emitNative: false,
   collectionRoles: '',
+  slugThemes: false,
+  themeAxes: '',
+  structure: null,
   delivery: {
     endpoint: '',
     secret: '',
@@ -1801,6 +2624,9 @@ export function normalizeOptions(o: unknown): NormalizedOptions {
     typoShorthand: pick('typoShorthand') as boolean,
     themeAttr: sanitizeAttr(obj.themeAttr as string),
     collectionRoles: typeof obj.collectionRoles === 'string' ? obj.collectionRoles : '',
+    slugThemes: pick('slugThemes') as boolean,
+    themeAxes: typeof obj.themeAxes === 'string' ? obj.themeAxes.trim() : isRecord(obj.themeAxes) ? (obj.themeAxes as unknown as ThemeAxesSpec) : '',
+    structure: normalizeStructure(obj.structure).structure,
     delivery: normalizeDelivery(obj.delivery),
   }
 }
@@ -1829,8 +2655,9 @@ function buildProductCss(
   collection: TokenGraphCollection,
   productIds: ReadonlySet<string>,
   opts: NormalizedOptions,
-  roles: { hidden: string[]; breakpoints: string[] }
-): { tree: TokenTree; themes: string[]; defaultTheme: string; css: string; modules: Record<string, string> } {
+  roles: { hidden: string[]; breakpoints: string[] },
+  grid?: ThemeGrid
+): { tree: TokenTree; themes: string[]; defaultTheme: string; css: string; note?: string; modules: Record<string, string> } {
   const g = productGraph(graph, productIds, collection.id)
   const shaped = shapeForCode(g, variablesToW3CMultiMode(g), { ...roles, scaleOnly: opts.typoScaleOnly })
   const inlined = opts.inlinePrimitives ? inlinePrimitivesTree(shaped, opts.flattenAliases) : shaped
@@ -1840,16 +2667,23 @@ function buildProductCss(
   const { defaultTheme, ordered } = orderedThemes(leaves(tree), hint)
   const slug = varName([collection.name]) || 'product'
   const modules: Record<string, string> = {}
+  const sheet = toStylesheet(tree, ordered, defaultTheme, { themeAttr: opts.themeAttr, themeAxes: opts.themeAxes, grid })
   if (opts.emitModuleFiles) {
-    const themeFiles = toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal)
+    const themeFiles = sheet.grid ? toAxesModuleFiles(tree, sheet.grid, opts.cssModulesGlobal) : toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal)
     for (const name of Object.keys(themeFiles)) modules[`${slug}-${name}`] = themeFiles[name]
   }
-  return { tree, themes: ordered, defaultTheme, css: toTokensCss(tree, ordered, defaultTheme, opts.themeAttr), modules }
+  return { tree, themes: ordered, defaultTheme, css: sheet.css, ...(sheet.note ? { note: `${collection.name}: ${sheet.note}` } : {}), modules }
 }
 
-export function buildPackage(graph: TokenGraph, options: unknown, renames?: RenameMap): TokenPackage {
-  const opts = normalizeOptions(options)
-  const roles = parseCollectionModes(opts.collectionRoles)
+export function buildPackage(rawGraph: TokenGraph, options: unknown, renames?: RenameMap): TokenPackage {
+  let opts = normalizeOptions(options)
+  // Theme axes may read products from collections: merged first, so every step after sees one
+  // themes collection whose modes are the grid.
+  const sources = applyThemeAxesSources(rawGraph, parseCollectionModes(opts.collectionRoles), opts.themeAxes, opts.structure)
+  const roles = sources.roles
+  if (opts.structure && !sources.problem) opts = { ...opts, themeAttr: deriveLegacy(opts.structure).themeAttribute }
+  const prepared = prepareRoleGraph(sources.graph, roles, { slugThemes: opts.slugThemes })
+  const graph = prepared.graph
   const productNames = new Set(roles.products.map((name) => name.trim().toLowerCase()))
   const products = (graph.collections || []).filter((c) => productNames.has(c.name.trim().toLowerCase()))
   const productIds = new Set(products.map((c) => c.id))
@@ -1863,6 +2697,7 @@ export function buildPackage(graph: TokenGraph, options: unknown, renames?: Rena
     scaleOnly: opts.typoScaleOnly,
   })
   const summary = buildSummary(graph, sourceTree)
+  if (prepared.notes.length > 0 || sources.notes.length > 0) summary.notes = [...(summary.notes ?? []), ...sources.notes, ...prepared.notes]
   const files: Record<string, string> = {}
   const emitted: TokenPackage['emitted'] = { tree: {}, themes: [], defaultTheme: '' }
   const bpNames = new Set(['breakpoints', ...roles.breakpoints.map((name) => name.trim().toLowerCase())])
@@ -1876,7 +2711,12 @@ export function buildPackage(graph: TokenGraph, options: unknown, renames?: Rena
     ]
   }
   if (products.length > 0) {
-    const built = products.map((collection) => ({ collection, ...buildProductCss(graph, collection, productIds, opts, roles) }))
+    const fileGrid = (name: string) => {
+      const axes = sources.materialized?.fileAxes[name]
+      return axes && axes.length > 0 ? slugGridThemes(gridFromAxes(axes, (cell) => cellName(axes, cell)), opts.slugThemes) : undefined
+    }
+    const built = products.map((collection) => ({ collection, ...buildProductCss(graph, collection, productIds, opts, roles, fileGrid(collection.name)) }))
+    for (const b of built) if (b.note) summary.notes = [...(summary.notes ?? []), b.note]
     const namesOf = (tree: TokenTree) => new Set(leaves(tree).map((leaf) => varName(leaf.path)))
     const names = built.map((b) => namesOf(b.tree))
     const union = new Set<string>()
@@ -1903,28 +2743,37 @@ export function buildPackage(graph: TokenGraph, options: unknown, renames?: Rena
     }
   }
   if (summary.tokenCount > 0 || products.length > 0) {
-    const defaultMode = primaryDefaultMode(graph)
+    const defaultMode = prepared.themeDefault || primaryDefaultMode(graph)
     const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode)
-    const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree
-    files['tokens.css'] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames)
+    const unique = uniqueVarNames(opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree)
+    const cssTree = unique.tree
+    if (unique.dropped.length > 0) summary.notes = [...(summary.notes ?? []), ...unique.dropped]
+    const sheet = toStylesheet(cssTree, ordered, defaultTheme, { themeAttr: opts.themeAttr, themeAxes: opts.themeAxes, renames, cells: sources.cells, problem: sources.problem, grid: slugGridThemes(sources.grid, opts.slugThemes) })
+    files['tokens.css'] = sheet.css
+    if (sheet.note) summary.notes = [...(summary.notes ?? []), sheet.note]
     // Everything may live in separate files: an empty shared stylesheet is not worth shipping.
     if (files['tokens.css'].trim() === '') delete files['tokens.css']
     if (opts.emitModuleFiles) {
-      const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames)
+      const themeFiles = sheet.grid
+        ? toAxesModuleFiles(cssTree, sheet.grid, opts.cssModulesGlobal, renames)
+        : toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames)
       for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name]
     }
     files['tokens.json'] = toTokensJson(sourceTree, renames)
     files['tokens.ts'] = toTokensTs(cssTree, ordered)
-    files['README.md'] = buildReadme(summary, opts, cssTree, renames)
+    files['README.md'] = buildReadme(summary, opts, cssTree, renames, sheet.grid)
     if (opts.emitNative) {
-      // The inlined tree, same as the CSS: a native constant cannot hold `var(--x)`, so an alias
-      // that was never resolved would land as a literal `{colors.blue.500}` in Swift.
-      const nativeFiles = toNativeFiles(cssTree, ordered, defaultTheme)
+      // The CSS tree says which tokens ship, so both packages name the same set; the source tree
+      // says what they hold. A native constant cannot hold `var(--x)`, and the inlined tree's
+      // `"16px"` is already CSS — Swift got that string for a CGFloat. Native follows every alias
+      // in the source itself, to the number, whatever `flattenAliases` left for the stylesheet.
+      const nativeFiles = toNativeFiles(cssTree, ordered, defaultTheme, sourceTree)
       for (const name of Object.keys(nativeFiles)) files[name] = nativeFiles[name]
     }
     emitted.tree = cssTree
     emitted.themes = ordered
     emitted.defaultTheme = defaultTheme
+    if (sheet.grid) emitted.grid = sheet.grid
   }
   return { summary, files, options: opts, emitted }
 }

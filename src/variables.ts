@@ -140,7 +140,18 @@ function aliasIdsOf(value: unknown, into: string[]): void {
  * libraries" sweep cannot reach, since it only sees libraries switched on in this file. Chains are
  * followed until nothing new turns up.
  */
-export async function readAliasTargets(known: VariableSnapshot): Promise<VariableSnapshot> {
+export async function readAliasTargets(
+  known: VariableSnapshot,
+  limits: { lookupMs?: number; budgetMs?: number } = {}
+): Promise<VariableSnapshot & { unresolved?: number }> {
+  // A lookup is normally answered from the file, but one onto a library variable its library no
+  // longer publishes can hang for minutes and return nothing: a caller that must answer (the
+  // Tokens screen) bounds each lookup and the whole walk, and is told how many it did not reach.
+  const started = Date.now()
+  let unresolved = 0
+  const lookupMs = limits.lookupMs
+  const within = <T,>(work: Promise<T>): Promise<T | null> =>
+    lookupMs === undefined ? work : Promise.race([work, new Promise<null>((resolve) => setTimeout(() => resolve(null), lookupMs))])
   const variableIds = new Set(known.variables.map((variable) => variable.id))
   const collectionIds = new Set(known.collections.map((collection) => collection.id))
   const collections: CollectionEntry[] = []
@@ -156,13 +167,20 @@ export async function readAliasTargets(known: VariableSnapshot): Promise<Variabl
     for (const id of wanted) {
       if (variableIds.has(id)) continue
       variableIds.add(id)
+      if (limits.budgetMs !== undefined && Date.now() - started > limits.budgetMs) {
+        unresolved++
+        continue
+      }
       let variable: Variable | null = null
       try {
-        variable = await figma.variables.getVariableByIdAsync(id)
+        variable = await within(figma.variables.getVariableByIdAsync(id))
       } catch {
         variable = null
       }
-      if (!variable) continue
+      if (!variable) {
+        unresolved++
+        continue
+      }
       const entry = toVariableEntry(variable)
       next.push(entry)
       if (!collectionIds.has(entry.collectionId)) {
@@ -193,7 +211,7 @@ export async function readAliasTargets(known: VariableSnapshot): Promise<Variabl
     frontier = next
   }
 
-  return { collections, variables }
+  return { collections, variables, ...(unresolved > 0 ? { unresolved } : {}) }
 }
 
 /**
@@ -343,6 +361,84 @@ export async function readAllVariables(options: LibraryReadOptions = {}): Promis
     ...(library.nextOffset === undefined ? {} : { nextOffset: library.nextOffset }),
     ...(library.stoppedOn === undefined ? {} : { stoppedOn: library.stoppedOn }),
   }
+}
+
+/**
+ * A value for every alias a walk could not follow, read off this file itself.
+ *
+ * A file consuming a library can hold aliases its library will not hand over by id — a consumer
+ * file's aliases onto a library that stopped sharing hang for minutes and answer nothing — yet the canvas draws those
+ * tokens, so Figma keeps their values here. `resolveForConsumer` reads them through a layer that
+ * sits in the mode wanted; an alias with no such layer on the current page, or past the budget,
+ * stays an alias and is named in `left`. Only the unreachable modes change: a value the walk did
+ * reach keeps its alias, so the export still names the token it points at.
+ */
+export async function settleUnreachedAliases<V extends { id: string; name: string; collectionId: string; valuesByMode: { [modeId: string]: VariableValue } }>(
+  variables: readonly V[],
+  known: ReadonlySet<string>,
+  budgetMs = 10_000
+): Promise<{ variables: V[]; settled: string[]; left: string[] }> {
+  const started = Date.now()
+  const settled: string[] = []
+  const left: string[] = []
+  const unreached = (value: VariableValue) => isVariableAlias(value) && !known.has(value.id)
+  // Read only when an alias needs it: most files have none, and the page is the user's.
+  let layers: readonly SceneNode[] | null = null
+  const consumers = new Map<string, SceneNode | null>()
+  const consumerFor = (collectionId: string, modeId: string, defaultModeId: string): SceneNode | null => {
+    const key = `${collectionId}|${modeId}`
+    if (!consumers.has(key)) {
+      const modesOf = (node: SceneNode) => (node as SceneNode & { resolvedVariableModes?: { [id: string]: string } }).resolvedVariableModes ?? {}
+      layers ??= figma.currentPage.children.slice(0, 400)
+      const found = layers.find((node) => {
+        const mode = modesOf(node)[collectionId]
+        return mode === modeId || (mode === undefined && modeId === defaultModeId)
+      })
+      consumers.set(key, found ?? null)
+    }
+    return consumers.get(key) ?? null
+  }
+  const out: V[] = []
+  for (const entry of variables) {
+    const modes = Object.keys(entry.valuesByMode).filter((modeId) => unreached(entry.valuesByMode[modeId]))
+    if (modes.length === 0) {
+      out.push(entry)
+      continue
+    }
+    const variable = Date.now() - started > budgetMs ? null : await figma.variables.getVariableByIdAsync(entry.id).catch(() => null)
+    const collection = variable ? await figma.variables.getVariableCollectionByIdAsync(entry.collectionId).catch(() => null) : null
+    const valuesByMode = { ...entry.valuesByMode }
+    let missed = false
+    for (const modeId of modes) {
+      const consumer = variable && collection ? consumerFor(collection.id, modeId, collection.defaultModeId) : null
+      let value: VariableValue | null = null
+      if (consumer && variable) {
+        try {
+          value = variable.resolveForConsumer(consumer).value
+        } catch {
+          value = null
+        }
+      }
+      if (value === null || value === undefined || isVariableAlias(value)) missed = true
+      else valuesByMode[modeId] = value
+    }
+    if (missed) left.push(entry.name)
+    if (modes.some((modeId) => valuesByMode[modeId] !== entry.valuesByMode[modeId])) settled.push(entry.name)
+    out.push({ ...entry, valuesByMode })
+  }
+  return { variables: out, settled, left }
+}
+
+/** What the export says about `settleUnreachedAliases`, or nothing when every alias was followed. */
+export function unreachedAliasNote(settled: readonly string[], left: readonly string[]): string | undefined {
+  const parts: string[] = []
+  if (settled.length > 0) {
+    parts.push(`${settled.length} token${settled.length === 1 ? '' : 's'} point into a library that does not hand its variables to this file (${settled.slice(0, 4).join(', ')}${settled.length > 4 ? ', …' : ''}) — their values were read from this file as its canvas shows them`)
+  }
+  if (left.length > 0) {
+    parts.push(`${left.length} could not be read at all and keep var(--variableid-…) (${left.slice(0, 4).join(', ')}${left.length > 4 ? ', …' : ''}) — re-point them in Figma`)
+  }
+  return parts.length > 0 ? parts.join('; ') : undefined
 }
 
 export interface ResolvedVariableValue {

@@ -371,8 +371,12 @@
     if ("color" in record3) aliasIdsOf(record3.color, into);
     if ("opacity" in record3) aliasIdsOf(record3.opacity, into);
   }
-  async function readAliasTargets(known) {
+  async function readAliasTargets(known, limits = {}) {
     var _a;
+    const started = Date.now();
+    let unresolved = 0;
+    const lookupMs = limits.lookupMs;
+    const within = (work) => lookupMs === void 0 ? work : Promise.race([work, new Promise((resolve2) => setTimeout(() => resolve2(null), lookupMs))]);
     const variableIds = new Set(known.variables.map((variable) => variable.id));
     const collectionIds = new Set(known.collections.map((collection) => collection.id));
     const collections = [];
@@ -387,13 +391,20 @@
       for (const id of wanted) {
         if (variableIds.has(id)) continue;
         variableIds.add(id);
+        if (limits.budgetMs !== void 0 && Date.now() - started > limits.budgetMs) {
+          unresolved++;
+          continue;
+        }
         let variable = null;
         try {
-          variable = await figma.variables.getVariableByIdAsync(id);
+          variable = await within(figma.variables.getVariableByIdAsync(id));
         } catch (e) {
           variable = null;
         }
-        if (!variable) continue;
+        if (!variable) {
+          unresolved++;
+          continue;
+        }
         const entry = toVariableEntry(variable);
         next.push(entry);
         if (!collectionIds.has(entry.collectionId)) {
@@ -418,7 +429,7 @@
       variables.push(...next);
       frontier = next;
     }
-    return { collections, variables };
+    return __spreadValues({ collections, variables }, unresolved > 0 ? { unresolved } : {});
   }
   var LIBRARY_IMPORT_CONCURRENCY = 8;
   async function readLibraryVariables(options = {}) {
@@ -504,6 +515,70 @@
     const [local, library] = await Promise.all([readLocalVariables(), readLibraryVariables(options)]);
     const merged = foldSplitThemeCollections(mergeSnapshots(local, library), options.collectionMerges);
     return __spreadValues(__spreadValues(__spreadValues({}, merged), library.nextOffset === void 0 ? {} : { nextOffset: library.nextOffset }), library.stoppedOn === void 0 ? {} : { stoppedOn: library.stoppedOn });
+  }
+  async function settleUnreachedAliases(variables, known, budgetMs = 1e4) {
+    const started = Date.now();
+    const settled = [];
+    const left = [];
+    const unreached = (value2) => isVariableAlias(value2) && !known.has(value2.id);
+    let layers = null;
+    const consumers = /* @__PURE__ */ new Map();
+    const consumerFor = (collectionId, modeId, defaultModeId) => {
+      var _a;
+      const key = `${collectionId}|${modeId}`;
+      if (!consumers.has(key)) {
+        const modesOf2 = (node) => {
+          var _a2;
+          return (_a2 = node.resolvedVariableModes) != null ? _a2 : {};
+        };
+        layers != null ? layers : layers = figma.currentPage.children.slice(0, 400);
+        const found = layers.find((node) => {
+          const mode = modesOf2(node)[collectionId];
+          return mode === modeId || mode === void 0 && modeId === defaultModeId;
+        });
+        consumers.set(key, found != null ? found : null);
+      }
+      return (_a = consumers.get(key)) != null ? _a : null;
+    };
+    const out = [];
+    for (const entry of variables) {
+      const modes = Object.keys(entry.valuesByMode).filter((modeId) => unreached(entry.valuesByMode[modeId]));
+      if (modes.length === 0) {
+        out.push(entry);
+        continue;
+      }
+      const variable = Date.now() - started > budgetMs ? null : await figma.variables.getVariableByIdAsync(entry.id).catch(() => null);
+      const collection = variable ? await figma.variables.getVariableCollectionByIdAsync(entry.collectionId).catch(() => null) : null;
+      const valuesByMode = __spreadValues({}, entry.valuesByMode);
+      let missed = false;
+      for (const modeId of modes) {
+        const consumer = variable && collection ? consumerFor(collection.id, modeId, collection.defaultModeId) : null;
+        let value2 = null;
+        if (consumer && variable) {
+          try {
+            value2 = variable.resolveForConsumer(consumer).value;
+          } catch (e) {
+            value2 = null;
+          }
+        }
+        if (value2 === null || value2 === void 0 || isVariableAlias(value2)) missed = true;
+        else valuesByMode[modeId] = value2;
+      }
+      if (missed) left.push(entry.name);
+      if (modes.some((modeId) => valuesByMode[modeId] !== entry.valuesByMode[modeId])) settled.push(entry.name);
+      out.push(__spreadProps(__spreadValues({}, entry), { valuesByMode }));
+    }
+    return { variables: out, settled, left };
+  }
+  function unreachedAliasNote(settled, left) {
+    const parts = [];
+    if (settled.length > 0) {
+      parts.push(`${settled.length} token${settled.length === 1 ? "" : "s"} point into a library that does not hand its variables to this file (${settled.slice(0, 4).join(", ")}${settled.length > 4 ? ", \u2026" : ""}) \u2014 their values were read from this file as its canvas shows them`);
+    }
+    if (left.length > 0) {
+      parts.push(`${left.length} could not be read at all and keep var(--variableid-\u2026) (${left.slice(0, 4).join(", ")}${left.length > 4 ? ", \u2026" : ""}) \u2014 re-point them in Figma`);
+    }
+    return parts.length > 0 ? parts.join("; ") : void 0;
   }
   function isVariableAlias(value2) {
     return typeof value2 === "object" && value2 !== null && "type" in value2 && value2.type === "VARIABLE_ALIAS";
@@ -1128,18 +1203,30 @@
     var _a;
     return (_a = ordered.find((theme) => theme !== defaultTheme && /dark|night/i.test(theme))) != null ? _a : null;
   }
-  function group(tree, ordered) {
+  function nativeReader(source) {
+    const byName = /* @__PURE__ */ new Map();
+    for (const leaf of leaves(source)) byName.set(leaf.path.join("."), leaf);
+    return (leaf, theme) => {
+      var _a;
+      const own = (_a = byName.get(leaf.path.join("."))) != null ? _a : leaf;
+      const { value: value2, chain } = followAliases(byName, own, valueForTheme(own.token, theme), theme);
+      const witness = unitWitness(chain);
+      const kind = tokenKind(witness.token, witness.path);
+      return { value: value2, kind, percent: kind === "opacity" && typeof value2 === "number" && isOpacityPercent(witness.token, value2) };
+    };
+  }
+  function group(tree, ordered, source) {
+    const read = nativeReader(source);
     const shared = [];
     const themed = [];
     for (const leaf of leaves(tree)) {
       const values = {};
-      for (const theme of ordered) values[theme] = valueForTheme(leaf.token, theme);
+      for (const theme of ordered) values[theme] = read(leaf, theme);
       const distinct = new Set(ordered.map((theme) => JSON.stringify(values[theme])));
       const codeSyntax = codeSyntaxOf(leaf.token);
       const entry = __spreadValues({
         path: leaf.path,
-        type: leaf.token.$type,
-        kind: tokenKind(leaf.token, leaf.path)
+        type: leaf.token.$type
       }, codeSyntax ? { codeSyntax } : {});
       if (distinct.size <= 1) shared.push(__spreadProps(__spreadValues({}, entry), { value: values[ordered[0]] }));
       else themed.push(__spreadProps(__spreadValues({}, entry), { values }));
@@ -1147,12 +1234,13 @@
     return { shared, themed };
   }
   var HEADER = "Generated by AllCrew Figma Workspace - edit the Figma variables, not this file.";
-  function toColorSets(tree, ordered, defaultTheme) {
+  function toColorSets(tree, ordered, defaultTheme, source = tree) {
     const dark = darkThemeOf(ordered, defaultTheme);
+    const read = nativeReader(source);
     const files = {};
     for (const leaf of leaves(tree)) {
       if (leaf.token.$type !== "color") continue;
-      const light = parseColor(valueForTheme(leaf.token, defaultTheme));
+      const light = parseColor(read(leaf, defaultTheme).value);
       if (!light) continue;
       const entry = (color, appearance) => __spreadProps(__spreadValues({
         idiom: "universal"
@@ -1168,7 +1256,7 @@
         }
       });
       const colors = [entry(light, null)];
-      const darkColor = dark ? parseColor(valueForTheme(leaf.token, dark)) : null;
+      const darkColor = dark ? parseColor(read(leaf, dark).value) : null;
       if (darkColor && !sameColor(light, darkColor)) colors.push(entry(darkColor, "dark"));
       const name = varName(leaf.path);
       files[`Assets.xcassets/${name}.colorset/Contents.json`] = JSON.stringify(
@@ -1179,16 +1267,17 @@
     }
     return files;
   }
-  function toAndroidColors(tree, ordered, defaultTheme) {
+  function toAndroidColors(tree, ordered, defaultTheme, source = tree) {
     const dark = darkThemeOf(ordered, defaultTheme);
+    const read = nativeReader(source);
     const rows = (theme, changedOnly = false) => {
       const out = [];
       for (const leaf of leaves(tree)) {
         if (leaf.token.$type !== "color") continue;
-        const color = parseColor(valueForTheme(leaf.token, theme));
+        const color = parseColor(read(leaf, theme).value);
         if (!color) continue;
         if (changedOnly) {
-          const base = parseColor(valueForTheme(leaf.token, defaultTheme));
+          const base = parseColor(read(leaf, defaultTheme).value);
           if (base && sameColor(base, color)) continue;
         }
         out.push(
@@ -1210,31 +1299,38 @@ ${lines.join("\n")}
     if (night.length > 0) files["res/values-night/colors.xml"] = document(night);
     return files;
   }
-  function swiftValue(entry, value2) {
+  function nativeNumber(resolved, value2) {
+    return resolved.percent ? value2 / 100 : value2;
+  }
+  function swiftValue(entry, resolved) {
+    const { value: value2, kind } = resolved;
     if (entry.type === "color") {
       const color = parseColor(value2);
       if (!color) return null;
       return `Color(.sRGB, red: ${round2(color.r / 255)}, green: ${round2(color.g / 255)}, blue: ${round2(color.b / 255)}, opacity: ${round2(color.a)})`;
     }
     if (typeof value2 === "number") {
-      if (entry.kind === "opacity") return `${round2(opacityFraction(value2), 4)}`;
-      return isLengthKind(entry.kind, value2) ? `CGFloat(${round2(value2, 4)})` : `${round2(value2, 4)}`;
+      const number2 = nativeNumber(resolved, value2);
+      return isLengthKind(kind, number2) ? `CGFloat(${round2(number2, 4)})` : `${round2(number2, 4)}`;
     }
     if (typeof value2 === "boolean") return String(value2);
+    if (isAliasValue(value2)) return null;
     return JSON.stringify(cssValue(value2, entry.path));
   }
-  function kotlinValue(entry, value2) {
+  function kotlinValue(entry, resolved) {
+    const { value: value2, kind } = resolved;
     if (entry.type === "color") {
       const color = parseColor(value2);
       if (!color) return null;
       return `Color(0x${toArgbHex(color).slice(1)})`;
     }
     if (typeof value2 === "number") {
-      if (entry.kind === "opacity") return `${round2(opacityFraction(value2), 4)}f`;
-      if (!isLengthKind(entry.kind, value2)) return `${round2(value2, 4)}f`;
-      return isTextMetricKind(entry.kind) ? `${round2(value2, 4)}.sp` : `${round2(value2, 4)}.dp`;
+      const number2 = nativeNumber(resolved, value2);
+      if (!isLengthKind(kind, number2)) return `${round2(number2, 4)}f`;
+      return isTextMetricKind(kind) ? `${round2(number2, 4)}.sp` : `${round2(number2, 4)}.dp`;
     }
     if (typeof value2 === "boolean") return String(value2);
+    if (isAliasValue(value2)) return null;
     return JSON.stringify(cssValue(value2, entry.path));
   }
   function block(indent2, entries, declare) {
@@ -1247,8 +1343,8 @@ ${lines.join("\n")}
     const joined = parts.map((part) => part[0].toUpperCase() + part.slice(1)).join("");
     return /^[0-9]/.test(joined) || joined === "" ? `Theme${joined}` : joined;
   }
-  function toTokensSwift(tree, ordered) {
-    const { shared, themed } = group(tree, ordered);
+  function toTokensSwift(tree, ordered, source = tree) {
+    const { shared, themed } = group(tree, ordered, source);
     const declare = (name, rendered) => `public static let ${name} = ${rendered}`;
     const render = (entry, value2) => {
       const rendered = swiftValue(entry, value2);
@@ -1272,8 +1368,8 @@ ${sharedLines.join("\n")}
 }
 `;
   }
-  function toTokensKotlin(tree, ordered) {
-    const { shared, themed } = group(tree, ordered);
+  function toTokensKotlin(tree, ordered, source = tree) {
+    const { shared, themed } = group(tree, ordered, source);
     const declare = (name, rendered2) => `val ${name} = ${rendered2}`;
     const render = (entry, value2) => {
       const rendered2 = kotlinValue(entry, value2);
@@ -1303,11 +1399,870 @@ ${sharedLines.join("\n")}
 }
 `;
   }
-  function toNativeFiles(tree, ordered, defaultTheme) {
-    return __spreadProps(__spreadValues(__spreadValues({}, toColorSets(tree, ordered, defaultTheme)), toAndroidColors(tree, ordered, defaultTheme)), {
-      "Tokens.swift": toTokensSwift(tree, ordered),
-      "Tokens.kt": toTokensKotlin(tree, ordered)
+  function toNativeFiles(tree, ordered, defaultTheme, source = tree) {
+    return __spreadProps(__spreadValues(__spreadValues({}, toColorSets(tree, ordered, defaultTheme, source)), toAndroidColors(tree, ordered, defaultTheme, source)), {
+      "Tokens.swift": toTokensSwift(tree, ordered, source),
+      "Tokens.kt": toTokensKotlin(tree, ordered, source)
     });
+  }
+
+  // src/tokens/theme-axes.ts
+  function parseThemeAxes(raw) {
+    const axes = [];
+    for (const part of String(raw != null ? raw : "").split(/[;\n]+/)) {
+      const separator = part.search(/[:=]/);
+      if (separator === -1) continue;
+      const attribute = cleanAttribute(part.slice(0, separator));
+      const values = part.slice(separator + 1).split(",").map((value2) => value2.trim()).filter((value2) => value2 !== "");
+      if (attribute && values.length > 0) axes.push({ attribute, values });
+    }
+    return axes;
+  }
+  function cleanAttribute(raw) {
+    return String(raw).trim().replace(/[^A-Za-z0-9_-]/g, "");
+  }
+  var isObject = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2);
+  function normalizeThemeAxesSpec(raw) {
+    var _a;
+    const problems = [];
+    if (raw === void 0 || raw === null || raw === "") return { spec: null, problems };
+    if (typeof raw === "string") {
+      const axes2 = parseThemeAxes(raw);
+      if (axes2.length === 0) return { spec: null, problems: raw.trim() ? ['theme axes read as "attribute: value, value; \u2026" \u2014 nothing parsed'] : [] };
+      return {
+        spec: { axes: axes2.map((axis, i) => __spreadProps(__spreadValues({ attribute: axis.attribute }, i === axes2.length - 1 ? { nested: true } : {}), { values: axis.values.map((label3) => ({ label: label3 })) })) },
+        problems
+      };
+    }
+    if (!isObject(raw) || !Array.isArray(raw.axes)) return { spec: null, problems: ["theme axes must be a string or { axes: [...] }"] };
+    const axes = [];
+    for (const [i, entry] of raw.axes.entries()) {
+      if (!isObject(entry)) {
+        problems.push(`axes[${i}] must be an object`);
+        continue;
+      }
+      const attribute = cleanAttribute(String((_a = entry.attribute) != null ? _a : ""));
+      if (!attribute) problems.push(`axes[${i}] needs an attribute`);
+      const source = entry.source === "collections" || entry.source === "names" ? entry.source : entry.source === void 0 || entry.source === "modes" ? "modes" : null;
+      if (source === null) problems.push(`axes[${i}].source must be "modes", "collections" or "names"`);
+      const values = [];
+      for (const [j, v] of (Array.isArray(entry.values) ? entry.values : []).entries()) {
+        const value2 = typeof v === "string" ? { label: v } : isObject(v) ? v : null;
+        const label3 = value2 && typeof value2.label === "string" ? value2.label.trim() : "";
+        if (!label3) {
+          problems.push(`axes[${i}].values[${j}] needs a label`);
+          continue;
+        }
+        values.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          label: label3
+        }, typeof value2.value === "string" && value2.value.trim() ? { value: value2.value.trim() } : {}), value2.base === true ? { base: true } : {}), typeof value2.sameAs === "string" && value2.sameAs.trim() ? { sameAs: value2.sameAs.trim() } : {}), Array.isArray(value2.collections) && value2.collections.some((c) => typeof c === "string" && c.trim()) ? { collections: value2.collections.filter((c) => typeof c === "string" && c.trim() !== "").map((c) => c.trim()) } : {}));
+      }
+      if (values.length === 0) problems.push(`axes[${i}] (${attribute || "?"}) has no values`);
+      const shared = Array.isArray(entry.shared) ? entry.shared.filter((s) => typeof s === "string" && s.trim() !== "").map((s) => s.trim()) : [];
+      axes.push(__spreadValues(__spreadProps(__spreadValues(__spreadValues({
+        attribute
+      }, entry.nested === true ? { nested: true } : {}), source === "collections" || source === "names" ? { source } : {}), {
+        values
+      }), shared.length > 0 ? { shared } : {}));
+    }
+    if (axes.length < 1 || axes.length > 2) problems.push(`theme axes take one or two attributes, ${axes.length} given`);
+    if (axes.filter((axis) => axis.nested).length > 1) problems.push("only one attribute can be switched inside the page");
+    const pairs = (key) => {
+      const out = {};
+      if (raw[key] === void 0) return void 0;
+      if (!isObject(raw[key])) {
+        problems.push(`"${key}" must be an object`);
+        return void 0;
+      }
+      for (const [k, v] of Object.entries(raw[key])) {
+        if (typeof v === "string" && v.trim()) out[k] = v.trim();
+        else problems.push(`${key}["${k}"] must be a string`);
+      }
+      return Object.keys(out).length > 0 ? out : void 0;
+    };
+    const cells = pairs("cells");
+    const sameAs = pairs("sameAs");
+    const collections = Array.isArray(raw.collections) ? raw.collections.filter((c) => typeof c === "string" && c.trim() !== "").map((c) => c.trim()) : [];
+    if (problems.length > 0) return { spec: null, problems };
+    return { spec: __spreadValues(__spreadValues(__spreadValues({ axes }, collections.length > 0 ? { collections } : {}), cells ? { cells } : {}), sameAs ? { sameAs } : {}), problems };
+  }
+  function orderAxes(spec) {
+    var _a;
+    const inner = (_a = spec.axes.find((axis) => axis.nested)) != null ? _a : spec.axes[spec.axes.length - 1];
+    const outer = spec.axes.find((axis) => axis !== inner);
+    return { outer, inner };
+  }
+  var cellKey = (outer, inner) => `${outer}|${inner}`;
+  var same = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  var slugWords = (name) => name.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w !== "");
+  var holdsWords = (name, label3) => {
+    const words3 = slugWords(name);
+    const wanted = slugWords(label3);
+    return wanted.length > 0 && wanted.every((w) => words3.includes(w));
+  };
+  var sameSlug = (a, b) => slugWords(a).join("-") === slugWords(b).join("-");
+  function foldThemeSources(graph, spec) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    if (spec.axes.every((axis) => {
+      var _a2;
+      return ((_a2 = axis.source) != null ? _a2 : "modes") === "modes";
+    })) return null;
+    const { outer, inner } = orderAxes(spec);
+    const axes = outer ? [outer, inner] : [inner];
+    const collections = (_a = graph.collections) != null ? _a : [];
+    const variables = (_b = graph.variables) != null ? _b : [];
+    const problems = [];
+    const realOf = (axis) => axis.values.filter((v) => !v.sameAs);
+    const baseOf = (axis) => {
+      var _a2;
+      return (_a2 = realOf(axis).find((v) => v.base)) != null ? _a2 : realOf(axis)[0];
+    };
+    const markerIn = (axis, name2) => name2.split("/").findIndex((seg) => realOf(axis).some((v) => sameSlug(seg, v.label)));
+    const found = Object.fromEntries(axes.map((axis) => [axis.attribute, Object.fromEntries(axis.values.map((v) => [v.label, []]))]));
+    const collAxes = axes.filter((axis) => axis.source === "collections");
+    const nameAxes = axes.filter((axis) => axis.source === "names");
+    const held = /* @__PURE__ */ new Map();
+    if (collAxes.length > 0) {
+      for (const c of collections) {
+        const at = /* @__PURE__ */ new Map();
+        for (const axis of collAxes) {
+          if (((_c = axis.shared) != null ? _c : []).some((n) => same(n, c.name))) {
+            at.set(axis, "*");
+            continue;
+          }
+          const hits = realOf(axis).filter((v) => v.collections ? v.collections.some((n) => same(n, c.name)) : holdsWords(c.name, v.label));
+          const longest = hits.filter((h) => slugWords(h.label).length === Math.max(...hits.map((x) => slugWords(x.label).length)));
+          if (longest.length > 1) problems.push(`the collection "${c.name}" matches more than one value of ${axis.attribute} (${longest.map((h) => h.label).join(", ")})`);
+          if (longest.length === 1) at.set(axis, longest[0].label);
+        }
+        if (at.size === collAxes.length) held.set(c, at);
+      }
+      for (const axis of collAxes) {
+        for (const name2 of [...(_d = axis.shared) != null ? _d : [], ...realOf(axis).flatMap((v) => {
+          var _a2;
+          return (_a2 = v.collections) != null ? _a2 : [];
+        })]) {
+          if (!collections.some((c) => same(c.name, name2))) problems.push(`no collection is named "${name2}"`);
+        }
+        for (const v of realOf(axis)) {
+          const holders = [...held].filter(([, at]) => at.get(axis) === v.label).map(([c]) => c.name);
+          if (holders.length === 0 && !((_e = v.collections) != null ? _e : []).length) problems.push(`no collection's name contains "${v.label}" (${axis.attribute})`);
+          found[axis.attribute][v.label] = holders;
+        }
+      }
+    } else {
+      const named = ((_f = spec.collections) == null ? void 0 : _f.length) ? spec.collections : null;
+      for (const name2 of named != null ? named : []) if (!collections.some((c) => same(c.name, name2))) problems.push(`no collection is named "${name2}"`);
+      for (const c of collections) {
+        const takes = named ? named.some((n) => same(n, c.name)) : variables.some((v) => v.collectionId === c.id && nameAxes.some((axis) => markerIn(axis, v.name) !== -1));
+        if (takes) held.set(c, /* @__PURE__ */ new Map());
+      }
+    }
+    if (problems.length === 0 && held.size === 0) problems.push("no collection holds these themes");
+    if (problems.length > 0) return { problems: [...new Set(problems)] };
+    const instances = /* @__PURE__ */ new Map();
+    const collectionId = "axis:themes";
+    const mergedId = (key) => `${collectionId}:${key}`;
+    const repoint2 = /* @__PURE__ */ new Map();
+    const outside = [];
+    for (const [c, at] of held) {
+      const own = variables.filter((v) => v.collectionId === c.id);
+      for (const m of c.modes) {
+        const fixed2 = axes.map((axis) => {
+          if (axis.source === "collections") return at.get(axis);
+          if (axis.source === "names") return null;
+          const hits = realOf(axis).filter((v) => holdsWords(m.name, v.label));
+          if (hits.length === 1) {
+            found[axis.attribute][hits[0].label].push(`${c.name} / ${m.name}`);
+            return hits[0].label;
+          }
+          return c.modes.length === 1 ? "*" : void 0;
+        });
+        if (fixed2.some((x) => x === void 0)) {
+          outside.push(`${c.name} / ${m.name}`);
+          continue;
+        }
+        for (const v of own) {
+          let segments = v.name.split("/");
+          const coords = fixed2.map((x, n) => {
+            if (x !== null) return x;
+            const axis = axes[n];
+            const k = segments.findIndex((seg) => realOf(axis).some((val) => sameSlug(seg, val.label)));
+            if (k === -1) return "*";
+            const label3 = realOf(axis).find((val) => sameSlug(segments[k], val.label)).label;
+            segments = segments.filter((_, j) => j !== k);
+            return label3;
+          });
+          if (segments.length === 0) continue;
+          const key = segments.join("/");
+          if (!instances.has(key)) instances.set(key, []);
+          instances.get(key).push(__spreadValues(__spreadValues({ key, coords, value: v.valuesByMode[m.modeId], type: v.resolvedType }, v.scopes ? { scopes: v.scopes } : {}), v.codeSyntax ? { codeSyntax: v.codeSyntax } : {}));
+          repoint2.set(v.id, mergedId(key));
+        }
+      }
+    }
+    for (const axis of axes.filter((a) => {
+      var _a2;
+      return ((_a2 = a.source) != null ? _a2 : "modes") === "modes";
+    })) {
+      for (const v of realOf(axis)) {
+        if (found[axis.attribute][v.label].length === 0) problems.push(`no mode's name contains "${v.label}" (${axis.attribute})`);
+      }
+    }
+    for (const axis of nameAxes) {
+      for (const v of realOf(axis)) {
+        const marked = variables.filter((x) => [...held.keys()].some((c) => c.id === x.collectionId) && x.name.split("/").some((seg) => sameSlug(seg, v.label))).length;
+        const base = v === baseOf(axis);
+        found[axis.attribute][v.label] = marked > 0 ? [`${marked} variable(s) marked "${v.label}"`] : base ? ["the unmarked variables"] : [];
+        if (marked === 0 && !base) problems.push(`no variable's name has "${v.label}" as a segment (${axis.attribute})`);
+      }
+    }
+    if (problems.length > 0) return { problems };
+    const resolve2 = (axis, label3) => {
+      var _a2, _b2;
+      const seen2 = /* @__PURE__ */ new Set();
+      let current2 = label3;
+      while (!seen2.has(current2)) {
+        seen2.add(current2);
+        const value2 = axis.values.find((v) => v.label === current2);
+        if (!(value2 == null ? void 0 : value2.sameAs)) return current2;
+        current2 = (_b2 = (_a2 = axis.values.find((v) => same(v.label, value2.sameAs))) == null ? void 0 : _a2.label) != null ? _b2 : current2;
+      }
+      return current2;
+    };
+    const outerLabels = outer ? outer.values.map((v) => v.label) : ["_"];
+    const innerLabels = inner.values.map((v) => v.label);
+    const outerReal = outer ? realOf(outer).map((v) => v.label) : ["_"];
+    const innerReal = realOf(inner).map((v) => v.label);
+    const outerBase = outer ? baseOf(outer).label : "_";
+    const innerBase = baseOf(inner).label;
+    const pick = (list2, o, i) => {
+      let best;
+      let score = -1;
+      for (const inst2 of list2) {
+        const [co, ci] = outer ? inst2.coords : ["_", inst2.coords[0]];
+        if (co !== o && co !== "*" || ci !== i && ci !== "*") continue;
+        const here = (co === o ? 1 : 0) + (ci === i ? 1 : 0);
+        if (here > score) {
+          best = inst2;
+          score = here;
+        }
+      }
+      return best;
+    };
+    const lookup = (list2, o, i) => {
+      const chain = [
+        [o, i],
+        [outerBase, i],
+        ...outerReal.map((x) => [x, i]),
+        [o, innerBase],
+        [outerBase, innerBase],
+        ...outerReal.flatMap((x) => innerReal.map((y) => [x, y]))
+      ];
+      for (const [x, y] of chain) {
+        const inst2 = pick(list2, x, y);
+        if (inst2) return inst2;
+      }
+      return void 0;
+    };
+    const modeName = (o, i) => outer ? `${o} ${i}` : i;
+    const modeId = (o, i) => `${collectionId}:${modeName(o, i)}`;
+    const conflicts = [];
+    const aim = (value2) => {
+      if (isObject(value2) && value2.type === "VARIABLE_ALIAS" && typeof value2.id === "string" && repoint2.has(value2.id)) return __spreadProps(__spreadValues({}, value2), { id: repoint2.get(value2.id) });
+      if (isObject(value2) && ("color" in value2 || "opacity" in value2)) return Object.fromEntries(Object.entries(value2).map(([k, v]) => [k, aim(v)]));
+      return value2;
+    };
+    const merged = [];
+    for (const [key, list2] of instances) {
+      const types = new Set(list2.map((inst2) => inst2.type));
+      if (types.size > 1) {
+        conflicts.push(key);
+        continue;
+      }
+      const valuesByMode = {};
+      for (const o of outerLabels) {
+        for (const i of innerLabels) {
+          const inst2 = lookup(list2, outer ? resolve2(outer, o) : "_", resolve2(inner, i));
+          if (inst2) valuesByMode[modeId(o, i)] = aim(inst2.value);
+        }
+      }
+      const first = list2[0];
+      merged.push(__spreadValues(__spreadValues({ id: mergedId(key), name: key, collectionId, resolvedType: first.type, valuesByMode }, first.scopes ? { scopes: first.scopes } : {}), first.codeSyntax ? { codeSyntax: first.codeSyntax } : {}));
+    }
+    const taken = new Set(collections.filter((c) => !held.has(c)).map((c) => c.name.toLowerCase()));
+    let name = "Themes";
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `Themes ${n}`;
+    const orderedOuter = [outerBase, ...outerLabels.filter((o) => o !== outerBase)];
+    const orderedInner = [innerBase, ...innerLabels.filter((i) => i !== innerBase)];
+    const mergedCollection = {
+      id: collectionId,
+      name,
+      defaultModeId: modeId(outerBase, innerBase),
+      modes: orderedOuter.flatMap((o) => orderedInner.map((i) => ({ modeId: modeId(o, i), name: modeName(o, i) })))
+    };
+    const gone = new Set([...held.keys()].map((c) => c.id));
+    const kept2 = variables.filter((v) => !gone.has(v.collectionId)).map((v) => __spreadProps(__spreadValues({}, v), { valuesByMode: Object.fromEntries(Object.entries(v.valuesByMode).map(([id, value2]) => [id, aim(value2)])) }));
+    const textStyles = (_g = graph.textStyles) == null ? void 0 : _g.map(
+      (style) => style.boundVariables ? __spreadProps(__spreadValues({}, style), { boundVariables: Object.fromEntries(Object.entries(style.boundVariables).map(([k, id]) => {
+        var _a2;
+        return [k, (_a2 = repoint2.get(id)) != null ? _a2 : id];
+      })) }) : style
+    );
+    const cells = {};
+    for (const o of outerLabels) for (const i of innerLabels) cells[cellKey(o, i)] = modeName(o, i);
+    const notes = [];
+    if (outside.length > 0) notes.push(`modes outside the grid, left out: ${outside.join(", ")}`);
+    if (conflicts.length > 0) notes.push(`left out, a different type in different themes: ${conflicts.join(", ")}`);
+    return {
+      graph: __spreadValues(__spreadProps(__spreadValues({}, graph), {
+        collections: [...collections.filter((c) => !gone.has(c.id)), mergedCollection],
+        variables: [...kept2, ...merged]
+      }), textStyles ? { textStyles } : {}),
+      collection: name,
+      cells,
+      consumed: [...held.keys()].map((c) => c.name),
+      found,
+      notes
+    };
+  }
+  var THEME_WORD = /^(light|dark|night|day|dim|contrast|high|low|default)$/i;
+  var SHARED_NAME = /(^|\W)(shared|common|global|base)(\W|$)/i;
+  var wordsOf = (name) => name.split(/[\s_\-–—/()]+/).filter((w) => w !== "");
+  function modeGrid(modes) {
+    const split = modes.map(wordsOf);
+    if (modes.length < 4 || split.some((w) => w.length !== 2)) return null;
+    const first = [...new Set(split.map((w) => w[0]))];
+    const second = [...new Set(split.map((w) => w[1]))];
+    const pairs = new Set(split.map((w) => `${w[0]}|${w[1]}`));
+    return first.length > 1 && second.length > 1 && first.length * second.length === modes.length && pairs.size === modes.length ? [first, second] : null;
+  }
+  var themeish = (values) => values.filter((v) => wordsOf(v).some((w) => THEME_WORD.test(w))).length * 2 >= values.length;
+  function detectThemeAxes(collections, themesRole) {
+    var _a, _b, _c;
+    const multi = collections.filter((c) => c.modes.length >= 2 && !/^breakpoints?$/i.test(c.name.trim()));
+    const single2 = collections.filter((c) => c.modes.length === 1);
+    const themeAxis = (labels, extra = {}) => __spreadProps(__spreadValues({ attribute: "data-theme" }, extra), { values: labels.map((label3) => ({ label: label3 })) });
+    const bySet = /* @__PURE__ */ new Map();
+    for (const c of multi) {
+      const key = c.modes.map((m) => m.toLowerCase()).sort().join("|");
+      bySet.set(key, [...(_a = bySet.get(key)) != null ? _a : [], c]);
+    }
+    const families = [...bySet.values()].filter((group2) => group2.length >= 2 && themeish(group2[0].modes));
+    if (families.length > 0) {
+      const family = families.sort((a, b) => b.length - a.length)[0];
+      const shared = family.filter((c) => SHARED_NAME.test(c.name));
+      const products = family.filter((c) => !shared.includes(c)).sort((a, b) => b.variables - a.variables);
+      if (products.length >= 2) {
+        return {
+          spec: {
+            axes: [
+              __spreadValues({
+                attribute: "data-product",
+                source: "collections",
+                values: products.map((c, n) => __spreadValues({ label: c.name }, n === 0 ? { base: true } : {}))
+              }, shared.length > 0 ? { shared: shared.map((c) => c.name) } : {}),
+              themeAxis(family[0].modes)
+            ]
+          },
+          why: `${products.map((c) => c.name).join(", ")} share the modes ${family[0].modes.join(", ")} \u2014 a product each`
+        };
+      }
+    }
+    const cellNamed = modeGrid(single2.map((c) => c.name));
+    if (cellNamed) {
+      const [a, b] = themeish(cellNamed[0]) && !themeish(cellNamed[1]) ? [cellNamed[1], cellNamed[0]] : cellNamed;
+      if (themeish(b)) {
+        return {
+          spec: { axes: [{ attribute: "data-product", source: "collections", values: a.map((label3) => ({ label: label3 })) }, themeAxis(b, { source: "collections" })] },
+          why: `one-mode collections named ${a.length} \xD7 ${b.length} (${a[0]} ${b[0]} \u2026) \u2014 product and theme from their names`
+        };
+      }
+    }
+    for (const plain3 of single2) {
+      const stem = slugWords(plain3.name);
+      const variants = single2.filter((c) => {
+        if (c === plain3) return false;
+        const words3 = slugWords(c.name);
+        const extra = words3.filter((w) => !stem.includes(w));
+        return stem.every((w) => words3.includes(w)) && extra.length > 0 && extra.every((w) => THEME_WORD.test(w));
+      });
+      if (variants.length === 0) continue;
+      const labels = variants.map((c) => c.name.split(/\s+/).filter((w) => THEME_WORD.test(w)).join(" ") || c.name);
+      const baseLabel = labels.some((l) => /light/i.test(l)) ? "Default" : "Light";
+      return {
+        spec: { axes: [{ attribute: "data-theme", source: "collections", values: [{ label: baseLabel, collections: [plain3.name], base: true }, ...labels.map((label3) => ({ label: label3 }))] }] },
+        why: `${plain3.name} beside ${variants.map((c) => c.name).join(", ")} \u2014 a theme per collection`
+      };
+    }
+    const role = themesRole ? multi.find((c) => c.name.trim().toLowerCase() === themesRole.trim().toLowerCase()) : void 0;
+    for (const c of role ? [role, ...multi.filter((m) => m !== role)] : multi) {
+      const grid = modeGrid(c.modes);
+      if (!grid) continue;
+      const [a, b] = themeish(grid[0]) && !themeish(grid[1]) ? [grid[1], grid[0]] : grid;
+      return {
+        spec: {
+          axes: [
+            { attribute: "data-product", values: a.map((label3) => ({ label: label3 })) },
+            themeAxis(b)
+          ]
+        },
+        why: `the ${c.modes.length} modes of ${c.name} read as ${a.length} \xD7 ${b.length}`
+      };
+    }
+    for (const c of collections) {
+      const marks = /* @__PURE__ */ new Map();
+      for (const name of (_b = c.names) != null ? _b : []) {
+        for (const seg of name.split("/")) if (THEME_WORD.test(seg.trim())) marks.set(seg.trim().toLowerCase(), ((_c = marks.get(seg.trim().toLowerCase())) != null ? _c : 0) + 1);
+      }
+      if (marks.size === 0) continue;
+      const words3 = [...marks.keys()].map((w) => w[0].toUpperCase() + w.slice(1)).filter((w) => !/^light$/i.test(w));
+      const labels = ["Light", ...words3];
+      return {
+        spec: { collections: [c.name], axes: [__spreadProps(__spreadValues({}, themeAxis(labels, { source: "names" })), { values: labels.map((label3, n) => __spreadValues({ label: label3 }, n === 0 ? { base: true } : {})) })] },
+        why: `variables in ${c.name} carry ${words3.join(", ")} in their names \u2014 unmarked ones are ${labels[0]}`
+      };
+    }
+    const themes = role != null ? role : [...multi].sort((x, y) => y.variables - x.variables)[0];
+    if (!themes) return null;
+    return {
+      spec: { axes: [themeAxis(themes.modes)] },
+      why: `the modes of ${themes.name} as one attribute`
+    };
+  }
+
+  // src/tokens/structure.ts
+  var isObject2 = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2);
+  var cleanAttr = (raw) => String(raw != null ? raw : "").trim().replace(/[^A-Za-z0-9_-]/g, "");
+  var same2 = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  var slug = (name) => varName([name]) || "";
+  var words2 = (name) => slug(name).split("-").filter((w) => w !== "");
+  function holds(name, label3) {
+    const have = words2(name);
+    const want = words2(label3);
+    if (want.length === 0) return false;
+    for (let at = 0; at + want.length <= have.length; at++) if (want.every((w, n) => have[at + n] === w)) return true;
+    return false;
+  }
+  var pathOf = (name) => name.split("/").map((s) => s.trim()).filter((s) => s !== "");
+  var underGroup = (segments, group2) => {
+    const prefix = pathOf(group2);
+    return prefix.length <= segments.length && prefix.every((seg, n) => same2(seg, segments[n]));
+  };
+  function normalizeStructure(raw) {
+    var _a, _b;
+    const problems = [];
+    if (raw === void 0 || raw === null || raw === "") return { structure: null, problems };
+    if (!isObject2(raw) || !Array.isArray(raw.collections)) return { structure: null, problems: ["the export structure must be { version: 1, collections: [...] }"] };
+    const collections = [];
+    const seen2 = /* @__PURE__ */ new Set();
+    for (const [i, entry] of raw.collections.entries()) {
+      if (!isObject2(entry)) {
+        problems.push(`collections[${i}] must be an object`);
+        continue;
+      }
+      const name = String((_a = entry.name) != null ? _a : "").trim();
+      if (!name) problems.push(`collections[${i}] needs a name`);
+      if (seen2.has(name.toLowerCase())) problems.push(`two output collections are named "${name}"`);
+      seen2.add(name.toLowerCase());
+      const as = entry.as === void 0 ? void 0 : ["tokens", "hidden", "files", "breakpoints"].find((k) => k === entry.as);
+      if (entry.as !== void 0 && !as) problems.push(`collections[${i}].as must be tokens, hidden, files or breakpoints`);
+      const axes = [];
+      for (const [j, axis] of (Array.isArray(entry.axes) ? entry.axes : []).entries()) {
+        if (!isObject2(axis)) {
+          problems.push(`collections[${i}].axes[${j}] must be an object`);
+          continue;
+        }
+        const attribute = cleanAttr(axis.attribute);
+        if (!attribute) problems.push(`collections[${i}].axes[${j}] needs an attribute`);
+        const values = [];
+        for (const [k, v] of (Array.isArray(axis.values) ? axis.values : []).entries()) {
+          const value2 = typeof v === "string" ? { label: v } : isObject2(v) ? v : null;
+          const label3 = value2 && typeof value2.label === "string" ? value2.label.trim() : "";
+          if (!label3) {
+            problems.push(`collections[${i}].axes[${j}].values[${k}] needs a label`);
+            continue;
+          }
+          values.push(__spreadValues(__spreadValues(__spreadValues({
+            label: label3
+          }, typeof value2.value === "string" && value2.value.trim() ? { value: value2.value.trim() } : {}), value2.base === true ? { base: true } : {}), typeof value2.sameAs === "string" && value2.sameAs.trim() ? { sameAs: value2.sameAs.trim() } : {}));
+        }
+        if (values.length === 0) problems.push(`collections[${i}].axes[${j}] (${attribute || "?"}) has no values`);
+        axes.push(__spreadProps(__spreadValues({ attribute }, axis.nested === true ? { nested: true } : {}), { values }));
+      }
+      const sources = [];
+      for (const [j, s] of (Array.isArray(entry.sources) ? entry.sources : []).entries()) {
+        if (!isObject2(s) || typeof s.collection !== "string" || !s.collection.trim()) {
+          problems.push(`collections[${i}].sources[${j}] needs a collection`);
+          continue;
+        }
+        const at = {};
+        if (s.at !== void 0) {
+          if (!isObject2(s.at)) problems.push(`collections[${i}].sources[${j}].at must be an object`);
+          else for (const [a, v] of Object.entries(s.at)) if (typeof v === "string" && v.trim()) at[cleanAttr(a)] = v.trim();
+        }
+        const modes = {};
+        if (s.modes !== void 0) {
+          if (!isObject2(s.modes)) problems.push(`collections[${i}].sources[${j}].modes must be an object`);
+          else {
+            for (const [mode, coords] of Object.entries(s.modes)) {
+              if (!isObject2(coords)) continue;
+              modes[mode] = {};
+              for (const [a, v] of Object.entries(coords)) if (typeof v === "string" && v.trim()) modes[mode][cleanAttr(a)] = v.trim();
+            }
+          }
+        }
+        sources.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+          collection: s.collection.trim()
+        }, typeof s.group === "string" && s.group.trim() ? { group: pathOf(s.group).join("/") } : {}), typeof s.to === "string" ? { to: pathOf(s.to).join("/") } : {}), Object.keys(at).length > 0 ? { at } : {}), Object.keys(modes).length > 0 ? { modes } : {}), s.hidden === true ? { hidden: true } : {}));
+      }
+      collections.push(__spreadProps(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
+        name
+      }, as ? { as } : {}), axes.length > 0 ? { axes } : {}), typeof entry.filesBy === "string" && entry.filesBy.trim() ? { filesBy: cleanAttr(entry.filesBy) } : {}), typeof entry.docRole === "string" && entry.docRole.trim() ? { docRole: entry.docRole.trim().toLowerCase() } : {}), {
+        sources
+      }));
+    }
+    const nested = collections.flatMap((c) => {
+      var _a2;
+      return ((_a2 = c.axes) != null ? _a2 : []).filter((a) => a.nested).map((a) => a.attribute);
+    });
+    if (new Set(nested).size > 1) problems.push(`only one attribute can be switched inside the page, ${[...new Set(nested)].join(" and ")} both are`);
+    const byAttr = /* @__PURE__ */ new Map();
+    for (const c of collections) {
+      for (const axis of (_b = c.axes) != null ? _b : []) {
+        const key = axis.values.map((v) => v.label.toLowerCase()).sort().join("|");
+        const before = byAttr.get(axis.attribute);
+        if (before !== void 0 && before !== key) problems.push(`the attribute ${axis.attribute} has different values in different collections`);
+        byAttr.set(axis.attribute, key);
+      }
+    }
+    if (problems.length > 0) return { structure: null, problems };
+    return { structure: { version: 1, collections }, problems };
+  }
+  function axisOf(axis) {
+    var _a, _b;
+    const real = axis.values.filter((v) => !v.sameAs);
+    return {
+      attribute: axis.attribute,
+      labels: axis.values.map((v) => v.label),
+      values: axis.values.map((v) => {
+        var _a2;
+        return ((_a2 = v.value) == null ? void 0 : _a2.replace(/[^A-Za-z0-9_-]/g, "")) || slug(v.label);
+      }),
+      base: ((_b = (_a = real.find((v) => v.base)) != null ? _a : real[0]) != null ? _b : axis.values[0]).label,
+      nested: axis.nested === true,
+      sameAs: Object.fromEntries(axis.values.filter((v) => v.sameAs).map((v) => [v.label, v.sameAs]))
+    };
+  }
+  function mergedAxes(collections) {
+    var _a;
+    const axes = /* @__PURE__ */ new Map();
+    for (const c of collections) {
+      for (const axis of (_a = c.axes) != null ? _a : []) {
+        const have = axes.get(axis.attribute);
+        if (have) {
+          if (axis.nested) have.nested = true;
+          continue;
+        }
+        axes.set(axis.attribute, axisOf(axis));
+      }
+    }
+    const list2 = [...axes.values()];
+    const nested = list2.find((a) => a.nested);
+    return nested ? [...list2.filter((a) => a !== nested), nested] : list2;
+  }
+  function packageAxes(structure) {
+    return mergedAxes(structure.collections.filter((c) => {
+      var _a;
+      return ((_a = c.as) != null ? _a : "tokens") === "tokens" || c.as === "hidden";
+    }));
+  }
+  function gridCells(axes) {
+    let cells = [[]];
+    for (const axis of axes) {
+      const ordered = [axis.base, ...axis.labels.filter((l) => l !== axis.base)];
+      cells = cells.flatMap((cell) => ordered.map((label3) => [...cell, label3]));
+    }
+    return cells;
+  }
+  function cellName(axes, cell) {
+    return axes.map((axis, n) => {
+      var _a;
+      return (_a = axis.values[axis.labels.findIndex((l) => same2(l, cell[n]))]) != null ? _a : slug(cell[n]);
+    }).join("-") || "default";
+  }
+  function materializeStructure(graph, structure) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    const inputs = (_a = graph.collections) != null ? _a : [];
+    const variables = (_b = graph.variables) != null ? _b : [];
+    const coordAxes = mergedAxes(structure.collections.filter((c) => {
+      var _a2;
+      return ((_a2 = c.as) != null ? _a2 : "tokens") !== "breakpoints";
+    }));
+    const axes = packageAxes(structure);
+    const problems = [];
+    const notes = [];
+    const placement = { collections: {}, modes: {}, groups: {} };
+    const findInput = (name) => inputs.find((c) => same2(c.name, name));
+    const roles = { hidden: [], breakpoints: [], products: [], themes: [] };
+    const docRoles = {};
+    const fileAxes = {};
+    for (const out of structure.collections) {
+      for (const s of out.sources) {
+        if (!findInput(s.collection)) problems.push(`"${out.name}" reads the collection "${s.collection}", which this file does not have`);
+        for (const [attr, label3] of Object.entries((_c = s.at) != null ? _c : {})) {
+          const axis = coordAxes.find((a) => a.attribute === attr);
+          if (!axis) problems.push(`"${out.name}" places ${s.collection} on ${attr}, which no collection declares as an axis`);
+          else if (!axis.labels.some((l) => same2(l, label3))) problems.push(`${attr} has no value "${label3}" (it has ${axis.labels.join(", ")})`);
+        }
+      }
+    }
+    if (problems.length > 0) return { graph, axes, roles, docRoles, fileAxes, placement, notes, problems };
+    const outCollections = [];
+    const outVariables = [];
+    const repoint2 = /* @__PURE__ */ new Map();
+    const consumed = /* @__PURE__ */ new Set();
+    const inputIndex = new Map(variables.map((v, n) => [v.id, n]));
+    const order = /* @__PURE__ */ new Map();
+    const place = (id, index2) => {
+      var _a2;
+      return order.set(id, Math.min((_a2 = order.get(id)) != null ? _a2 : Infinity, index2));
+    };
+    const coordsOf = (s, input, modeName) => {
+      var _a2, _b2;
+      const explicit = (_b2 = Object.entries((_a2 = s.modes) != null ? _a2 : {}).find(([m]) => same2(m, modeName))) == null ? void 0 : _b2[1];
+      let readAny = false;
+      let needsRead = false;
+      const out = coordAxes.map((axis) => {
+        var _a3, _b3, _c2;
+        const fixed2 = (_a3 = s.at) == null ? void 0 : _a3[axis.attribute];
+        if (fixed2) return (_b3 = axis.labels.find((l) => same2(l, fixed2))) != null ? _b3 : fixed2;
+        const given = explicit == null ? void 0 : explicit[axis.attribute];
+        if (given) {
+          readAny = true;
+          return (_c2 = axis.labels.find((l) => same2(l, given))) != null ? _c2 : given;
+        }
+        if (input.modes.length < 2) return "*";
+        needsRead = true;
+        const hits = axis.labels.filter((l) => holds(modeName, l));
+        const longest = hits.filter((h) => words2(h).length === Math.max(...hits.map((x) => words2(x).length)));
+        if (longest.length === 1) readAny = true;
+        return longest.length === 1 ? longest[0] : longest.length > 1 ? "?" : "*";
+      });
+      if (out.includes("?")) return null;
+      if (needsRead && !readAny) return null;
+      return out;
+    };
+    const fill2 = (list2, cell) => {
+      const resolved = cell.map((label3, n) => {
+        const seen2 = /* @__PURE__ */ new Set();
+        let at = label3;
+        while (!seen2.has(at) && coordAxes[n].sameAs[at]) {
+          seen2.add(at);
+          at = coordAxes[n].sameAs[at];
+        }
+        return at;
+      });
+      const matching = (target) => {
+        let best;
+        let score = -1;
+        for (const inst2 of list2) {
+          if (!inst2.coords.every((c, n) => c === "*" || same2(c, target[n]))) continue;
+          const s = inst2.coords.filter((c) => c !== "*").length * 10 + inst2.specificity;
+          if (s > score) {
+            best = inst2;
+            score = s;
+          }
+        }
+        return best;
+      };
+      const candidates = [resolved];
+      for (let mask = 1; mask < 1 << coordAxes.length; mask++) candidates.push(resolved.map((c, n) => mask & 1 << n ? coordAxes[n].base : c));
+      for (const target of candidates) {
+        const inst2 = matching(target);
+        if (inst2) return inst2;
+      }
+      return list2[0];
+    };
+    for (const out of structure.collections) {
+      const kind = (_d = out.as) != null ? _d : "tokens";
+      if (out.docRole) docRoles[out.name] = out.docRole;
+      if (kind === "breakpoints") {
+        for (const s of out.sources) {
+          const input = findInput(s.collection);
+          if (consumed.has(input.id)) continue;
+          consumed.add(input.id);
+          outCollections.push(input);
+          outVariables.push(...variables.filter((v) => v.collectionId === input.id));
+          for (const v of variables) if (v.collectionId === input.id) place(v.id, inputIndex.get(v.id));
+          placement.collections[input.name] = [...(_e = placement.collections[input.name]) != null ? _e : [], `${out.name} (breakpoints)`];
+          for (const m of input.modes) placement.modes[`${input.name} / ${m.name}`] = ["--bp-*"];
+          roles.breakpoints.push(input.name);
+        }
+        continue;
+      }
+      const collectionId = `out:${slug(out.name)}`;
+      const instances = /* @__PURE__ */ new Map();
+      const rulesFor = (input) => out.sources.filter((s) => same2(s.collection, input.name)).sort((a, b) => {
+        var _a2, _b2;
+        return pathOf((_a2 = b.group) != null ? _a2 : "").length - pathOf((_b2 = a.group) != null ? _b2 : "").length;
+      });
+      for (const input of [...new Set(out.sources.map((s) => findInput(s.collection)))]) {
+        consumed.add(input.id);
+        placement.collections[input.name] = [...(_f = placement.collections[input.name]) != null ? _f : [], out.name];
+        const rules = rulesFor(input);
+        for (const v of variables.filter((x) => x.collectionId === input.id)) {
+          const segments = pathOf(v.name);
+          const rule = rules.find((s) => !s.group || underGroup(segments, s.group));
+          if (!rule) continue;
+          const groupKey = `${input.name} / ${(_g = rule.group) != null ? _g : ""}`;
+          if (rule.hidden) {
+            if (rule.group) placement.groups[groupKey] = "hidden";
+            continue;
+          }
+          const rest = rule.group ? segments.slice(pathOf(rule.group).length) : segments;
+          const path = rule.to !== void 0 ? [...pathOf(rule.to), ...rest] : segments;
+          if (path.length === 0) continue;
+          if (rule.group) {
+            placement.groups[groupKey] = `\u2192 ${out.name}${rule.to !== void 0 ? " / " + (rule.to || "(root)") : ""}${rule.at ? " @ " + Object.values(rule.at).join(" \xD7 ") : ""}`;
+          }
+          const pathKey = path.join("/");
+          for (const m of input.modes) {
+            const coords = coordsOf(rule, input, m.name);
+            const modeKey = `${input.name} / ${m.name}`;
+            if (!coords) {
+              placement.modes[modeKey] = (_h = placement.modes[modeKey]) != null ? _h : [];
+              continue;
+            }
+            const where = coordAxes.length ? coordAxes.map((axis, n) => coords[n] === "*" ? `any ${axis.attribute}` : coords[n]).join(" \xD7 ") : out.name;
+            if (!((_i = placement.modes[modeKey]) == null ? void 0 : _i.includes(where))) placement.modes[modeKey] = [...(_j = placement.modes[modeKey]) != null ? _j : [], where];
+            if (!instances.has(pathKey)) instances.set(pathKey, []);
+            instances.get(pathKey).push(__spreadValues(__spreadValues({
+              coords,
+              value: v.valuesByMode[m.modeId],
+              type: v.resolvedType,
+              specificity: pathOf((_k = rule.group) != null ? _k : "").length
+            }, v.scopes ? { scopes: v.scopes } : {}), v.codeSyntax ? { codeSyntax: v.codeSyntax } : {}));
+          }
+          repoint2.set(v.id, `${collectionId}:${pathKey}`);
+          place(`${collectionId}:${pathKey}`, inputIndex.get(v.id));
+        }
+        for (const m of input.modes) {
+          const key = `${input.name} / ${m.name}`;
+          if (((_l = placement.modes[key]) == null ? void 0 : _l.length) === 0) notes.push(`${key} maps to no cell of ${out.name} \u2014 place it on an axis value, or it is left out`);
+        }
+      }
+      const conflicts = [];
+      const emit = (name, id, ownAxes, pin) => {
+        var _a2, _b2;
+        const cells = gridCells(ownAxes);
+        const feeders = [...new Set(out.sources.map((s) => findInput(s.collection)))];
+        const feederDefault = feeders.length === 1 ? (_a2 = feeders[0].modes.find((m) => m.modeId === feeders[0].defaultModeId)) != null ? _a2 : feeders[0].modes[0] : void 0;
+        const single2 = ownAxes.length === 0 && feederDefault ? feederDefault.name : void 0;
+        const modes = cells.map((cell) => ({ modeId: `${id}:${single2 != null ? single2 : cellName(ownAxes, cell)}`, name: single2 != null ? single2 : cellName(ownAxes, cell) }));
+        const collection = { id, name, defaultModeId: modes[0].modeId, modes };
+        const vars = [];
+        for (const [pathKey, list2] of instances) {
+          if (new Set(list2.map((i) => i.type)).size > 1) {
+            if (!conflicts.includes(pathKey)) conflicts.push(pathKey);
+            continue;
+          }
+          const valuesByMode = {};
+          cells.forEach((cell, n) => {
+            const full = coordAxes.map((axis) => {
+              var _a3, _b3;
+              return (_b3 = (_a3 = pin[axis.attribute]) != null ? _a3 : cell[ownAxes.findIndex((a) => a.attribute === axis.attribute)]) != null ? _b3 : axis.base;
+            });
+            const inst2 = fill2(list2, full);
+            if (inst2) valuesByMode[modes[n].modeId] = inst2.value;
+          });
+          const first = list2[0];
+          vars.push(__spreadValues(__spreadValues({ id: `${id}:${pathKey}`, name: pathKey, collectionId: id, resolvedType: first.type, valuesByMode }, first.scopes ? { scopes: first.scopes } : {}), first.codeSyntax ? { codeSyntax: first.codeSyntax } : {}));
+          place(`${id}:${pathKey}`, (_b2 = order.get(`${collectionId}:${pathKey}`)) != null ? _b2 : Infinity);
+          if (id !== collectionId) {
+            for (const [vid, target] of repoint2) if (target === `${collectionId}:${pathKey}`) repoint2.set(vid, `${id}:${pathKey}`);
+          }
+        }
+        outCollections.push(collection);
+        outVariables.push(...vars);
+      };
+      if (kind === "files") {
+        const own = mergedAxes([out]);
+        const by = own.find((a) => {
+          var _a2, _b2;
+          return a.attribute === ((_b2 = out.filesBy) != null ? _b2 : (_a2 = own[0]) == null ? void 0 : _a2.attribute);
+        });
+        if (!by) {
+          problems.push(`"${out.name}" ships as files but names no axis to split them by`);
+          continue;
+        }
+        for (const label3 of by.labels) {
+          const rest = own.filter((a) => a !== by);
+          emit(label3, `${collectionId}:${slug(label3)}`, rest, { [by.attribute]: label3 });
+          roles.products.push(label3);
+          fileAxes[label3] = rest;
+        }
+      } else {
+        const own = mergedAxes([out]);
+        emit(out.name, collectionId, own.length > 0 ? axes : [], {});
+        if (kind === "hidden") roles.hidden.push(out.name);
+        else if (own.length > 0) roles.themes.push(out.name);
+      }
+      if (conflicts.length > 0) notes.push(`${out.name}: left out, a different type in different sources \u2014 ${conflicts.join(", ")}`);
+    }
+    for (const input of inputs) {
+      if (consumed.has(input.id)) continue;
+      placement.collections[input.name] = ["unplaced"];
+      outCollections.push(input);
+      outVariables.push(...variables.filter((v) => v.collectionId === input.id));
+      for (const v of variables) if (v.collectionId === input.id) place(v.id, inputIndex.get(v.id));
+      if (input.modes.length > 1) notes.push(`${input.name} is not placed in the structure \u2014 exported as it is, read at its default mode`);
+    }
+    const aim = (value2) => {
+      if (isObject2(value2) && value2.type === "VARIABLE_ALIAS" && typeof value2.id === "string" && repoint2.has(value2.id)) return __spreadProps(__spreadValues({}, value2), { id: repoint2.get(value2.id) });
+      if (isObject2(value2) && ("color" in value2 || "opacity" in value2)) return Object.fromEntries(Object.entries(value2).map(([k, v]) => [k, aim(v)]));
+      return value2;
+    };
+    const aimed = outVariables.map((v) => __spreadProps(__spreadValues({}, v), { valuesByMode: Object.fromEntries(Object.entries(v.valuesByMode).map(([id, value2]) => [id, aim(value2)])) })).sort((a, b) => {
+      var _a2, _b2;
+      return ((_a2 = order.get(a.id)) != null ? _a2 : Infinity) - ((_b2 = order.get(b.id)) != null ? _b2 : Infinity);
+    });
+    const collectionOrder = /* @__PURE__ */ new Map();
+    for (const v of aimed) collectionOrder.set(v.collectionId, Math.min((_m = collectionOrder.get(v.collectionId)) != null ? _m : Infinity, (_n = order.get(v.id)) != null ? _n : Infinity));
+    outCollections.sort((a, b) => {
+      var _a2, _b2;
+      return ((_a2 = collectionOrder.get(a.id)) != null ? _a2 : Infinity) - ((_b2 = collectionOrder.get(b.id)) != null ? _b2 : Infinity);
+    });
+    const textStyles = (_o = graph.textStyles) == null ? void 0 : _o.map(
+      (style) => style.boundVariables ? __spreadProps(__spreadValues({}, style), { boundVariables: Object.fromEntries(Object.entries(style.boundVariables).map(([k, id]) => {
+        var _a2;
+        return [k, (_a2 = repoint2.get(id)) != null ? _a2 : id];
+      })) }) : style
+    );
+    return {
+      graph: __spreadValues(__spreadProps(__spreadValues({}, graph), { collections: outCollections, variables: aimed }), textStyles ? { textStyles } : {}),
+      axes,
+      roles,
+      docRoles,
+      fileAxes,
+      placement,
+      notes,
+      problems
+    };
+  }
+  function deriveLegacy(structure) {
+    var _a, _b, _c;
+    const pairs = [];
+    for (const c of structure.collections) {
+      const kind = (_a = c.as) != null ? _a : "tokens";
+      if (kind === "hidden") pairs.push(`${c.name}: hidden`);
+      else if (kind === "breakpoints") pairs.push(`${c.name}: breakpoints`);
+      else if (kind === "files") pairs.push(`${c.name}: product`);
+      if (c.docRole) pairs.push(`${c.name}: ${c.docRole}`);
+    }
+    const axes = packageAxes(structure);
+    const nested = (_b = axes.find((a) => a.nested)) != null ? _b : axes[axes.length - 1];
+    return { collectionRoles: pairs.join(", "), themeAttribute: (_c = nested == null ? void 0 : nested.attribute) != null ? _c : "data-theme-name" };
   }
 
   // src/tokens/engine.ts
@@ -1389,7 +2344,7 @@ ${sharedLines.join("\n")}
       var _a, _b, _c, _d;
       const rank = (id) => {
         const c = collectionById.get(id);
-        return (c == null ? void 0 : c.product) ? -1 : (c == null ? void 0 : c.inlineOnly) ? 1 : 0;
+        return (c == null ? void 0 : c.product) ? -1 : (c == null ? void 0 : c.inlineOnly) || (c == null ? void 0 : c.yields) ? 1 : 0;
       };
       const ia = rank(a.v.collectionId);
       const ib = rank(b.v.collectionId);
@@ -1716,19 +2671,26 @@ ${sharedLines.join("\n")}
   function isTextMetricKind(kind) {
     return TEXT_METRIC_KINDS.has(kind);
   }
-  function tokenKind(token2, path = []) {
+  function scopesOf(token2) {
     var _a;
+    const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
+    return figma2 && Array.isArray(figma2.scopes) ? figma2.scopes : [];
+  }
+  function provenKind(token2) {
+    if (token2.$type === "color") return "color";
+    if (token2.$type === "boolean") return "boolean";
+    if (token2.$type === "duration") return "duration";
+    for (const scope of scopesOf(token2)) {
+      const kind = KIND_BY_SCOPE[scope];
+      if (kind) return kind;
+    }
+    return void 0;
+  }
+  function tokenKind(token2, path = []) {
     if (token2) {
-      if (token2.$type === "color") return "color";
-      if (token2.$type === "boolean") return "boolean";
-      if (token2.$type === "duration") return "duration";
-      const figma2 = (_a = token2.$extensions) == null ? void 0 : _a.figma;
-      const scopes = figma2 && Array.isArray(figma2.scopes) ? figma2.scopes : [];
-      for (const scope of scopes) {
-        const kind = KIND_BY_SCOPE[scope];
-        if (kind) return kind;
-      }
-      if (token2.$type === "string" && scopes.length === 0) {
+      const proven = provenKind(token2);
+      if (proven) return proven;
+      if (token2.$type === "string" && scopesOf(token2).length === 0) {
         for (const [pattern, kind] of KIND_BY_NAME) {
           if (kind === "fontFamily" && path.some((seg) => pattern.test(seg))) return "fontFamily";
         }
@@ -1745,18 +2707,36 @@ ${sharedLines.join("\n")}
     if (kind === "lineHeight") return Math.abs(roundEmitted(value2)) >= LINE_HEIGHT_RATIO_MAX;
     return kind !== "opacity" && kind !== "fontWeight" && kind !== "number" && kind !== "duration";
   }
-  function opacityFraction(value2) {
-    return value2 > 1 ? value2 / 100 : value2;
+  function isLengthToken(value2, path) {
+    return isLengthKind(tokenKind(void 0, path != null ? path : []), value2);
+  }
+  function hasOpacityScope(token2) {
+    const scopes = scopesOf(token2);
+    return scopes.includes("OPACITY") || scopes.includes("COLOR_OPACITY");
+  }
+  function isOpacityPercent(token2, value2) {
+    return token2 !== void 0 && hasOpacityScope(token2) || value2 > 1;
+  }
+  function opacityFraction(value2, token2) {
+    return isOpacityPercent(token2, value2) ? value2 / 100 : value2;
   }
   function cssValue(value2, path, token2) {
     const alias = aliasTarget(value2);
     if (alias) return `var(--${varName(alias)})`;
     if (typeof value2 === "number") {
-      const kind = tokenKind(token2, path != null ? path : []);
-      const rounded = roundEmitted(kind === "opacity" ? opacityFraction(value2) : value2);
+      const rounded = roundEmitted(value2);
       if (rounded === 0) return "0";
+      if (token2) {
+        const witness = unitWitness([{ path: path != null ? path : [], token: token2 }]);
+        const kind2 = tokenKind(witness.token, witness.path);
+        if (kind2 === "duration") return `${rounded}ms`;
+        if (kind2 === "opacity") return String(roundEmitted(opacityFraction(value2, witness.token)));
+        return isLengthKind(kind2, value2) ? `${rounded}px` : String(rounded);
+      }
+      const kind = tokenKind(void 0, path != null ? path : []);
       if (kind === "duration") return `${rounded}ms`;
-      return isLengthKind(kind, value2) ? `${rounded}px` : String(rounded);
+      if (kind === "opacity") return String(roundEmitted(opacityFraction(value2)));
+      return isLengthToken(value2, path) ? `${rounded}px` : String(rounded);
     }
     if (typeof value2 === "boolean") return String(value2);
     if (typeof value2 === "string") return value2;
@@ -1932,6 +2912,43 @@ ${sharedLines.join("\n")}
     }
     return { collectionName: "Typography", variables, bindings };
   }
+  function followAliases(byName, leaf, value2, theme, follows = () => true) {
+    const chain = [leaf];
+    const seen2 = /* @__PURE__ */ new Set();
+    let current2 = value2;
+    while (isAliasValue(current2)) {
+      const target = aliasTarget(current2).join(".");
+      const entry = byName.get(target);
+      if (!entry || seen2.has(target) || !follows(target)) break;
+      seen2.add(target);
+      chain.push(entry);
+      current2 = valueForTheme(entry.token, theme);
+    }
+    return { value: current2, chain };
+  }
+  function unitWitness(chain) {
+    var _a;
+    const links = chain.flatMap((link) => {
+      var _a2, _b;
+      const cut = (_b = (_a2 = link.token.$extensions) == null ? void 0 : _a2.figma) == null ? void 0 : _b.unitWitness;
+      if (!cut) return [link];
+      const scopes = cut.scopes ? { figma: { scopes: cut.scopes } } : void 0;
+      return [link, { path: cut.path, token: __spreadValues({ $type: cut.$type }, scopes ? { $extensions: scopes } : {}) }];
+    });
+    return (_a = links.find((link) => provenKind(link.token) !== void 0)) != null ? _a : links[links.length - 1];
+  }
+  function cutWitness(token2, cuts) {
+    var _a, _b;
+    if (token2.$type !== "number" || provenKind(token2) !== void 0) return void 0;
+    const witnesses = cuts.filter((links) => links.length > 0).map((links) => unitWitness(links));
+    const witness = (_a = witnesses.find((link) => provenKind(link.token) !== void 0)) != null ? _a : witnesses[0];
+    if (!witness) return void 0;
+    const scopes = scopesOf(witness.token);
+    return __spreadValues({
+      path: [...witness.path],
+      $type: (_b = witness.token.$type) != null ? _b : token2.$type
+    }, scopes.length > 0 ? { scopes: [...scopes] } : {});
+  }
   function inlinePrimitivesTree(tree, flattenAll) {
     var _a, _b;
     const all = leaves(tree);
@@ -1953,17 +2970,12 @@ ${sharedLines.join("\n")}
       const modes = modesOf(e.token);
       for (const k of Object.keys(modes)) noteRef(modes[k]);
     }
-    const inline = (value2, theme, seen2, originPath, originToken) => {
-      if (!isAliasValue(value2)) {
-        return originPath && typeof value2 === "number" ? cssValue(value2, originPath, originToken) : value2;
-      }
-      const target = aliasTarget(value2).join(".");
-      if (!byName.has(target) || seen2.has(target)) return value2;
-      if (!flattenAll && !primitive.has(target)) return value2;
-      const entry = byName.get(target);
-      const next = new Set(seen2);
-      next.add(target);
-      return inline(valueForTheme(entry.token, theme), theme, next, entry.path, entry.token);
+    const follows = (target) => flattenAll || primitive.has(target);
+    const inline = (leaf, value2, theme) => {
+      const end = followAliases(byName, leaf, value2, theme, follows);
+      if (end.chain.length < 2 || typeof end.value !== "number") return end.value;
+      const witness = unitWitness(end.chain);
+      return cssValue(end.value, witness.path, witness.token);
     };
     const out = {};
     for (const e of all) {
@@ -1976,10 +2988,10 @@ ${sharedLines.join("\n")}
       const token2 = e.token;
       const modes = modesOf(token2);
       const newModes = {};
-      for (const k of Object.keys(modes)) newModes[k] = inline(modes[k], k, /* @__PURE__ */ new Set());
+      for (const k of Object.keys(modes)) newModes[k] = inline(e, modes[k], k);
       const defMode = collectionDefaultModeOf(token2);
       const themeForDefault = defMode && defMode in modes ? defMode : Object.keys(modes)[0];
-      const newDefault = inline(token2.$value, themeForDefault, /* @__PURE__ */ new Set());
+      const newDefault = inline(e, token2.$value, themeForDefault);
       const $extensions = __spreadProps(__spreadValues({}, token2.$extensions), { modes: newModes });
       setToken(out, e.path, { $type: token2.$type, $value: newDefault, $extensions });
     }
@@ -1989,6 +3001,7 @@ ${sharedLines.join("\n")}
     const hidden = [];
     const breakpoints = [];
     const products = [];
+    const themes = [];
     for (const pair2 of String(raw != null ? raw : "").split(/[,;\n]+/)) {
       const separator = pair2.indexOf(pair2.indexOf(":") !== -1 ? ":" : "=");
       if (separator === -1) continue;
@@ -1998,8 +3011,50 @@ ${sharedLines.join("\n")}
       if (role === "hidden" || role === "hide") hidden.push(collection);
       else if (role === "breakpoints" || role === "breakpoint" || role === "bp") breakpoints.push(collection);
       else if (role === "product") products.push(collection);
+      else if (role === "themes" || role === "theme") themes.push(collection);
     }
-    return { hidden, breakpoints, products };
+    return { hidden, breakpoints, products, themes };
+  }
+  function prepareRoleGraph(graph, roles, options = {}) {
+    var _a, _b, _c, _d, _e, _f;
+    const lower = (name) => name.trim().toLowerCase();
+    const hidden = new Set(roles.hidden.map(lower));
+    const themeNames = new Set(roles.themes.map(lower));
+    const bpNames = /* @__PURE__ */ new Set(["breakpoints", ...roles.breakpoints.map(lower)]);
+    const collections = graph.collections || [];
+    const themeCollections = collections.filter((c) => themeNames.has(lower(c.name)));
+    const notes = [];
+    for (const name of roles.themes) {
+      if (!themeCollections.some((c) => lower(c.name) === lower(name))) notes.push(`"${name}" is set as the themes collection, but the file has no collection by that name`);
+    }
+    const pinned = /* @__PURE__ */ new Map();
+    const themed = /* @__PURE__ */ new Set();
+    for (const c of collections) {
+      if (c.inlineOnly || bpNames.has(lower(c.name)) || hidden.has(lower(c.name))) continue;
+      if (c.modes.length < 2) continue;
+      if (themeCollections.length > 0 && !themeNames.has(lower(c.name))) {
+        const keep = (_a = c.defaultModeId) != null ? _a : c.modes[0].modeId;
+        pinned.set(c.id, keep);
+        notes.push(`${c.name} read at its default mode (${(_b = c.modes.find((m) => m.modeId === keep)) == null ? void 0 : _b.name}): only ${themeCollections.map((t) => t.name).join(", ")} supplies themes`);
+      } else themed.add(c.id);
+    }
+    const slug3 = (name) => options.slugThemes ? themeSlug(name) : name;
+    const out = __spreadProps(__spreadValues({}, graph), {
+      collections: collections.map((c) => {
+        let next = c;
+        if (hidden.has(lower(c.name))) next = __spreadProps(__spreadValues({}, next), { yields: true });
+        if (themeNames.has(lower(c.name))) next = __spreadProps(__spreadValues({}, next), { product: true });
+        if (pinned.has(c.id)) next = __spreadProps(__spreadValues({}, next), { modes: c.modes.filter((m) => m.modeId === pinned.get(c.id)) });
+        if (themed.has(c.id) && options.slugThemes) next = __spreadProps(__spreadValues({}, next), { modes: next.modes.map((m) => __spreadProps(__spreadValues({}, m), { name: slug3(m.name) })) });
+        return next;
+      }),
+      variables: (graph.variables || []).map(
+        (v) => pinned.has(v.collectionId) ? __spreadProps(__spreadValues({}, v), { valuesByMode: { [pinned.get(v.collectionId)]: v.valuesByMode[pinned.get(v.collectionId)] } }) : v
+      )
+    });
+    const first = themeCollections[0];
+    const themeDefault = first ? slug3((_f = (_e = (_c = first.modes.find((m) => m.modeId === first.defaultModeId)) == null ? void 0 : _c.name) != null ? _e : (_d = first.modes[0]) == null ? void 0 : _d.name) != null ? _f : "") : void 0;
+    return { graph: out, themeDefault, notes };
   }
   function shapeForCode(graph, tree, options = {}) {
     var _a, _b, _c;
@@ -2020,16 +3075,15 @@ ${sharedLines.join("\n")}
       return hidden.has(name) || bpCollections.some((c) => lower(c.name) === name);
     };
     let throughOwnLayer = false;
-    const resolve2 = (value2, mode, seen2) => {
+    const resolve2 = (value2, mode, through) => {
       var _a2, _b2;
       if (!isAliasValue(value2)) return value2;
       const target = aliasTarget(value2).join(".");
       const entry = byName.get(target);
-      if (!entry || !isDropped(entry.token) || seen2.has(target)) return value2;
+      if (!entry || !isDropped(entry.token) || through.includes(entry)) return value2;
       if (!((_b2 = (_a2 = entry.token.$extensions) == null ? void 0 : _a2.figma) == null ? void 0 : _b2.inlineOnly)) throughOwnLayer = true;
-      const next = new Set(seen2);
-      next.add(target);
-      return resolve2(valueForTheme(entry.token, mode), mode, next);
+      through.push(entry);
+      return resolve2(valueForTheme(entry.token, mode), mode, through);
     };
     const out = {};
     for (const e of all) {
@@ -2037,26 +3091,35 @@ ${sharedLines.join("\n")}
       if (dropTextStyles && collectionOf(e.token) === TEXT_STYLE_COLLECTION) continue;
       const modes = modesOf(e.token);
       throughOwnLayer = false;
+      const cuts = [];
       const newModes = {};
-      for (const k of Object.keys(modes)) newModes[k] = resolve2(modes[k], k, /* @__PURE__ */ new Set());
+      for (const k of Object.keys(modes)) {
+        const through = [];
+        newModes[k] = resolve2(modes[k], k, through);
+        cuts.push(through);
+      }
       const defMode = collectionDefaultModeOf(e.token) || Object.keys(modes)[0] || "";
-      const $value = resolve2(e.token.$value, defMode, /* @__PURE__ */ new Set());
+      const defThrough = [];
+      const $value = resolve2(e.token.$value, defMode, defThrough);
       const wasAlias = throughOwnLayer;
+      const witness = cutWitness(e.token, [defThrough, ...cuts]);
       const figma2 = e.token.$extensions.figma;
       setToken(out, e.path, __spreadProps(__spreadValues({}, e.token), {
         $value,
         $extensions: __spreadValues(__spreadProps(__spreadValues({}, e.token.$extensions), {
           modes: newModes
-        }), figma2 && wasAlias ? { figma: __spreadProps(__spreadValues({}, figma2), { resolved: true }) } : {})
+        }), figma2 && (wasAlias || witness) ? {
+          figma: __spreadValues(__spreadValues(__spreadValues({}, figma2), wasAlias ? { resolved: true } : {}), witness ? { unitWitness: witness } : {})
+        } : {})
       }));
     }
     for (const coll of bpCollections) {
       const thresholds = Object.entries(breakpointThresholdsOf(graph, coll)).sort((a, b) => a[1] - b[1]);
       for (const [name, width] of thresholds) {
-        const slug2 = varName([name]);
-        if (!slug2) continue;
+        const slug3 = varName([name]);
+        if (!slug3) continue;
         const value2 = `${width}px`;
-        setToken(out, ["bp", slug2], {
+        setToken(out, ["bp", slug3], {
           $type: "dimension",
           $value: value2,
           $extensions: { modes: {}, figma: { collection: coll.name, defaultMode: "" } }
@@ -2065,7 +3128,31 @@ ${sharedLines.join("\n")}
     }
     return out;
   }
-  function themeDeclarations(allLeaves, theme) {
+  function uniqueVarNames(tree) {
+    var _a, _b;
+    const all = leaves(tree);
+    const byName = /* @__PURE__ */ new Map();
+    for (const leaf of all) {
+      const name = varName(leaf.path);
+      byName.set(name, [...(_a = byName.get(name)) != null ? _a : [], leaf]);
+    }
+    const clashes = [...byName.entries()].filter(([, same4]) => same4.length > 1);
+    if (clashes.length === 0) return { tree, dropped: [] };
+    const out = {};
+    const keep = /* @__PURE__ */ new Set();
+    const dropped = [];
+    for (const [name, same4] of byName) {
+      const kept2 = (_b = same4.find((leaf) => leaf.token.$type !== "string")) != null ? _b : same4[0];
+      keep.add(kept2);
+      if (same4.length > 1) {
+        const show = (leaf) => `${leaf.path.join("/")} (${JSON.stringify(leaf.token.$value)})`;
+        dropped.push(`--${name} is ${same4.length} variables in Figma \u2014 kept ${show(kept2)}, left out ${same4.filter((l) => l !== kept2).map(show).join(", ")}`);
+      }
+    }
+    for (const leaf of all) if (keep.has(leaf)) setToken(out, leaf.path, leaf.token);
+    return { tree: out, dropped };
+  }
+  function themeDeclarations(allLeaves, theme, label3 = true) {
     const order = [];
     const groups = /* @__PURE__ */ new Map();
     for (const leaf of allLeaves) {
@@ -2076,7 +3163,7 @@ ${sharedLines.join("\n")}
       }
       groups.get(col).push(leaf);
     }
-    const labeled = order.some((c) => c !== "");
+    const labeled = label3 && order.some((c) => c !== "");
     const lines = [];
     for (const col of order) {
       if (labeled && col) lines.push(`  /* ${col} */`);
@@ -2147,6 +3234,341 @@ ${themeSel}`);
     const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames));
     return blocks2.join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
   }
+  function gridCoords(grid) {
+    let cells = [[]];
+    grid.axes.forEach((axis, n) => {
+      const ordered = [grid.defaults[n], ...axis.values.filter((v) => v !== grid.defaults[n])];
+      cells = cells.flatMap((cell) => ordered.map((v) => [...cell, v]));
+    });
+    return cells;
+  }
+  function gridFromAxes(axes, name) {
+    const byValue = /* @__PURE__ */ new Map();
+    let cells = [[]];
+    for (const axis of axes) cells = cells.flatMap((cell) => axis.labels.map((l) => [...cell, l]));
+    for (const cell of cells) byValue.set(cell.map((l, n) => axes[n].values[axes[n].labels.indexOf(l)]).join("\0"), name(cell));
+    return __spreadValues({
+      axes: axes.map((a) => ({ attribute: a.attribute, values: [...a.values] })),
+      theme: (coords) => byValue.get(coords.join("\0")),
+      defaults: axes.map((a) => a.values[a.labels.indexOf(a.base)])
+    }, axes.some((a) => a.nested) ? { nested: true } : {});
+  }
+  function resolveThemeGrid(ordered, defaultTheme, spec, fixedCells = {}) {
+    const placed = placeThemes(ordered, spec, fixedCells);
+    if (placed.problems.length > 0) return { problem: placed.problems[0] };
+    const { outer, inner } = orderAxes(spec);
+    const slug3 = (name) => varName([name]) || "";
+    const valueOf2 = (v) => v.value ? v.value.replace(/[^A-Za-z0-9_-]/g, "") : slug3(v.label);
+    const axes = (outer ? [outer, inner] : [inner]).map((axis) => ({ attribute: axis.attribute, labels: axis.values.map((v) => v.label), values: axis.values.map(valueOf2) }));
+    for (const axis of axes) {
+      const twice = axis.values.find((v, n) => axis.values.indexOf(v) !== n);
+      if (twice !== void 0) return { problem: `two values of one attribute both read "${twice}"` };
+    }
+    const cell = placed.cells;
+    const byValue = /* @__PURE__ */ new Map();
+    const outerLabels = outer ? axes[0].labels : ["_"];
+    outerLabels.forEach(
+      (o, n) => inner.values.forEach((i, m) => {
+        const coords = outer ? [axes[0].values[n], axes[1].values[m]] : [axes[0].values[m]];
+        byValue.set(coords.join("\0"), cell[cellKey(o, i.label)]);
+      })
+    );
+    let defaults = axes.map((a) => a.values[0]);
+    search: for (let n = 0; n < outerLabels.length; n++) {
+      for (let m = 0; m < inner.values.length; m++) {
+        if (cell[cellKey(outerLabels[n], inner.values[m].label)] === defaultTheme) {
+          defaults = outer ? [axes[0].values[n], axes[1].values[m]] : [axes[0].values[m]];
+          break search;
+        }
+      }
+    }
+    return {
+      grid: __spreadValues({
+        axes: axes.map((a) => ({ attribute: a.attribute, values: a.values })),
+        theme: (coords) => byValue.get(coords.join("\0")),
+        defaults
+      }, spec.axes.some((axis) => axis.nested === true) ? { nested: true } : {})
+    };
+  }
+  function placeThemes(ordered, spec, fixedCells = {}) {
+    var _a, _b;
+    const { outer, inner } = orderAxes(spec);
+    const axes = outer ? [outer, inner] : [inner];
+    const slug3 = (name) => varName([name]) || "";
+    const segments = (name) => slug3(name).split("-").filter((s) => s !== "");
+    const themeBySlug = new Map(ordered.map((theme) => [slug3(theme), theme]));
+    const outerLabels = outer ? outer.values.map((v) => v.label) : ["_"];
+    const cells = {};
+    const how = {};
+    const problems = [];
+    for (const [source, entries] of [["fixed", fixedCells], ["set", (_a = spec.cells) != null ? _a : {}]]) {
+      for (const [k, mode] of Object.entries(entries)) {
+        const theme = themeBySlug.get(slug3(mode));
+        if (!theme) problems.push(`the cell ${k.replace("|", " \xD7 ")} names the mode "${mode}", which is not one of the themes`);
+        else {
+          cells[k] = theme;
+          how[k] = source;
+        }
+      }
+    }
+    const placed = new Set(Object.values(cells));
+    for (const theme of ordered) {
+      if (placed.has(theme)) continue;
+      const parts = segments(theme);
+      const used = new Array(parts.length).fill(false);
+      const picked = [];
+      let why = "";
+      for (const axis of axes) {
+        const hits = [];
+        for (const value2 of axis.values) {
+          const words3 = segments(value2.label);
+          for (let at = 0; words3.length > 0 && at + words3.length <= parts.length; at++) {
+            if (words3.every((word, n) => parts[at + n] === word)) hits.push({ label: value2.label, at, length: words3.length });
+          }
+        }
+        const distinct = [...new Set(hits.map((hit2) => hit2.label))];
+        if (distinct.length !== 1) {
+          why = distinct.length === 0 ? `the mode "${theme}" names no value of ${axis.attribute} (${axis.values.map((v) => v.label).join(", ")})` : `the mode "${theme}" names more than one value of ${axis.attribute} (${distinct.join(", ")})`;
+          break;
+        }
+        const hit = hits[0];
+        for (let n = hit.at; n < hit.at + hit.length; n++) {
+          if (used[n]) why = `the mode "${theme}" spells two attributes with the same word`;
+          used[n] = true;
+        }
+        picked.push(hit.label);
+      }
+      if (!why && used.some((u) => !u)) why = `the mode "${theme}" has words no attribute accounts for`;
+      if (why) {
+        problems.push(why);
+        continue;
+      }
+      const k = outer ? cellKey(picked[0], picked[1]) : cellKey("_", picked[0]);
+      if (cells[k]) {
+        problems.push(`the modes "${cells[k]}" and "${theme}" are the same ${k.replace("|", " \xD7 ")}`);
+        continue;
+      }
+      cells[k] = theme;
+      how[k] = "name";
+    }
+    for (const axis of axes) {
+      for (const value2 of axis.values) {
+        if (!value2.sameAs) continue;
+        for (const o of outerLabels) {
+          for (const i of inner.values.map((v) => v.label)) {
+            const here = cellKey(o, i);
+            const there = axis === outer ? cellKey(value2.sameAs, i) : cellKey(o, value2.sameAs);
+            if (!cells[here] && (axis === outer ? o : i) === value2.label && cells[there]) {
+              cells[here] = cells[there];
+              how[here] = "same";
+            }
+          }
+        }
+      }
+    }
+    for (const [here, there] of Object.entries((_b = spec.sameAs) != null ? _b : {})) {
+      if (!cells[here] && cells[there]) {
+        cells[here] = cells[there];
+        how[here] = "same";
+      }
+    }
+    for (const o of outerLabels) {
+      for (const i of inner.values) {
+        if (!cells[cellKey(o, i.label)]) problems.push(`no mode is ${outer ? `${slug3(o)} \xD7 ` : ""}${slug3(i.label)} \u2014 pick what it shows`);
+      }
+    }
+    return { cells, how, problems };
+  }
+  function applyThemeAxesSources(graph, roles, themeAxes, structure) {
+    if (structure) {
+      const made = materializeStructure(graph, structure);
+      if (made.problems.length > 0) return { graph, roles, notes: [], problem: made.problems.join("; ") };
+      const next = { hidden: made.roles.hidden, breakpoints: made.roles.breakpoints, products: made.roles.products, themes: made.roles.themes };
+      const grid = made.axes.length > 0 ? gridFromAxes(made.axes, (cell) => cellName(made.axes, cell)) : void 0;
+      return __spreadProps(__spreadValues({ graph: made.graph, roles: next }, grid ? { grid } : {}), { materialized: made, notes: made.notes });
+    }
+    const { spec, problems } = normalizeThemeAxesSpec(themeAxes);
+    if (problems.length > 0) return { graph, roles, notes: [], problem: problems.join("; ") };
+    if (!spec) return { graph, roles, notes: [] };
+    const fold = foldThemeSources(graph, spec);
+    if (!fold) return { graph, roles, notes: [] };
+    if ("problems" in fold) return { graph, roles, notes: [], problem: fold.problems.join("; ") };
+    const notes = [...fold.notes, `Themes read from ${fold.consumed.join(", ")}, merged at export time`];
+    const superseded = roles.themes.filter((name) => !fold.consumed.some((c) => c.toLowerCase() === name.trim().toLowerCase()));
+    if (superseded.length > 0) notes.push(`${superseded.join(", ")} left out: the themes come from ${fold.consumed.join(", ")} now`);
+    return {
+      graph: fold.graph,
+      roles: __spreadProps(__spreadValues({}, roles), { themes: [fold.collection], hidden: [...roles.hidden, ...superseded] }),
+      cells: fold.cells,
+      found: fold.found,
+      notes
+    };
+  }
+  function axesLayers(tree, grid) {
+    const allLeaves = leaves(tree);
+    if (allLeaves.length === 0) return [];
+    const nested = grid.nested === true;
+    const n = grid.axes.length;
+    const inner = grid.axes[n - 1];
+    const outerAxes = grid.axes.slice(0, n - 1);
+    const i0 = grid.defaults[n - 1];
+    const o0 = grid.defaults.slice(0, n - 1);
+    const nonDefault = (o) => o.filter((v, k) => v !== o0[k]).length;
+    const combos = gridCoords({ axes: outerAxes, theme: () => "", defaults: o0 }).sort((x, y) => nonDefault(x) - nonDefault(y));
+    const key = (o) => o.join("\0");
+    const value2 = (leaf, o, i) => cssValue(valueForTheme(leaf.token, grid.theme([...o, i])), leaf.path, leaf.token);
+    const sel = (attribute, v) => `[${attribute}="${cssAttrValue(v)}"]`;
+    const O = (o) => outerAxes.map((axis, k) => o[k] === o0[k] ? "" : sel(axis.attribute, o[k])).join("");
+    const I = (v) => sel(inner.attribute, v);
+    const under = (o) => combos.filter((c) => c.every((v, k) => v === o[k] || v === o0[k]));
+    const isRoot = (o) => key(o) === key(o0);
+    const declarations = (declared, theme) => themeDeclarations(declared, theme, false).join("\n");
+    const constant = new Set(allLeaves.filter((leaf) => new Set(gridCoords(grid).map((cell) => value2(leaf, cell.slice(0, n - 1), cell[n - 1]))).size === 1));
+    const changesWithInner = new Set(allLeaves.filter((leaf) => combos.some((o) => new Set(inner.values.map((i) => value2(leaf, o, i))).size > 1)));
+    const outerDeclared = /* @__PURE__ */ new Map([[key(o0), new Set(allLeaves)]]);
+    const pairDeclared = /* @__PURE__ */ new Map();
+    for (const i of inner.values) if (i !== i0) pairDeclared.set(`${key(o0)}|${i}`, changesWithInner);
+    const best = (cands) => {
+      var _a;
+      return (_a = cands.reduce((acc, c) => !acc || c[0] > acc[0] || c[0] === acc[0] && c[1] > acc[1] ? c : acc, void 0)) == null ? void 0 : _a[2];
+    };
+    const effective = (leaf, o, i, layout) => {
+      const cands = [];
+      const position = (b) => combos.findIndex((c) => key(c) === key(b));
+      const outerOf = (b, extra) => {
+        var _a;
+        if (!isRoot(b) && ((_a = outerDeclared.get(key(b))) == null ? void 0 : _a.has(leaf))) cands.push([nonDefault(b) + extra, 10 + position(b) * 1e3, value2(leaf, b, i0)]);
+      };
+      const pairOf = (b, extra) => {
+        var _a;
+        if (i !== i0 && ((_a = pairDeclared.get(`${key(b)}|${i}`)) == null ? void 0 : _a.has(leaf))) {
+          cands.push([(isRoot(b) ? 0 : nonDefault(b)) + 1 + extra, isRoot(b) ? 1 : 11 + position(b) * 1e3 + inner.values.indexOf(i), value2(leaf, b, i)]);
+        }
+      };
+      if (layout === "same") {
+        cands.push([1, 0, value2(leaf, o0, i0)]);
+        for (const b of under(o)) {
+          outerOf(b, 0);
+          pairOf(b, 0);
+        }
+        return best(cands);
+      }
+      if (layout === "nested") {
+        if (i === i0) {
+          cands.push([1, 0, value2(leaf, o0, i0)]);
+          for (const b of under(o)) outerOf(b, 1);
+        } else for (const b of under(o)) pairOf(b, 0);
+        return cands.length ? best(cands) : effective(leaf, o, i0, "same");
+      }
+      for (const b of under(o)) {
+        outerOf(b, 0);
+        pairOf(b, 1);
+      }
+      return cands.length ? best(cands) : i === i0 ? value2(leaf, o0, i0) : effective(leaf, o0, i, "same");
+    };
+    const outerLayouts = nested ? ["same", "nested"] : ["same"];
+    const pairLayouts = nested ? ["same", "nested", "below"] : ["same"];
+    const layers = [];
+    const rootTheme = grid.theme([...o0, i0]);
+    const common = allLeaves.filter((leaf) => constant.has(leaf));
+    if (common.length > 0) layers.push({ name: "base", title: "base \u2014 the same in every theme", blocks: [{ selectors: [":root"], body: declarations(common, rootTheme) }] });
+    const themed = allLeaves.filter((leaf) => !constant.has(leaf));
+    if (themed.length > 0) {
+      layers.push({ name: i0, title: `${i0} \u2014 ${I(i0)}, the default`, blocks: [{ selectors: [":root", I(i0)], body: declarations(themed, rootTheme) }] });
+    }
+    for (const i of inner.values) {
+      if (i === i0) continue;
+      const declared = allLeaves.filter((leaf) => changesWithInner.has(leaf));
+      if (declared.length > 0) layers.push({ name: i, title: `${i} \u2014 ${I(i)}`, blocks: [{ selectors: [I(i)], body: declarations(declared, grid.theme([...o0, i])) }] });
+    }
+    const others = combos.filter((o) => !isRoot(o));
+    const own = /* @__PURE__ */ new Map();
+    for (const o of others) {
+      const declared = allLeaves.filter((leaf) => outerLayouts.some((layout) => value2(leaf, o, i0) !== effective(leaf, o, i0, layout)));
+      outerDeclared.set(key(o), new Set(declared));
+      own.set(key(o), declared.length === 0 ? [] : [{ selectors: nested ? [O(o), `${O(o)} ${I(i0)}`] : [O(o)], body: declarations(declared, grid.theme([...o, i0])) }]);
+    }
+    for (const o of others) {
+      for (const i of inner.values) {
+        if (i === i0) continue;
+        const declared = allLeaves.filter((leaf) => pairLayouts.some((layout) => value2(leaf, o, i) !== effective(leaf, o, i, layout)));
+        pairDeclared.set(`${key(o)}|${i}`, new Set(declared));
+        if (declared.length === 0) continue;
+        const selectors = nested ? [`${O(o)}${I(i)}`, `${O(o)} ${I(i)}`, `${I(i)} ${O(o)}:not([${inner.attribute}])`] : [`${O(o)}${I(i)}`];
+        own.get(key(o)).push({ selectors, body: declarations(declared, grid.theme([...o, i])) });
+      }
+    }
+    const shared = [];
+    for (const o of others) {
+      const blocks2 = own.get(key(o));
+      if (blocks2.length === 0) continue;
+      const name = o.filter((v, k) => v !== o0[k]).join("-");
+      const same4 = outerAxes.length === 1 ? shared.find((layer) => layer.blocks.length === blocks2.length && layer.blocks.every((b, k) => b.body === blocks2[k].body)) : void 0;
+      if (same4) {
+        same4.names.push(name);
+        same4.blocks.forEach((b, k) => b.selectors.push(...blocks2[k].selectors));
+      } else shared.push({ names: [name], blocks: blocks2.map((b) => ({ selectors: [...b.selectors], body: b.body })) });
+    }
+    const what = outerAxes.map((axis) => axis.attribute).join(", ");
+    for (const layer of shared) layers.push({ name: layer.names[0], title: `${layer.names.join(", ")} \u2014 what ${what} changes`, blocks: layer.blocks });
+    return layers;
+  }
+  var renderBlocks = (blocks2, wrap = (s) => s) => blocks2.map((block3) => `${block3.selectors.map(wrap).join(",\n")} {
+${block3.body}
+}`).join("\n\n");
+  function toAxesCss(tree, grid, renames) {
+    const layers = axesLayers(tree, grid);
+    if (layers.length === 0) return "";
+    const legacy = toLegacyAliasCss(legacyAliasPairs(tree, renames));
+    return layers.map((layer) => `/* ${layer.title} */
+${renderBlocks(layer.blocks)}`).join("\n\n") + "\n" + (legacy === "" ? "" : "\n" + legacy);
+  }
+  function toAxesModuleFiles(tree, grid, useGlobal, renames) {
+    const wrap = useGlobal ? (sel) => `:global(${sel})` : (sel) => sel;
+    const files = {};
+    const used = /* @__PURE__ */ new Set();
+    axesLayers(tree, grid).forEach((layer, n) => {
+      const base = varName([layer.name]) || "theme";
+      let name = base;
+      for (let k = 2; used.has(name); k++) name = `${base}-${k}`;
+      used.add(name);
+      const legacy = n === 0 ? toLegacyAliasCss(legacyAliasPairs(tree, renames), wrap(":root")) : "";
+      files[`${name}.module.css`] = `/* ${layer.title} */
+${renderBlocks(layer.blocks, wrap)}
+` + (legacy === "" ? "" : "\n" + legacy);
+    });
+    return files;
+  }
+  function toStylesheet(tree, ordered, defaultTheme, options) {
+    const flat = () => toTokensCss(tree, ordered, defaultTheme, options.themeAttr, options.renames);
+    const fallback = (why) => ({
+      css: flat(),
+      note: `Theme axes not used \u2014 ${why}; tokens.css has one [${options.themeAttr || "data-theme-name"}] block per mode instead`
+    });
+    if (options.problem) return fallback(options.problem);
+    if (options.grid) return ordered.length > 1 ? { css: toAxesCss(tree, options.grid, options.renames), grid: options.grid } : { css: flat() };
+    const { spec, problems } = normalizeThemeAxesSpec(options.themeAxes);
+    if (problems.length > 0) return fallback(problems.join("; "));
+    if (!spec || ordered.length < 2) return { css: flat() };
+    const resolved = resolveThemeGrid(ordered, defaultTheme, spec, options.cells);
+    if ("problem" in resolved) return fallback(resolved.problem);
+    return { css: toAxesCss(tree, resolved.grid, options.renames), grid: resolved.grid };
+  }
+  function themeGridOf(ordered, themeAxes, defaultTheme = ordered[0], cells) {
+    const { spec } = normalizeThemeAxesSpec(themeAxes);
+    if (!spec || ordered.length < 2) return void 0;
+    const resolved = resolveThemeGrid(ordered, defaultTheme, spec, cells);
+    return "grid" in resolved ? resolved.grid : void 0;
+  }
+  function slugGridThemes(grid, slugThemes) {
+    return grid && slugThemes ? __spreadProps(__spreadValues({}, grid), { theme: (coords) => themeSlug(grid.theme(coords)) }) : grid;
+  }
+  function gridSelector(grid, theme) {
+    for (const coords of gridCoords(grid)) {
+      if (grid.theme(coords) === theme) return grid.axes.map((axis, n) => `[${axis.attribute}="${cssAttrValue(coords[n])}"]`).join("");
+    }
+    return `:root`;
+  }
   function toThemeModuleCssFiles(tree, ordered, defaultTheme, attr, useGlobal, renames) {
     const a = attr || "data-theme-name";
     const wrap = useGlobal ? (sel) => `:global(${sel})` : (sel) => sel;
@@ -2214,7 +3636,7 @@ export type Theme = (typeof themes)[number];
     var _a, _b;
     const out = {};
     const modeId = coll.defaultModeId || ((_b = (_a = coll.modes) == null ? void 0 : _a[0]) == null ? void 0 : _b.modeId) || "";
-    const valueOf = (v) => {
+    const valueOf2 = (v) => {
       var _a2;
       const value2 = (_a2 = v.valuesByMode[modeId]) != null ? _a2 : Object.values(v.valuesByMode)[0];
       return typeof value2 === "number" && isFinite(value2) && value2 >= 0 ? Math.round(value2) : void 0;
@@ -2223,12 +3645,12 @@ export type Theme = (typeof themes)[number];
     for (const v of numbers) {
       const segs = v.name.split("/").map((seg) => seg.trim()).filter(Boolean);
       if (segs.length < 2 || !THRESHOLD_GROUPS.has(segs[0].toLowerCase())) continue;
-      const value2 = valueOf(v);
+      const value2 = valueOf2(v);
       if (value2 !== void 0) out[segs.slice(1).join("-").toLowerCase()] = value2;
     }
     if (Object.keys(out).length > 0 || (coll.modes || []).length >= 2) return out;
     for (const v of numbers) {
-      const value2 = valueOf(v);
+      const value2 = valueOf2(v);
       const segs = v.name.split("/");
       const key = segs[segs.length - 1].trim().toLowerCase();
       if (key && value2 !== void 0 && value2 > 0) out[key] = value2;
@@ -2316,16 +3738,16 @@ export type Theme = (typeof themes)[number];
     const all = leaves(tree);
     const firstMatching = (test) => {
       for (const leaf of all) {
-        const slug2 = varName(leaf.path);
-        if (test(slug2, String(leaf.token.$type || ""))) return slug2;
+        const slug3 = varName(leaf.path);
+        if (test(slug3, String(leaf.token.$type || ""))) return slug3;
       }
       return null;
     };
     const background2 = firstMatching((_slug, type) => type === "color");
     const padding = firstMatching(
-      (slug2, type) => type === "number" && /(^|-)(spacing|space|gap|padding|inset)(-|$)/.test(slug2)
+      (slug3, type) => type === "number" && /(^|-)(spacing|space|gap|padding|inset)(-|$)/.test(slug3)
     );
-    const radius = firstMatching((slug2, type) => type === "number" && /(^|-)(radius|radii|corner)(-|$)/.test(slug2));
+    const radius = firstMatching((slug3, type) => type === "number" && /(^|-)(radius|radii|corner)(-|$)/.test(slug3));
     const lines = [
       background2 ? `  background: var(--${background2});` : null,
       padding ? `  padding: var(--${padding});` : null,
@@ -2340,7 +3762,44 @@ ${lines.join("\n")}
 }
 \`\`\``;
   }
-  function buildReadme(summary, options, tree, renames) {
+  function axesReadme(grid) {
+    const list2 = (values) => values.map((v) => `\`${v}\``).join(", ");
+    const other = (n2) => {
+      var _a;
+      return (_a = grid.axes[n2].values.find((v) => v !== grid.defaults[n2])) != null ? _a : grid.defaults[n2];
+    };
+    const inner = grid.axes[grid.axes.length - 1];
+    const n = grid.axes.length - 1;
+    if (grid.axes.length === 1) {
+      return `
+
+Themes are one attribute, \`${inner.attribute}\` (${list2(inner.values)}); with none set, \`${grid.defaults[0]}\` applies.
+
+\`\`\`html
+<html ${inner.attribute}="${other(0)}">
+\`\`\`
+
+It can be set again on any element inside (a \`${other(0)}\` card in a \`${grid.defaults[0]}\` page).`;
+    }
+    const outer = grid.axes.slice(0, -1);
+    const example = grid.axes.map((axis, k) => `${axis.attribute}="${other(k)}"`).join(" ");
+    const head = `
+
+Themes are ${grid.axes.length} attributes: ${grid.axes.map((axis) => `\`${axis.attribute}\` (${list2(axis.values)})`).join(", ")}. With none set, ${grid.defaults.map((d) => `\`${d}\``).join(" \xD7 ")} applies.
+
+\`\`\`html
+<html ${example}>
+\`\`\`
+
+`;
+    if (!grid.nested) return head + `Set ${grid.axes.length === 2 ? "both" : "all of them"} on the same element \u2014 \`<html>\`, or the root of an app.`;
+    return head + `\`${inner.attribute}\` can be set again on any element inside (a \`${other(n)}\` card in a \`${grid.defaults[n]}\` page), and ${outer.map((a) => `\`${a.attribute}\``).join(", ")} may sit on the same element as \`${inner.attribute}\` or below it (\`<body>\` under a themed \`<html>\`). Not supported: ${outer.map((a) => `\`${a.attribute}\``).join(" or ")} switched again inside itself, split over two elements, or set below two different \`${inner.attribute}\` ancestors.`;
+  }
+  function layerList(tree, grid) {
+    if (!tree) return "";
+    return axesLayers(tree, grid).map((layer) => `\`${varName([layer.name]) || "theme"}\``).join(", ");
+  }
+  function buildReadme(summary, options, tree, renames, themeGrid) {
     const attr = options.themeAttr;
     const themeList = summary.themes.map((t) => `\`${t}\``).join(", ");
     const moduleList = summary.themes.map((t) => `\`${varName([t])}.module.css\``).join(", ");
@@ -2349,16 +3808,26 @@ ${lines.join("\n")}
     ).join("\n");
     const defaultTheme = summary.themes[0] || "Light";
     const others = summary.themes.filter((t) => t !== defaultTheme);
-    const switchExample = others.length ? `
+    const grid = themeGrid != null ? themeGrid : themeGridOf(summary.themes, options.themeAxes);
+    const switchExample = grid ? axesReadme(grid) : others.length ? `
 
 Switch theme by setting the attribute on any ancestor (e.g. \`<html>\`):
 
 \`\`\`html
 <html ${attr}="${others[0]}">
 \`\`\`` : "";
+    const blockNote = grid ? "\n\nThe file is cut into layers, each under a comment: `base` holds what is the same in every theme, then one layer per theme, then what each product changes. A variable sits in the narrowest layer it needs, so a component written with `var(--\u2026)` follows every attribute without knowing any." : `
+
+Each \`[${attr}="\u2026"]\` block re-declares **every** variable for that theme, so toggling
+the attribute swaps the whole set.`;
+    const axesNames = grid ? grid.axes.map((axis) => `\`${axis.attribute}\``).join(" \xD7 ") : "";
+    const layers = grid ? layerList(tree, grid) : "";
+    const cssRow = grid ? `CSS custom properties, switched by ${axesNames}, in layers: ${layers}. The one file for runtime switching.` : "CSS custom properties. One self-contained block per theme. The merged single file.";
     const rootSel = options.cssModulesGlobal ? ":global(:root)" : ":root";
-    const moduleSel = options.cssModulesGlobal ? `:global([${attr}="\u2026"])` : `[${attr}="\u2026"]`;
-    const moduleRow = options.emitModuleFiles ? `
+    const pairSel = grid ? grid.axes.map((axis) => `[${axis.attribute}="\u2026"]`).join("") : `[${attr}="\u2026"]`;
+    const moduleSel = options.cssModulesGlobal ? `:global(${pairSel})` : pairSel;
+    const moduleRow = options.emitModuleFiles ? grid ? `
+| \`<layer>.module.css\` | The layers of \`tokens.css\`, one file each (${layers.replace(/`([^`]+)`/g, "`$1.module.css`")}). Together they are \`tokens.css\`. |` : `
 | \`<theme>.module.css\` | The same blocks, one file per theme (${moduleList}). Every variable under \`${moduleSel}\` \u2014 the default theme also on \`${rootSel}\`. Concatenated, they reproduce \`tokens.css\`. |` : "";
     const inlineNote = !options.inlinePrimitives ? "Primitives are emitted as their own variables; semantic tokens reference them with `var(--\u2026)`." : options.flattenAliases ? "**Every** alias is resolved to a literal \u2014 no `var(--\u2026)` references remain anywhere. `tokens.json` keeps the full, un-inlined tree for re-import." : "Primitive (raw, single-mode) values are **inlined** into the semantic tokens that use them, so the primitive layer doesn't appear as its own variables. References between semantic tokens stay as `var(--\u2026)`. `tokens.json` keeps the full, un-inlined tree for re-import.";
     const settingsLine = [
@@ -2368,7 +3837,7 @@ Switch theme by setting the attribute on any ancestor (e.g. \`<html>\`):
       options.typoExtract ? `scale only \`${options.typoScaleOnly ? "on" : "off"}\`` : null,
       options.typoExtract ? `scale names \`${options.typoNaming === "value" ? "by value" : "t-shirt"}\`` : null,
       options.typoExtract && !options.typoScaleOnly ? `font shorthand \`${options.typoShorthand ? "on" : "off"}\`` : null,
-      `theme attribute \`${attr}\``,
+      grid ? `theme axes ${axesNames}` : `theme attribute \`${attr}\``,
       `per-theme modules \`${options.emitModuleFiles ? "on" : "off"}\``,
       options.emitModuleFiles ? `\`:global()\` \`${options.cssModulesGlobal ? "on" : "off"}\`` : null
     ].filter(Boolean).join(" \xB7 ");
@@ -2386,7 +3855,17 @@ ${aliasPairs.slice(0, 6).map((pair2) => `--${pair2.from}: var(--${pair2.to});`).
 \`\`\`
 
 They are aliases, not a second source of truth \u2014 migrate to the new names when convenient. \`tokens.ts\` only carries the current names.` : "";
-    const moduleSection = options.emitModuleFiles ? `
+    const moduleSection = options.emitModuleFiles && grid ? `
+
+## CSS Modules
+
+The layers of \`tokens.css\`, one file each \u2014 ${layers.replace(/`([^`]+)`/g, "`$1.module.css`")}${options.cssModulesGlobal ? " \u2014 wrapped in `:global(\u2026)` for CSS-Modules projects (Next.js, etc.)" : ""}. Import them in the order of \`tokens.css\`:
+
+\`\`\`ts
+${layers.split(", ").map((name) => `import "./${name.replace(/`/g, "")}.module.css";`).join("\n")}
+\`\`\`
+
+A build that never shows a theme or a product may leave its layer out; \`base\` and the default theme (\`${grid.defaults[grid.axes.length - 1]}\`) are always needed.` : options.emitModuleFiles ? `
 
 ## Per-theme CSS Modules
 
@@ -2412,7 +3891,7 @@ Generated by the **AllCrew Figma Workspace** Figma plugin from **${summary.fileN
 
 | File | What it is |
 |------|------------|
-| \`tokens.css\` | CSS custom properties. One self-contained block per theme. The merged single file. |${moduleRow}
+| \`tokens.css\` | ${cssRow} |${moduleRow}
 | \`tokens.json\` | Canonical W3C token tree (every mode under \`$extensions.modes\`, source collection under \`$extensions.figma\`). For diffing / re-import. |
 | \`tokens.ts\` | Typed \`tokens\` object (values are \`var(--\u2026)\` refs) + \`themes\` / \`Theme\`. |
 
@@ -2430,10 +3909,7 @@ Import the stylesheet once:
 @import "./tokens.css";
 \`\`\`
 
-The default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}
-
-Each \`[${attr}="\u2026"]\` block re-declares **every** variable for that theme, so toggling
-the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleSection}
+The default theme (\`${defaultTheme}\`) is applied on \`:root\`, so it works with no attribute set.${switchExample}${blockNote}${readmeExample(tree)}${aliasSection}${moduleSection}
 `;
   }
   var DEFAULT_OPTIONS = {
@@ -2448,6 +3924,9 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     typoShorthand: false,
     emitNative: false,
     collectionRoles: "",
+    slugThemes: false,
+    themeAxes: "",
+    structure: null,
     delivery: {
       endpoint: "",
       secret: "",
@@ -2495,6 +3974,9 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       typoShorthand: pick("typoShorthand"),
       themeAttr: sanitizeAttr(obj2.themeAttr),
       collectionRoles: typeof obj2.collectionRoles === "string" ? obj2.collectionRoles : "",
+      slugThemes: pick("slugThemes"),
+      themeAxes: typeof obj2.themeAxes === "string" ? obj2.themeAxes.trim() : isRecord(obj2.themeAxes) ? obj2.themeAxes : "",
+      structure: normalizeStructure(obj2.structure).structure,
       delivery: normalizeDelivery(obj2.delivery)
     };
   }
@@ -2506,7 +3988,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       })
     });
   }
-  function buildProductCss(graph, collection, productIds, opts, roles) {
+  function buildProductCss(graph, collection, productIds, opts, roles, grid) {
     var _a, _b, _c;
     const g = productGraph(graph, productIds, collection.id);
     const shaped = shapeForCode(g, variablesToW3CMultiMode(g), __spreadProps(__spreadValues({}, roles), { scaleOnly: opts.typoScaleOnly }));
@@ -2515,18 +3997,23 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     for (const leaf of leaves(inlined)) if (collectionOf(leaf.token) === collection.name) setToken(tree, leaf.path, leaf.token);
     const hint = (_c = (_a = collection.modes.find((m) => m.modeId === collection.defaultModeId)) == null ? void 0 : _a.name) != null ? _c : (_b = collection.modes[0]) == null ? void 0 : _b.name;
     const { defaultTheme, ordered } = orderedThemes(leaves(tree), hint);
-    const slug2 = varName([collection.name]) || "product";
+    const slug3 = varName([collection.name]) || "product";
     const modules2 = {};
+    const sheet = toStylesheet(tree, ordered, defaultTheme, { themeAttr: opts.themeAttr, themeAxes: opts.themeAxes, grid });
     if (opts.emitModuleFiles) {
-      const themeFiles = toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal);
-      for (const name of Object.keys(themeFiles)) modules2[`${slug2}-${name}`] = themeFiles[name];
+      const themeFiles = sheet.grid ? toAxesModuleFiles(tree, sheet.grid, opts.cssModulesGlobal) : toThemeModuleCssFiles(tree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal);
+      for (const name of Object.keys(themeFiles)) modules2[`${slug3}-${name}`] = themeFiles[name];
     }
-    return { tree, themes: ordered, defaultTheme, css: toTokensCss(tree, ordered, defaultTheme, opts.themeAttr), modules: modules2 };
+    return __spreadProps(__spreadValues({ tree, themes: ordered, defaultTheme, css: sheet.css }, sheet.note ? { note: `${collection.name}: ${sheet.note}` } : {}), { modules: modules2 });
   }
-  function buildPackage(graph, options, renames) {
-    var _a, _b;
-    const opts = normalizeOptions(options);
-    const roles = parseCollectionModes(opts.collectionRoles);
+  function buildPackage(rawGraph, options, renames) {
+    var _a, _b, _c, _d, _e, _f;
+    let opts = normalizeOptions(options);
+    const sources = applyThemeAxesSources(rawGraph, parseCollectionModes(opts.collectionRoles), opts.themeAxes, opts.structure);
+    const roles = sources.roles;
+    if (opts.structure && !sources.problem) opts = __spreadProps(__spreadValues({}, opts), { themeAttr: deriveLegacy(opts.structure).themeAttribute });
+    const prepared = prepareRoleGraph(sources.graph, roles, { slugThemes: opts.slugThemes });
+    const graph = prepared.graph;
     const productNames = new Set(roles.products.map((name) => name.trim().toLowerCase()));
     const products = (graph.collections || []).filter((c) => productNames.has(c.name.trim().toLowerCase()));
     const productIds = new Set(products.map((c) => c.id));
@@ -2537,6 +4024,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       scaleOnly: opts.typoScaleOnly
     });
     const summary = buildSummary(graph, sourceTree);
+    if (prepared.notes.length > 0 || sources.notes.length > 0) summary.notes = [...(_a = summary.notes) != null ? _a : [], ...sources.notes, ...prepared.notes];
     const files = {};
     const emitted = { tree: {}, themes: [], defaultTheme: "" };
     const bpNames = /* @__PURE__ */ new Set(["breakpoints", ...roles.breakpoints.map((name) => name.trim().toLowerCase())]);
@@ -2544,12 +4032,18 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       if (Object.keys(breakpointThresholdsOf(graph, coll)).length > 0) continue;
       const frames = Object.entries(breakpointWidthsOf(graph, coll)).map(([mode, width]) => `${mode} ${width}`).join(", ");
       summary.notes = [
-        ...(_a = summary.notes) != null ? _a : [],
+        ...(_b = summary.notes) != null ? _b : [],
         `${coll.name} holds frame widths${frames ? ` (${frames})` : ""} but no thresholds, so no --bp-* was exported \u2014 add FLOAT variables breakpoint/sm, breakpoint/md, \u2026 with the min-width of each layout`
       ];
     }
     if (products.length > 0) {
-      const built = products.map((collection) => __spreadValues({ collection }, buildProductCss(graph, collection, productIds, opts, roles)));
+      const fileGrid = (name) => {
+        var _a2;
+        const axes = (_a2 = sources.materialized) == null ? void 0 : _a2.fileAxes[name];
+        return axes && axes.length > 0 ? slugGridThemes(gridFromAxes(axes, (cell) => cellName(axes, cell)), opts.slugThemes) : void 0;
+      };
+      const built = products.map((collection) => __spreadValues({ collection }, buildProductCss(graph, collection, productIds, opts, roles, fileGrid(collection.name))));
+      for (const b of built) if (b.note) summary.notes = [...(_c = summary.notes) != null ? _c : [], b.note];
       const namesOf = (tree) => new Set(leaves(tree).map((leaf) => varName(leaf.path)));
       const names = built.map((b) => namesOf(b.tree));
       const union = /* @__PURE__ */ new Set();
@@ -2568,29 +4062,34 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       });
       if (summary.products.length > 1) {
         const gaps = summary.products.filter((p) => p.missing.length > 0).map((p) => `${p.name} lacks ${p.missing.length} token(s) another product defines (${p.missing.slice(0, 5).map((n) => "--" + n).join(", ")}${p.missing.length > 5 ? ", \u2026" : ""})`);
-        if (gaps.length > 0) summary.notes = [...(_b = summary.notes) != null ? _b : [], ...gaps];
+        if (gaps.length > 0) summary.notes = [...(_d = summary.notes) != null ? _d : [], ...gaps];
       }
     }
     if (summary.tokenCount > 0 || products.length > 0) {
-      const defaultMode = primaryDefaultMode(graph);
+      const defaultMode = prepared.themeDefault || primaryDefaultMode(graph);
       const { defaultTheme, ordered } = orderedThemes(leaves(sourceTree), defaultMode);
-      const cssTree = opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree;
-      files["tokens.css"] = toTokensCss(cssTree, ordered, defaultTheme, opts.themeAttr, renames);
+      const unique = uniqueVarNames(opts.inlinePrimitives ? inlinePrimitivesTree(sourceTree, opts.flattenAliases) : sourceTree);
+      const cssTree = unique.tree;
+      if (unique.dropped.length > 0) summary.notes = [...(_e = summary.notes) != null ? _e : [], ...unique.dropped];
+      const sheet = toStylesheet(cssTree, ordered, defaultTheme, { themeAttr: opts.themeAttr, themeAxes: opts.themeAxes, renames, cells: sources.cells, problem: sources.problem, grid: slugGridThemes(sources.grid, opts.slugThemes) });
+      files["tokens.css"] = sheet.css;
+      if (sheet.note) summary.notes = [...(_f = summary.notes) != null ? _f : [], sheet.note];
       if (files["tokens.css"].trim() === "") delete files["tokens.css"];
       if (opts.emitModuleFiles) {
-        const themeFiles = toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames);
+        const themeFiles = sheet.grid ? toAxesModuleFiles(cssTree, sheet.grid, opts.cssModulesGlobal, renames) : toThemeModuleCssFiles(cssTree, ordered, defaultTheme, opts.themeAttr, opts.cssModulesGlobal, renames);
         for (const name of Object.keys(themeFiles)) files[name] = themeFiles[name];
       }
       files["tokens.json"] = toTokensJson(sourceTree, renames);
       files["tokens.ts"] = toTokensTs(cssTree, ordered);
-      files["README.md"] = buildReadme(summary, opts, cssTree, renames);
+      files["README.md"] = buildReadme(summary, opts, cssTree, renames, sheet.grid);
       if (opts.emitNative) {
-        const nativeFiles = toNativeFiles(cssTree, ordered, defaultTheme);
+        const nativeFiles = toNativeFiles(cssTree, ordered, defaultTheme, sourceTree);
         for (const name of Object.keys(nativeFiles)) files[name] = nativeFiles[name];
       }
       emitted.tree = cssTree;
       emitted.themes = ordered;
       emitted.defaultTheme = defaultTheme;
+      if (sheet.grid) emitted.grid = sheet.grid;
     }
     return { summary, files, options: opts, emitted };
   }
@@ -2607,7 +4106,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       bootstrapVersion: "5.3",
       djangoScaffold: true
     },
-    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "" },
+    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "", slugThemes: false, themeAxes: "" },
     i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var DESIGN_TOKENS_VALUES = {
@@ -2621,7 +4120,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       bootstrapVersion: "5.3",
       djangoScaffold: false
     },
-    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "data-theme-name", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "" },
+    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "data-theme-name", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "", slugThemes: false, themeAxes: "" },
     i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var TAURI_APP_VALUES = {
@@ -2635,7 +4134,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       bootstrapVersion: "5.3",
       djangoScaffold: false
     },
-    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "" },
+    tokens: { inlinePrimitives: true, flattenAliases: false, themeAttribute: "", emitJson: true, emitScss: false, emitModuleFiles: true, cssModulesGlobal: true, typoExtract: true, typoScaleOnly: true, typoShorthand: false, typoNaming: "tshirt", emitNative: false, includeLibraries: false, collectionRoles: "", slugThemes: false, themeAxes: "" },
     i18n: { wrapTranslate: true, sourceLanguage: "en", languages: "" }
   };
   var EXPORT_PRESETS = [
@@ -2737,7 +4236,7 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
   function normalizeTokens(raw) {
     const defaults = DJANGO_BOOTSTRAP_VALUES.tokens;
     if (!isRecord(raw)) return __spreadValues({}, defaults);
-    return {
+    return __spreadValues({
       inlinePrimitives: typeof raw.inlinePrimitives === "boolean" ? raw.inlinePrimitives : defaults.inlinePrimitives,
       flattenAliases: typeof raw.flattenAliases === "boolean" ? raw.flattenAliases : defaults.flattenAliases,
       themeAttribute: typeof raw.themeAttribute === "string" ? raw.themeAttribute.trim() : defaults.themeAttribute,
@@ -2751,8 +4250,10 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       typoNaming: raw.typoNaming === "value" ? "value" : "tshirt",
       emitNative: typeof raw.emitNative === "boolean" ? raw.emitNative : defaults.emitNative,
       includeLibraries: typeof raw.includeLibraries === "boolean" ? raw.includeLibraries : defaults.includeLibraries,
-      collectionRoles: typeof raw.collectionRoles === "string" ? raw.collectionRoles.trim() : defaults.collectionRoles
-    };
+      collectionRoles: typeof raw.collectionRoles === "string" ? raw.collectionRoles.trim() : defaults.collectionRoles,
+      slugThemes: typeof raw.slugThemes === "boolean" ? raw.slugThemes : defaults.slugThemes,
+      themeAxes: typeof raw.themeAxes === "string" ? raw.themeAxes.trim() : isRecord(raw.themeAxes) && normalizeThemeAxesSpec(raw.themeAxes).spec ? normalizeThemeAxesSpec(raw.themeAxes).spec : defaults.themeAxes
+    }, normalizeStructure(raw.structure).structure ? { structure: normalizeStructure(raw.structure).structure } : {});
   }
   function normalizeThemeMerges(raw, legacyTokens) {
     const groups = [];
@@ -2936,28 +4437,641 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
 
   // src/tokens/index.ts
   function tokenEmitOptionsFrom(options, renames) {
-    return {
+    return __spreadValues({
       inlinePrimitives: options.tokens.inlinePrimitives,
       flattenAliases: options.tokens.flattenAliases,
       themeAttribute: resolveThemeAttribute(options),
       renames,
-      collectionRoles: options.tokens.collectionRoles
-    };
+      collectionRoles: options.tokens.collectionRoles,
+      slugThemes: options.tokens.slugThemes,
+      themeAxes: options.tokens.themeAxes
+    }, options.tokens.structure ? { structure: options.tokens.structure } : {});
   }
   function emitTokenArtifacts(snapshot, options) {
-    const graph = snapshot;
-    const roles = parseCollectionModes(options.collectionRoles);
+    const sources = applyThemeAxesSources(snapshot, parseCollectionModes(options.collectionRoles), options.themeAxes, options.structure);
+    const roles = sources.roles;
+    const prepared = prepareRoleGraph(sources.graph, roles, { slugThemes: options.slugThemes });
+    const graph = prepared.graph;
     const source = shapeForCode(graph, variablesToW3CMultiMode(graph), roles);
-    const { ordered, defaultTheme } = orderedThemes(leaves(source));
-    const cssTree = options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source;
-    return {
-      css: toTokensCss(cssTree, ordered, defaultTheme, options.themeAttribute, options.renames),
+    const { ordered, defaultTheme } = orderedThemes(leaves(source), prepared.themeDefault);
+    const unique = uniqueVarNames(options.inlinePrimitives ? inlinePrimitivesTree(source, options.flattenAliases) : source);
+    const cssTree = unique.tree;
+    const sheet = toStylesheet(cssTree, ordered, defaultTheme, {
+      themeAttr: options.themeAttribute,
+      themeAxes: options.themeAxes,
+      renames: options.renames,
+      cells: sources.cells,
+      problem: sources.problem,
+      grid: slugGridThemes(sources.grid, !!options.slugThemes)
+    });
+    return __spreadProps(__spreadValues({
+      css: sheet.css,
+      notes: [...sources.notes, ...prepared.notes, ...unique.dropped, ...sheet.note ? [sheet.note] : []]
+    }, sheet.grid ? { grid: sheet.grid } : {}), {
       json: toTokensJson(source, options.renames),
       themes: ordered,
       defaultTheme,
       source,
       emitted: cssTree
+    });
+  }
+  var declaredNames = (css) => new Set([...css.matchAll(/^\s*(--[\w-]+)\s*:/gm)].map((m) => m[1])).size;
+  var utf8Bytes = (text6) => {
+    let n = 0;
+    for (const ch of text6) {
+      const code = ch.codePointAt(0);
+      n += code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4;
+    }
+    return n;
+  };
+  function summarizeExport(snapshot, options, file, cssModulesGlobal = false) {
+    var _a;
+    const artifacts = emitTokenArtifacts(snapshot, options);
+    const grid = artifacts.grid;
+    const attributes = grid ? grid.axes.map((axis, n) => ({ attribute: axis.attribute, values: axis.values, default: grid.defaults[n] })) : artifacts.themes.length > 1 ? [{ attribute: options.themeAttribute, values: artifacts.themes, default: artifacts.defaultTheme }] : [];
+    const texts = { "tokens.css": artifacts.css };
+    const files = [{ name: "tokens.css", title: "everything, for runtime switching", tokens: declaredNames(artifacts.css), bytes: utf8Bytes(artifacts.css) }];
+    if (grid) {
+      const modules2 = toAxesModuleFiles(artifacts.emitted, grid, cssModulesGlobal, options.renames);
+      axesLayers(artifacts.emitted, grid).forEach((layer, n) => {
+        const name = Object.keys(modules2)[n];
+        if (!name) return;
+        texts[name] = modules2[name];
+        files.push({ name, title: layer.title.replace(/^[^—]*— /, ""), tokens: declaredNames(modules2[name]), bytes: utf8Bytes(modules2[name]) });
+      });
+    }
+    return __spreadValues({
+      attributes,
+      html: attributes.length > 0 ? `<html ${attributes.map((a) => `${a.attribute}="${a.default}"`).join(" ")}>` : "",
+      blocks: ((_a = artifacts.css.match(/\{\s*$/gm)) != null ? _a : []).length,
+      tokens: declaredNames(artifacts.css),
+      notes: artifacts.notes,
+      files
+    }, file && texts[file] !== void 0 ? { preview: { name: file, text: texts[file] } } : {});
+  }
+  function previewThemeAxes(snapshot, options) {
+    var _a, _b;
+    const graph = snapshot;
+    const collections = ((_a = graph.collections) != null ? _a : []).map((c) => {
+      var _a2, _b2;
+      return {
+        name: c.name,
+        modes: c.modes.map((m) => m.name),
+        variables: ((_a2 = graph.variables) != null ? _a2 : []).filter((v) => v.collectionId === c.id).length,
+        names: ((_b2 = graph.variables) != null ? _b2 : []).filter((v) => v.collectionId === c.id).map((v) => v.name)
+      };
+    });
+    const roles = parseCollectionModes(options.collectionRoles);
+    const checked = normalizeThemeAxesSpec(options.themeAxes);
+    const spec = checked.spec;
+    const suggestion = options.detect || !spec ? (_b = detectThemeAxes(collections, roles.themes[0])) != null ? _b : void 0 : void 0;
+    const artifacts = emitTokenArtifacts(snapshot, options);
+    const blocks2 = [...artifacts.css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^}]*)\}/g)].map((m) => {
+      var _a2;
+      return {
+        selector: m[1].trim().split(/,\s*/).join(", "),
+        tokens: ((_a2 = m[2].match(/--[\w-]+:/g)) != null ? _a2 : []).length
+      };
+    });
+    const preview2 = __spreadProps(__spreadValues({
+      spec,
+      problems: [...checked.problems],
+      notes: artifacts.notes.filter((note) => !note.startsWith("Theme axes not used"))
+    }, suggestion ? { suggestion } : {}), {
+      collections: collections.map((_c) => {
+        var _d = _c, { names: _names } = _d, summary = __objRest(_d, ["names"]);
+        return summary;
+      }),
+      themes: artifacts.themes,
+      oneModeOnly: collections.length > 0 && collections.every((c) => c.modes.length <= 1),
+      blocks: blocks2
+    });
+    if (!spec) return preview2;
+    const sources = applyThemeAxesSources(graph, roles, spec);
+    if (sources.problem) {
+      preview2.problems.push(sources.problem);
+      return preview2;
+    }
+    if (sources.found) preview2.found = sources.found;
+    const placed = placeThemes(artifacts.themes, spec, sources.cells);
+    preview2.problems.push(...placed.problems);
+    if (placed.problems.length === 0 && !artifacts.grid) {
+      const why = artifacts.notes.find((note) => note.startsWith("Theme axes not used"));
+      if (why) preview2.problems.push(why.replace(/^Theme axes not used — /, "").replace(/; tokens\.css has .*$/, ""));
+    }
+    const { outer, inner } = orderAxes(spec);
+    const outerLabels = outer ? outer.values.map((v) => v.label) : ["_"];
+    preview2.grid = __spreadProps(__spreadValues({}, outer ? { outer: { attribute: outer.attribute, labels: outerLabels } } : {}), {
+      inner: { attribute: inner.attribute, labels: inner.values.map((v) => v.label) },
+      cells: outerLabels.flatMap(
+        (o) => inner.values.map((i) => {
+          const key = `${o}|${i.label}`;
+          return __spreadValues({ outer: o, inner: i.label }, placed.cells[key] ? { theme: placed.cells[key], how: placed.how[key] } : {});
+        })
+      )
+    });
+    const grid = artifacts.grid;
+    if (grid) {
+      const attrs = grid.axes.map((axis, n) => {
+        var _a2;
+        return `${axis.attribute}="${(_a2 = axis.values.find((v) => v !== grid.defaults[n])) != null ? _a2 : grid.defaults[n]}"`;
+      });
+      preview2.html = `<html ${attrs.join(" ")}>`;
+    }
+    return preview2;
+  }
+
+  // src/tokens/mapping.ts
+  var ATTRIBUTE_SOURCES = ["collections", "columns", "names"];
+  var COLLECTION_ROLES = ["export", "palette", "skip", "breakpoints"];
+  var ROLE_LABELS = {
+    export: "Export",
+    palette: "Values only",
+    skip: "Off",
+    breakpoints: "Breakpoints (--bp-*)"
+  };
+  function codeValue(label3) {
+    return String(label3).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  var isRecord2 = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2);
+  var cleanAttribute2 = (raw) => String(raw != null ? raw : "").trim().replace(/[^A-Za-z0-9_-]/g, "");
+  var same3 = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  var strings = (raw) => typeof raw === "string" && raw.trim() ? [raw.trim()] : Array.isArray(raw) ? [...new Set(raw.filter((x) => typeof x === "string" && x.trim() !== "").map((x) => x.trim()))] : [];
+  function collectionsUsedBy(mapping) {
+    var _a, _b, _c;
+    const used = /* @__PURE__ */ new Set();
+    for (const attribute of mapping.attributes) {
+      for (const v of attribute.values) for (const name of (_a = v.collections) != null ? _a : []) used.add(name);
+      for (const name of [...(_b = attribute.shared) != null ? _b : [], ...(_c = attribute.collections) != null ? _c : []]) used.add(name);
+    }
+    return used;
+  }
+  function normalizeMapping(raw) {
+    var _a, _b, _c, _d;
+    const problems = [];
+    if (raw === void 0 || raw === null) return { mapping: null, problems };
+    if (!isRecord2(raw)) return { mapping: null, problems: ["the mapping must be an object"] };
+    if (raw.version !== void 0 && raw.version !== 1) problems.push(`mapping version ${String(raw.version)} is not one this plugin reads (1)`);
+    if (raw.attributes !== void 0 && !Array.isArray(raw.attributes)) return { mapping: null, problems: [...problems, '"attributes" must be a list'] };
+    const attributes = [];
+    for (const [n, entry] of ((_a = raw.attributes) != null ? _a : []).entries()) {
+      if (!isRecord2(entry)) {
+        problems.push(`attribute ${n + 1} must be an object`);
+        continue;
+      }
+      const name = cleanAttribute2(entry.name);
+      const label3 = name || `attribute ${n + 1}`;
+      if (!name) problems.push(`${label3} needs a name in code (data-theme, data-product\u2026)`);
+      if (!ATTRIBUTE_SOURCES.includes(entry.from)) {
+        problems.push(`${label3}: "from" must be one of ${ATTRIBUTE_SOURCES.join(", ")}`);
+        continue;
+      }
+      const from = entry.from;
+      const values = [];
+      for (const rawValue of Array.isArray(entry.values) ? entry.values : []) {
+        if (!isRecord2(rawValue)) continue;
+        const value2 = codeValue(typeof rawValue.value === "string" ? rawValue.value : "");
+        if (!value2) {
+          problems.push(`${label3}: every value needs a name in code`);
+          continue;
+        }
+        const out = { value: value2 };
+        if (typeof rawValue.sameAs === "string" && codeValue(rawValue.sameAs)) {
+          out.sameAs = codeValue(rawValue.sameAs);
+        } else if (from === "collections") {
+          const collections3 = strings((_b = rawValue.collections) != null ? _b : rawValue.collection);
+          if (collections3.length > 0) out.collections = collections3;
+          else problems.push(`${label3} = ${value2}: say which collection holds it, or which value it is the same as`);
+        } else if (from === "columns") {
+          const columns = strings((_c = rawValue.columns) != null ? _c : rawValue.column);
+          if (columns.length > 0) out.columns = columns;
+          else problems.push(`${label3} = ${value2}: say which columns it is, or which value it is the same as`);
+        } else if (typeof rawValue.marker === "string" && rawValue.marker.trim() && codeValue(rawValue.marker) !== value2) {
+          out.marker = rawValue.marker.trim();
+        }
+        if (rawValue.base === true && !out.sameAs) out.base = true;
+        values.push(out);
+      }
+      if (values.length === 0) problems.push(`${label3} has no values`);
+      const twice = values.map((v) => v.value).filter((v, i, all) => all.indexOf(v) !== i);
+      if (twice.length > 0) problems.push(`${label3} has the value "${twice[0]}" twice`);
+      for (const v of values) {
+        if (!v.sameAs) continue;
+        const target = values.find((t) => t.value === v.sameAs);
+        if (!target || target.sameAs) problems.push(`${label3} = ${v.value} is the same as "${v.sameAs}", which is not a value with tokens of its own`);
+      }
+      const held = values.filter((v) => !v.sameAs);
+      const bases = held.filter((v) => v.base);
+      if (bases.length > 1) problems.push(`${label3}: one base value, not ${bases.length}`);
+      if (held.length > 0 && bases.length === 0) held[0].base = true;
+      const attribute = { name, from, values };
+      const collections2 = strings((_d = entry.collections) != null ? _d : entry.collection);
+      if (from !== "collections" && collections2.length > 0) attribute.collections = collections2;
+      const shared = strings(entry.shared);
+      if (from === "collections" && shared.length > 0) attribute.shared = shared;
+      if (entry.nested === true) attribute.nested = true;
+      attributes.push(attribute);
+    }
+    if (attributes.length > 2) problems.push(`the export combines two attributes at most, not ${attributes.length}`);
+    const names = attributes.map((a) => a.name).filter(Boolean);
+    if (new Set(names).size !== names.length) problems.push("two attributes have the same name");
+    if (attributes.filter((a) => a.nested).length > 1) problems.push("only one attribute can be set again inside the page");
+    const columnsOnly = attributes.length > 0 && attributes.every((a) => a.from === "columns");
+    if (columnsOnly) {
+      const holders = [...new Set(attributes.flatMap((a) => {
+        var _a2;
+        return (_a2 = a.collections) != null ? _a2 : [];
+      }))];
+      if (holders.length === 0) problems.push(`say which collection's columns ${attributes.map((a) => a.name).join(" and ")} come from`);
+      if (holders.length > 1) problems.push(`the columns come from one collection, not ${holders.join(" and ")}`);
+      if (attributes.length === 1 && attributes[0].values.some((v) => {
+        var _a2, _b2;
+        return ((_b2 = (_a2 = v.columns) == null ? void 0 : _a2.length) != null ? _b2 : 0) > 1;
+      })) problems.push(`${attributes[0].name}: each value is one column`);
+    } else {
+      for (const a of attributes.filter((x) => x.from === "columns")) {
+        if (a.values.some((v) => {
+          var _a2, _b2;
+          return ((_b2 = (_a2 = v.columns) == null ? void 0 : _a2.length) != null ? _b2 : 0) > 1;
+        })) problems.push(`${a.name}: each value is one column name, found in every collection that has it`);
+      }
+    }
+    if (attributes.some((a) => a.from === "names") && attributes.some((a) => a.from === "collections") && attributes.some((a) => {
+      var _a2;
+      return a.from === "names" && ((_a2 = a.collections) == null ? void 0 : _a2.length);
+    })) {
+      problems.push('with an attribute taken from collections, the marked names are read in those collections \u2014 drop "collections" from the names attribute');
+    }
+    const collections = {};
+    if (isRecord2(raw.collections)) {
+      for (const [name, role] of Object.entries(raw.collections)) {
+        if (typeof role === "string" && COLLECTION_ROLES.includes(role)) collections[name] = role;
+        else problems.push(`"${name}": the role must be one of ${COLLECTION_ROLES.join(", ")}`);
+      }
+    }
+    const mapping = { version: 1, attributes };
+    const used = collectionsUsedBy(mapping);
+    for (const name of Object.keys(collections)) if (used.has(name)) delete collections[name];
+    if (Object.keys(collections).length > 0) mapping.collections = collections;
+    return { mapping, problems };
+  }
+  function mappingFileProblems(snapshot, mapping) {
+    var _a, _b;
+    const own = snapshot.collections.filter((c) => !c.inlineOnly);
+    const byName = new Map(own.map((c) => [c.name, c]));
+    const problems = [];
+    const absent = [...collectionsUsedBy(mapping), ...Object.keys((_a = mapping.collections) != null ? _a : {})].filter((name, i, all) => all.indexOf(name) === i && !byName.has(name));
+    if (absent.length > 0) problems.push(`the file has no collection ${absent.map((n) => `"${n}"`).join(", ")}`);
+    for (const attribute of mapping.attributes) {
+      if (attribute.from !== "columns") continue;
+      const others = mapping.attributes.filter((a) => a !== attribute).flatMap((a) => {
+        var _a2, _b2;
+        return [...a.values.flatMap((v) => {
+          var _a3;
+          return (_a3 = v.collections) != null ? _a3 : [];
+        }), ...(_a2 = a.shared) != null ? _a2 : [], ...(_b2 = a.collections) != null ? _b2 : []];
+      });
+      const scope = (((_b = attribute.collections) == null ? void 0 : _b.length) ? attribute.collections : others.length ? others : own.map((c) => c.name)).map((name) => byName.get(name)).filter((c) => !!c);
+      if (scope.length === 0) continue;
+      const have = new Set(scope.flatMap((c) => c.modes.map((m) => m.name)));
+      const lacking = attribute.values.flatMap((v) => {
+        var _a2;
+        return (_a2 = v.columns) != null ? _a2 : [];
+      }).filter((column2, i, all) => all.indexOf(column2) === i && !have.has(column2));
+      if (lacking.length > 0) {
+        problems.push(`${attribute.name}: ${scope.map((c) => c.name).join(", ")} ${scope.length === 1 ? "has" : "have"} no column ${lacking.map((n) => `"${n}"`).join(", ")}`);
+      }
+    }
+    return problems;
+  }
+  function mappingToSettings(mapping) {
+    var _a, _b, _c, _d;
+    const roles = [];
+    for (const [name, role] of Object.entries((_a = mapping.collections) != null ? _a : {})) {
+      if (role === "palette" || role === "skip") roles.push(`${name}: hidden`);
+      else if (role === "breakpoints") roles.push(`${name}: breakpoints`);
+    }
+    const attributes = mapping.attributes;
+    let themeAxes = "";
+    const labelOf = (a, v) => {
+      var _a2, _b2, _c2, _d2;
+      if (v.sameAs) return v.value;
+      if (a.from === "columns") return (_b2 = (_a2 = v.columns) == null ? void 0 : _a2[0]) != null ? _b2 : v.value;
+      if (a.from === "names") return (_c2 = v.marker) != null ? _c2 : v.value;
+      return ((_d2 = v.collections) == null ? void 0 : _d2.length) === 1 ? v.collections[0] : v.value;
     };
+    const axisOf2 = (a, label3) => __spreadValues(__spreadProps(__spreadValues(__spreadValues({
+      attribute: a.name
+    }, a.from === "columns" ? {} : { source: a.from }), a.nested ? { nested: true } : {}), {
+      values: a.values.map((v) => {
+        const target = v.sameAs ? a.values.find((t) => t.value === v.sameAs) : void 0;
+        return __spreadValues(__spreadValues(__spreadValues({
+          label: label3(v),
+          value: v.value
+        }, a.from === "collections" && v.collections ? { collections: v.collections } : {}), v.base ? { base: true } : {}), target ? { sameAs: label3(target) } : {});
+      })
+    }), a.from === "collections" && a.shared && a.shared.length > 0 ? { shared: a.shared } : {});
+    if (attributes.length > 0 && attributes.every((a) => a.from === "columns")) {
+      const holder = attributes.flatMap((a) => {
+        var _a2;
+        return (_a2 = a.collections) != null ? _a2 : [];
+      })[0];
+      if (holder) roles.push(`${holder}: themes`);
+      if (attributes.length === 1) {
+        themeAxes = { axes: [axisOf2(attributes[0], (v) => labelOf(attributes[0], v))] };
+      } else {
+        const [outer, inner] = attributes;
+        const cells = {};
+        for (const a of outer.values) for (const b of inner.values) {
+          const column2 = ((_b = a.columns) != null ? _b : []).find((c) => {
+            var _a2;
+            return ((_a2 = b.columns) != null ? _a2 : []).includes(c);
+          });
+          if (column2) cells[`${a.value}|${b.value}`] = column2;
+        }
+        themeAxes = { axes: [axisOf2(outer, (v) => v.value), axisOf2(inner, (v) => v.value)], cells };
+      }
+    } else if (attributes.length > 0) {
+      const markedIn = (_c = attributes.find((a) => {
+        var _a2;
+        return a.from === "names" && ((_a2 = a.collections) == null ? void 0 : _a2.length);
+      })) == null ? void 0 : _c.collections;
+      themeAxes = __spreadValues({
+        axes: attributes.map((a) => axisOf2(a, (v) => labelOf(a, v)))
+      }, markedIn && !attributes.some((a) => a.from === "collections") ? { collections: markedIn } : {});
+    }
+    return { collectionRoles: roles.join(", "), themeAxes, themeAttribute: ((_d = attributes[attributes.length - 1]) == null ? void 0 : _d.name) || "data-theme", slugThemes: true };
+  }
+  function palettes(snapshot) {
+    const collectionOf2 = new Map(snapshot.variables.map((v) => [v.id, v.collectionId]));
+    const aliased = /* @__PURE__ */ new Set();
+    const hasAlias = /* @__PURE__ */ new Set();
+    for (const v of snapshot.variables) {
+      for (const value2 of Object.values(v.valuesByMode)) {
+        if (isAlias(value2)) {
+          hasAlias.add(v.collectionId);
+          const target = collectionOf2.get(value2.id);
+          if (target && target !== v.collectionId) aliased.add(target);
+        }
+      }
+    }
+    return new Set(snapshot.collections.filter((c) => aliased.has(c.id) && !hasAlias.has(c.id)).map((c) => c.name));
+  }
+  function isAlias(value2) {
+    return isRecord2(value2) && value2.type === "VARIABLE_ALIAS" && typeof value2.id === "string";
+  }
+  var wordsOf2 = (name) => name.split(/[\s_\-–—/()]+/).filter((w) => w !== "").map((w) => w.toLowerCase());
+  var holdsWords2 = (name, label3) => {
+    const words3 = wordsOf2(name);
+    const wanted = wordsOf2(label3);
+    return wanted.length > 0 && wanted.every((w) => words3.includes(w));
+  };
+  var valueOf = (v) => v.value ? codeValue(v.value) : codeValue(v.label);
+  function mappingFromSettings(settings, snapshot) {
+    var _a, _b, _c, _d;
+    const roles = parseCollectionModes(settings.collectionRoles);
+    const spec = normalizeThemeAxesSpec(settings.themeAxes).spec;
+    const palette = palettes(snapshot);
+    const own = snapshot.collections.filter((c) => !c.inlineOnly);
+    const collections = {};
+    for (const c of own) {
+      if (roles.hidden.some((n) => same3(n, c.name))) collections[c.name] = palette.has(c.name) ? "palette" : "skip";
+      else if (roles.breakpoints.some((n) => same3(n, c.name))) collections[c.name] = "breakpoints";
+    }
+    const byName = (name) => own.find((c) => same3(c.name, name));
+    const axes = ((_a = spec == null ? void 0 : spec.axes) != null ? _a : []).slice(0, 2);
+    const sameAsOf = (axis, v) => {
+      const target = axis.values.find((t) => same3(t.label, v.sameAs));
+      return target ? valueOf(target) : codeValue(v.sameAs);
+    };
+    const finish2 = (attributes) => {
+      const normalized = normalizeMapping({ version: 1, attributes, collections });
+      return normalized.problems.length === 0 ? normalized.mapping : null;
+    };
+    if (axes.some((a) => a.source === "collections" || a.source === "names")) {
+      const attributes = [];
+      for (const axis of axes) {
+        const values = [];
+        for (const v of axis.values) {
+          if (v.sameAs) {
+            values.push({ value: valueOf(v), sameAs: sameAsOf(axis, v) });
+            continue;
+          }
+          const base = v.base ? { base: true } : {};
+          if (axis.source === "collections") {
+            const named = ((_b = v.collections) != null ? _b : []).map(byName).filter(Boolean);
+            const found = named.length > 0 ? named : own.filter((c) => holdsWords2(c.name, v.label));
+            if (found.length === 0) return null;
+            values.push(__spreadValues({ value: valueOf(v), collections: found.map((c) => c.name) }, base));
+          } else if (axis.source === "names") {
+            values.push(__spreadValues(__spreadValues({ value: valueOf(v) }, codeValue(v.label) !== valueOf(v) ? { marker: v.label } : {}), base));
+          } else {
+            values.push(__spreadValues({ value: valueOf(v), columns: [v.label] }, base));
+          }
+        }
+        const shared = ((_c = axis.shared) != null ? _c : []).map(byName).filter(Boolean).map((c) => c.name);
+        const markedIn = axis.source === "names" ? ((_d = spec == null ? void 0 : spec.collections) != null ? _d : []).map(byName).filter(Boolean).map((c) => c.name) : [];
+        attributes.push(__spreadValues(__spreadValues(__spreadProps(__spreadValues({
+          name: axis.attribute,
+          from: axis.source === "collections" ? "collections" : axis.source === "names" ? "names" : "columns"
+        }, axis.nested ? { nested: true } : {}), {
+          values
+        }), shared.length > 0 ? { shared } : {}), markedIn.length > 0 ? { collections: markedIn } : {}));
+      }
+      return finish2(attributes);
+    }
+    const holder = roles.themes.map(byName).find(Boolean);
+    if (!holder) return null;
+    const modes = holder.modes.map((m) => m.name);
+    if (axes.length === 0) {
+      return finish2([{ name: settings.themeAttribute || "data-theme-name", from: "columns", collections: [holder.name], values: modes.map((m) => ({ value: codeValue(m), columns: [m] })) }]);
+    }
+    const columnsOf = (part, v) => modes.filter((mode) => {
+      var _a2, _b2;
+      const cell = Object.entries((_a2 = spec == null ? void 0 : spec.cells) != null ? _a2 : {}).find(([, m]) => same3(m, mode));
+      if (cell && axes.length >= 2) return same3((_b2 = cell[0].split("|")[part]) != null ? _b2 : "", v.label);
+      return same3(mode, v.label) || holdsWords2(mode, v.label);
+    });
+    const nestedAt = axes.findIndex((a) => a.nested);
+    return finish2(
+      axes.map((axis, part) => __spreadProps(__spreadValues({
+        name: axis.attribute,
+        from: "columns",
+        collections: [holder.name]
+      }, part === (nestedAt === -1 ? axes.length - 1 : nestedAt) && axes.length >= 2 ? { nested: true } : {}), {
+        values: axis.values.map((v) => v.sameAs ? { value: valueOf(v), sameAs: sameAsOf(axis, v) } : { value: valueOf(v), columns: columnsOf(part, v) })
+      }))
+    );
+  }
+  function suggestMapping(snapshot) {
+    var _a, _b, _c;
+    const own = snapshot.collections.filter((c) => !c.inlineOnly);
+    const summaries = own.map((c) => ({
+      name: c.name,
+      modes: c.modes.map((m) => m.name),
+      variables: count(snapshot, c),
+      names: snapshot.variables.filter((v) => v.collectionId === c.id).map((v) => v.name)
+    }));
+    const palette = palettes(snapshot);
+    const roles = [];
+    for (const c of own) {
+      if (/breakpoint/i.test(c.name)) roles.push(`${c.name}: breakpoints`);
+      else if (palette.has(c.name)) roles.push(`${c.name}: hidden`);
+    }
+    const detected = detectThemeAxes(summaries);
+    let mapping = null;
+    if (detected) {
+      const fromModesOnly = detected.spec.axes.every((a) => {
+        var _a2;
+        return ((_a2 = a.source) != null ? _a2 : "modes") === "modes";
+      });
+      const grid = fromModesOnly ? own.filter((c) => c.modes.length >= 2).find((c) => detected.spec.axes.every((axis) => axis.values.every((v) => c.modes.some((m) => holdsWords2(m.name, v.label))))) : void 0;
+      mapping = mappingFromSettings({ collectionRoles: [...roles, ...grid ? [`${grid.name}: themes`] : []].join(", "), themeAxes: detected.spec }, snapshot);
+    }
+    if (!mapping) {
+      const multi = [...own].filter((c) => c.modes.length >= 2 && !/breakpoint/i.test(c.name)).sort((a, b) => count(snapshot, b) - count(snapshot, a))[0];
+      mapping = (_a = multi ? mappingFromSettings({ collectionRoles: [...roles, `${multi.name}: themes`].join(", "), themeAxes: "", themeAttribute: "data-theme" }, snapshot) : null) != null ? _a : normalizeMapping({ version: 1, attributes: [], collections: Object.fromEntries(own.filter((c) => palette.has(c.name) || /breakpoint/i.test(c.name)).map((c) => [c.name, palette.has(c.name) ? "palette" : "breakpoints"])) }).mapping;
+    }
+    const used = collectionsUsedBy(mapping);
+    const themedNames = new Set(snapshot.variables.filter((v) => {
+      var _a2, _b2;
+      return used.has((_b2 = (_a2 = snapshot.collections.find((c) => c.id === v.collectionId)) == null ? void 0 : _a2.name) != null ? _b2 : "");
+    }).map((v) => v.name));
+    for (const c of own) {
+      if (used.has(c.name) || ((_b = mapping.collections) == null ? void 0 : _b[c.name]) || themedNames.size === 0) continue;
+      if (snapshot.variables.some((v) => v.collectionId === c.id && themedNames.has(v.name))) mapping.collections = __spreadProps(__spreadValues({}, (_c = mapping.collections) != null ? _c : {}), { [c.name]: "skip" });
+    }
+    return mapping;
+  }
+  var count = (snapshot, c) => snapshot.variables.filter((v) => v.collectionId === c.id).length;
+  function describeMapping(snapshot, mapping, options = {}) {
+    var _a, _b, _c, _d, _e, _f, _g, _h;
+    const own = snapshot.collections.filter((c) => !c.inlineOnly);
+    const layered = mapping.attributes.find((a) => a.from === "collections");
+    const baseValue = layered == null ? void 0 : layered.values.find((v) => v.base);
+    const baseName = ((_a = baseValue == null ? void 0 : baseValue.collections) == null ? void 0 : _a.length) === 1 ? baseValue.collections[0] : void 0;
+    const lineOf = (name) => {
+      var _a2, _b2, _c2, _d2, _e2;
+      const parts = [];
+      for (const a of mapping.attributes) {
+        if (a.from === "collections") {
+          const v = a.values.find((x) => {
+            var _a3;
+            return (_a3 = x.collections) == null ? void 0 : _a3.includes(name);
+          });
+          if (v) parts.push(`${a.name} = ${v.value}${a === layered ? v.base ? " \xB7 base" : baseName && baseName !== name ? ` \xB7 on top of ${baseName}` : "" : ""}`);
+          else if ((_a2 = a.shared) == null ? void 0 : _a2.includes(name)) parts.push(`in every ${a.name}`);
+        } else if (a.from === "columns" && ((_b2 = a.collections) == null ? void 0 : _b2.includes(name))) {
+          parts.push(`${a.name} in its columns`);
+        } else if (a.from === "names" && ((_c2 = a.collections) == null ? void 0 : _c2.includes(name))) {
+          parts.push(`${a.name} marked in its names`);
+        }
+      }
+      if (parts.length > 0) return { role: "attribute", line: parts.join(" \xB7 ") };
+      const role = (_e2 = (_d2 = mapping.collections) == null ? void 0 : _d2[name]) != null ? _e2 : "export";
+      return { role, line: ROLE_LABELS[role] };
+    };
+    const view = {
+      collections: own.map((c) => __spreadValues({ name: c.name, tokens: count(snapshot, c), modes: c.modes.map((m) => m.name) }, lineOf(c.name))),
+      missing: [...collectionsUsedBy(mapping), ...Object.keys((_b = mapping.collections) != null ? _b : {})].filter((name, i, all) => all.indexOf(name) === i && !own.some((c) => c.name === name)),
+      maxColumns: Math.max(0, ...own.map((c) => c.modes.length)),
+      unbound: [],
+      markers: markersOf(snapshot, own)
+    };
+    if (mapping.attributes.length > 0 && mapping.attributes.every((a) => a.from === "columns")) {
+      const holder = own.find((c) => mapping.attributes.some((a) => {
+        var _a2;
+        return (_a2 = a.collections) == null ? void 0 : _a2.includes(c.name);
+      }));
+      for (const m of (_c = holder == null ? void 0 : holder.modes) != null ? _c : []) {
+        if (mapping.attributes.some((a) => !a.values.some((v) => {
+          var _a2;
+          return (_a2 = v.columns) == null ? void 0 : _a2.includes(m.name);
+        }))) view.unbound.push(`${holder.name} / ${m.name}`);
+      }
+    }
+    const selected = own.find((c) => c.name === options.collection);
+    if (!selected) return view;
+    const limit = Math.max(1, (_d = options.limit) != null ? _d : 300);
+    const byId = new Map([...(_f = (_e = options.resolve) == null ? void 0 : _e.variables) != null ? _f : [], ...snapshot.variables].map((v) => [v.id, v]));
+    const collectionById = new Map([...(_h = (_g = options.resolve) == null ? void 0 : _g.collections) != null ? _h : [], ...snapshot.collections].map((c) => [c.id, c]));
+    const varsOf = (c) => snapshot.variables.filter((v) => v.collectionId === c.id);
+    const resolve2 = (v, mode, depth = 0) => {
+      var _a2;
+      const c = collectionById.get(v.collectionId);
+      const m = (_a2 = c == null ? void 0 : c.modes.find((x) => x.name === mode)) != null ? _a2 : c == null ? void 0 : c.modes.find((x) => x.modeId === c.defaultModeId);
+      const value2 = m ? v.valuesByMode[m.modeId] : void 0;
+      if (isAlias(value2)) {
+        const target = byId.get(value2.id);
+        return target && depth < 16 ? resolve2(target, mode, depth + 1) : void 0;
+      }
+      return value2;
+    };
+    const cellOf = (v, mode) => {
+      var _a2, _b2, _c2;
+      const c = collectionById.get(v.collectionId);
+      const m = (_a2 = c == null ? void 0 : c.modes.find((x) => x.name === mode)) != null ? _a2 : c == null ? void 0 : c.modes.find((x) => x.modeId === c.defaultModeId);
+      const value2 = m ? v.valuesByMode[m.modeId] : void 0;
+      const final = resolve2(v, mode);
+      const color = colorOf(final);
+      if (isAlias(value2)) return __spreadValues({ text: (_c2 = (_b2 = byId.get(value2.id)) == null ? void 0 : _b2.name) != null ? _c2 : "missing token" }, color ? { color } : {});
+      return __spreadValues({ text: color != null ? color : final === void 0 ? "\u2014" : String(final) }, color ? { color } : {});
+    };
+    const fingerprint = (v, mode) => {
+      var _a2;
+      return JSON.stringify((_a2 = resolve2(v, mode)) != null ? _a2 : null);
+    };
+    const modes = selected.modes.map((m) => m.name);
+    const onTop = (layered == null ? void 0 : layered.values.some((v) => {
+      var _a2;
+      return !v.base && ((_a2 = v.collections) == null ? void 0 : _a2.includes(selected.name));
+    })) && baseName && baseName !== selected.name;
+    const base = onTop ? own.find((c) => c.name === baseName) : void 0;
+    const baseByName = new Map(base ? varsOf(base).map((v) => [v.name, v]) : []);
+    const rows = [];
+    for (const v of varsOf(selected)) {
+      const twin = baseByName.get(v.name);
+      const status = base ? twin && modes.every((mode) => fingerprint(v, mode) === fingerprint(twin, mode)) ? "same" : "override" : void 0;
+      rows.push(__spreadValues({ name: v.name, code: `--${varName(v.name.split("/"))}`, cells: modes.map((mode) => cellOf(v, mode)) }, status ? { status } : {}));
+    }
+    if (base) {
+      const mine = new Set(varsOf(selected).map((v) => v.name));
+      for (const v of varsOf(base)) if (!mine.has(v.name)) rows.push({ name: v.name, code: `--${varName(v.name.split("/"))}`, cells: modes.map((mode) => cellOf(v, mode)), status: "base" });
+    }
+    const used = collectionsUsedBy(mapping);
+    const columnsHere = (a) => {
+      var _a2;
+      return a.from === "columns" && (((_a2 = a.collections) == null ? void 0 : _a2.length) ? a.collections.includes(selected.name) : used.has(selected.name));
+    };
+    view.table = __spreadValues({
+      collection: selected.name,
+      columns: modes.map((mode) => ({
+        mode,
+        bindings: mapping.attributes.filter(columnsHere).flatMap((a) => a.values.filter((v) => {
+          var _a2;
+          return (_a2 = v.columns) == null ? void 0 : _a2.includes(mode);
+        }).map((v) => ({ attribute: a.name, value: v.value })))
+      })),
+      rows: rows.slice(0, limit),
+      more: Math.max(0, rows.length - limit)
+    }, base ? { base: base.name } : {});
+    return view;
+  }
+  function markersOf(snapshot, collections, limit = 80) {
+    var _a;
+    const ids = new Set(collections.map((c) => c.id));
+    const counts = /* @__PURE__ */ new Map();
+    for (const v of snapshot.variables) {
+      if (!ids.has(v.collectionId)) continue;
+      for (const segment of new Set(v.name.split("/").slice(0, -1).map((x) => x.trim()).filter(Boolean))) counts.set(segment, ((_a = counts.get(segment)) != null ? _a : 0) + 1);
+    }
+    return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, limit).map(([segment, tokens]) => ({ segment, tokens }));
+  }
+  function colorOf(value2) {
+    if (!isRecord2(value2) || typeof value2.r !== "number" || typeof value2.g !== "number" || typeof value2.b !== "number") return void 0;
+    const hex5 = (x) => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0");
+    const a = typeof value2.a === "number" ? value2.a : 1;
+    return `#${hex5(value2.r)}${hex5(value2.g)}${hex5(value2.b)}${a < 1 ? hex5(a) : ""}`;
   }
 
   // src/targets/django/bootstrap/map.ts
@@ -3000,8 +5114,8 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
     var _a;
     const bySlug = /* @__PURE__ */ new Map();
     for (const leaf of flatLeaves) {
-      const slug2 = varName(leaf.path);
-      if (!bySlug.has(slug2)) bySlug.set(slug2, leaf);
+      const slug3 = varName(leaf.path);
+      if (!bySlug.has(slug3)) bySlug.set(slug3, leaf);
     }
     const matched = /* @__PURE__ */ new Map();
     for (const entry of DEFAULT_BOOTSTRAP_MAP) {
@@ -3018,9 +5132,9 @@ the attribute swaps the whole set.${readmeExample(tree)}${aliasSection}${moduleS
       }
     }
     for (const leaf of flatLeaves) {
-      const slug2 = varName(leaf.path);
-      if (!slug2.startsWith("bs-")) continue;
-      const bsVar = `--${slug2}`;
+      const slug3 = varName(leaf.path);
+      if (!slug3.startsWith("bs-")) continue;
+      const bsVar = `--${slug3}`;
       matched.set(bsVar, {
         bsVar,
         scssVar: defaultScssVar(bsVar),
@@ -3140,8 +5254,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
 
   // src/targets/django/generate/build.ts
   function bootstrapVarForVariantValue(value2) {
-    const slug2 = value2.trim().toLowerCase();
-    const bsVar = `--bs-${slug2}`;
+    const slug3 = value2.trim().toLowerCase();
+    const bsVar = `--bs-${slug3}`;
     return DEFAULT_BOOTSTRAP_MAP.some((entry) => entry.bsVar === bsVar) ? bsVar : null;
   }
   function variantFillTokenPath(variantValue, availablePaths) {
@@ -3151,8 +5265,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     if (!entry) return null;
     const bySlug = /* @__PURE__ */ new Map();
     for (const path of availablePaths) {
-      const slug2 = varName(path.split("."));
-      if (!bySlug.has(slug2)) bySlug.set(slug2, path);
+      const slug3 = varName(path.split("."));
+      if (!bySlug.has(slug3)) bySlug.set(slug3, path);
     }
     for (const candidate of entry.candidates) {
       const path = bySlug.get(candidate);
@@ -4773,11 +6887,11 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
     "carousel-slide": carouselSlide
   };
   var RENDERER_KINDS = Object.keys(RENDERERS);
-  var slug = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  var slug2 = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
   function specKind(spec) {
     var _a, _b;
     const def = { key: `gen-${spec.name}`, setName: spec.name, properties: planComponent(spec).componentDef.properties };
-    return (_b = (_a = matchBootstrapComponent(spec.name, def, slug)) == null ? void 0 : _a.kind) != null ? _b : null;
+    return (_b = (_a = matchBootstrapComponent(spec.name, def, slug2)) == null ? void 0 : _a.kind) != null ? _b : null;
   }
   function fallbackRenderer(spec) {
     var _a;
@@ -4789,7 +6903,7 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   }
   function blueprintVariant(spec, values) {
     var _a;
-    const kind = (_a = specKind(spec)) != null ? _a : slug(spec.name);
+    const kind = (_a = specKind(spec)) != null ? _a : slug2(spec.name);
     const renderer = RENDERERS[kind];
     return renderer ? renderer(spec, values) : fallbackRenderer(spec);
   }
@@ -5830,8 +7944,8 @@ ${themeBlockDeclarations(matched, theme).join("\n")}
   ];
   var RASTER_SCALES = [1, 2];
   function slugify(name) {
-    const slug2 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
-    return slug2 || "asset";
+    const slug3 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+    return slug3 || "asset";
   }
   function idSegment(id) {
     return id.replace(/[^a-zA-Z0-9_-]+/g, "-");
@@ -8369,12 +10483,12 @@ ${indent2}</div>`;
     var _a;
     const destinationId = (_a = node.navigate) == null ? void 0 : _a.destinationId;
     if (!destinationId) return rendered;
-    const slug2 = navMap.get(destinationId);
-    if (!slug2) {
+    const slug3 = navMap.get(destinationId);
+    if (!slug3) {
       console.warn(`"${node.name}" has a NAVIGATE reaction to "${destinationId}", which isn't in the exported page set \u2014 skipping <a> wrap`);
       return rendered;
     }
-    return `${indent2}<a href="{{ navMap.${slug2} }}" style="display:contents">
+    return `${indent2}<a href="{{ navMap.${slug3} }}" style="display:contents">
 ${rendered}
 ${indent2}</a>`;
   }
@@ -8465,8 +10579,8 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
 
   // src/targets/django/component-emitter.ts
   function toVarName(name) {
-    const slug2 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-    return slug2 || "prop";
+    const slug3 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    return slug3 || "prop";
   }
   function idSlug(id) {
     return id.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -8481,19 +10595,19 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   function partialPath(component) {
     if (isCollapsedSetMember(component)) {
       const setName = component.component.setName.trim();
-      const slug3 = setName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-      return `components/${slug3 || "component"}.html`;
+      const slug4 = setName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      return `components/${slug4 || "component"}.html`;
     }
-    const slug2 = component.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return `components/${slug2 || "component"}--${idSlug(component.id)}.html`;
+    const slug3 = component.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `components/${slug3 || "component"}--${idSlug(component.id)}.html`;
   }
   function navMapKey(id) {
     return `nav_${id.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`;
   }
   function pageTemplatePath(page, nameOverride) {
     const name = nameOverride != null ? nameOverride : page.name;
-    const slug2 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return `pages/${slug2 || "page"}--${idSlug(page.id)}.html`;
+    const slug3 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `pages/${slug3 || "page"}--${idSlug(page.id)}.html`;
   }
   function textOverrideVarName(mainComponentNodeId2) {
     return `text_${mainComponentNodeId2.replace(/[^a-zA-Z0-9]+/g, "_")}`;
@@ -8717,8 +10831,8 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   function buildTabsWiring(map, root2, spec) {
     const toggles = findAllPartNodes(root2, spec.toggle);
     const panes = findAllPartNodes(root2, spec.pane);
-    const count = Math.min(toggles.length, panes.length);
-    for (let i = 0; i < count; i++) {
+    const count2 = Math.min(toggles.length, panes.length);
+    for (let i = 0; i < count2; i++) {
       const paneId = `${toClassName(panes[i].id)}-pane`;
       const first = i === 0;
       mergeWiringEntry(map, toggles[i].id, {
@@ -8771,8 +10885,8 @@ if(mq&&mq.matches){document.querySelectorAll('video[data-autoplay-video]').forEa
   function buildTabInstanceParams(map, root2, spec, registry) {
     const toggles = findAllInstanceRefs(root2, registry, spec.toggle);
     const panes = findAllInstanceRefs(root2, registry, spec.pane);
-    const count = Math.min(toggles.length, panes.length);
-    for (let i = 0; i < count; i++) {
+    const count2 = Math.min(toggles.length, panes.length);
+    for (let i = 0; i < count2; i++) {
       const paneId = `${toClassName(panes[i].id)}-pane`;
       mergeWiringEntry(map, toggles[i].id, { addIncludeParams: [`tab_id="${paneId}"`] });
       mergeWiringEntry(map, panes[i].id, { addIncludeParams: [`pane_id="${paneId}"`] });
@@ -10031,12 +12145,12 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
   function parseBreakpointName(name, namedWidths = NAMED_WIDTHS) {
     const match = /^(.*)\/([^/]+)$/.exec(name.trim());
     if (!match) return null;
-    const slug2 = match[1].trim();
-    if (!slug2) return null;
+    const slug3 = match[1].trim();
+    if (!slug3) return null;
     const suffix = match[2].trim().toLowerCase();
-    if (suffix in namedWidths) return { slug: slug2, width: namedWidths[suffix], breakpoint: suffix };
+    if (suffix in namedWidths) return { slug: slug3, width: namedWidths[suffix], breakpoint: suffix };
     const width = /^(\d+)\s*(?:px)?$/.exec(suffix);
-    if (width) return { slug: slug2, width: Number(width[1]), breakpoint: suffix };
+    if (width) return { slug: slug3, width: Number(width[1]), breakpoint: suffix };
     return null;
   }
   function detectBreakpointGroups(roots, namedWidthsOverrides) {
@@ -10057,10 +12171,10 @@ ${decls.map((d) => `  ${d.cssProperty}: ${d.value};`).join("\n")}
     const groupedIds = /* @__PURE__ */ new Set();
     const widestIds = /* @__PURE__ */ new Set();
     for (const key of keyOrder) {
-      const { slug: slug2, frames } = bySlug.get(key);
+      const { slug: slug3, frames } = bySlug.get(key);
       if (frames.length < 2) continue;
       const sorted = [...frames].sort((a, b) => b.width - a.width);
-      groups.push({ slug: slug2, frames: sorted });
+      groups.push({ slug: slug3, frames: sorted });
       for (const frame3 of sorted) groupedIds.add(frame3.node.id);
       widestIds.add(sorted[0].node.id);
     }
@@ -11214,13 +13328,13 @@ ${keptLines.join("\n")}
       fileNodeIds[path] = root2.id;
       const name = groupSlug != null ? groupSlug : root2.name;
       const base = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "page";
-      const slug2 = usedSlugs.has(base) ? `${base}-${root2.id.replace(/[^a-zA-Z0-9]+/g, "-")}` : base;
-      usedSlugs.add(slug2);
+      const slug3 = usedSlugs.has(base) ? `${base}-${root2.id.replace(/[^a-zA-Z0-9]+/g, "-")}` : base;
+      usedSlugs.add(slug3);
       pageRoutes.push({
         templatePath: path,
         nodeId: root2.id,
         navKey: navMapKey(root2.id),
-        slug: slug2,
+        slug: slug3,
         title: name.trim(),
         isStart: root2.id === startPageId
       });
@@ -11528,7 +13642,7 @@ ${mediaCss}`;
     if (!config || Object.keys(config).length === 0) return options;
     return __spreadProps(__spreadValues({}, options), { docs: __spreadValues(__spreadValues({}, options.docs), config) });
   }
-  function utf8Bytes(text6) {
+  function utf8Bytes2(text6) {
     let bytes = 0;
     for (const ch of text6) {
       const cp = ch.codePointAt(0);
@@ -11597,7 +13711,7 @@ ${mediaCss}`;
       if (only && !only.includes(entry.path)) return;
       let text6 = "";
       for (let chunk = 0; chunk < entry.chunks; chunk++) text6 += host.getSharedPluginData(FILE_DOCS_NAMESPACE, chunkKey(manifest.gen, index2, chunk));
-      if (utf8Bytes(text6) !== entry.bytes) damaged.push(entry.path);
+      if (utf8Bytes2(text6) !== entry.bytes) damaged.push(entry.path);
       files.push({ path: entry.path, text: text6 });
     });
     return { manifest, files, damaged };
@@ -11648,7 +13762,7 @@ ${mediaCss}`;
     if (next.size > MAX_FILES) problems.push(`${next.size} files \u2014 a file stores at most ${MAX_FILES}`);
     let totalBytes = 0;
     for (const [path, text6] of next) {
-      const bytes = utf8Bytes(text6);
+      const bytes = utf8Bytes2(text6);
       totalBytes += bytes;
       if (bytes > MAX_FILE_BYTES) problems.push(`"${path}" is ${Math.round(bytes / 1024)} KB \u2014 at most ${MAX_FILE_BYTES / 1024} KB per file`);
     }
@@ -11680,7 +13794,7 @@ ${mediaCss}`;
       const text6 = next.get(path);
       const chunks = chunkUtf8(text6);
       chunks.forEach((value2, chunk) => chunkWrites.push({ key: chunkKey(gen, index2, chunk), value: value2 }));
-      files.push({ path, bytes: utf8Bytes(text6), chunks: chunks.length });
+      files.push({ path, bytes: utf8Bytes2(text6), chunks: chunks.length });
     });
     const after = __spreadProps(__spreadValues(__spreadValues({
       version: 1,
@@ -13240,6 +15354,109 @@ ${mediaCss}`;
     return files;
   }
 
+  // src/tokens/file-config.ts
+  var FILE_CONFIG_NAMESPACE = "allcrewChannel";
+  var FILE_CONFIG_KEY = "tokenExport";
+  var FILE_CONFIG_FIELDS = [
+    "mapping",
+    "collectionRoles",
+    "themeAttribute",
+    "slugThemes",
+    "themeAxes",
+    "structure",
+    "inlinePrimitives",
+    "flattenAliases",
+    "typoScaleOnly",
+    "typoExtract",
+    "typoNaming",
+    "emitModuleFiles",
+    "cssModulesGlobal"
+  ];
+  var MAPPING_SUPERSEDES = ["collectionRoles", "themeAxes", "themeAttribute", "slugThemes", "structure"];
+  var BOOLEAN_FIELDS = ["slugThemes", "inlinePrimitives", "flattenAliases", "typoScaleOnly", "typoExtract", "emitModuleFiles", "cssModulesGlobal"];
+  function normalizeFileTokenConfig(raw) {
+    const config = {};
+    const problems = [];
+    if (raw === null || raw === void 0) return { config, problems };
+    if (typeof raw !== "object" || Array.isArray(raw)) return { config, problems: ["the token config must be an object"] };
+    for (const [key, value2] of Object.entries(raw)) {
+      if (!FILE_CONFIG_FIELDS.includes(key)) {
+        problems.push(`unknown setting "${key}" \u2014 the file can pin: ${FILE_CONFIG_FIELDS.join(", ")}`);
+        continue;
+      }
+      const field = key;
+      if (BOOLEAN_FIELDS.includes(field)) {
+        if (typeof value2 !== "boolean") problems.push(`"${key}" must be true or false`);
+        else config[field] = value2;
+      } else if (field === "themeAxes") {
+        if (typeof value2 !== "string" && (typeof value2 !== "object" || value2 === null || Array.isArray(value2))) {
+          problems.push('"themeAxes" must be a string or an object');
+          continue;
+        }
+        const checked = normalizeThemeAxesSpec(value2);
+        if (checked.problems.length > 0) problems.push(...checked.problems.map((p) => `"themeAxes": ${p}`));
+        else config.themeAxes = typeof value2 === "string" ? value2.trim() : checked.spec;
+      } else if (field === "mapping") {
+        const checked = normalizeMapping(value2);
+        if (checked.problems.length > 0) problems.push(...checked.problems.map((p) => `"mapping": ${p}`));
+        else if (checked.mapping) config.mapping = checked.mapping;
+      } else if (field === "structure") {
+        const checked = normalizeStructure(value2);
+        if (checked.problems.length > 0) problems.push(...checked.problems.map((p) => `"structure": ${p}`));
+        else if (checked.structure) config.structure = checked.structure;
+      } else if (field === "typoNaming") {
+        if (value2 !== "tshirt" && value2 !== "value") problems.push('"typoNaming" must be "tshirt" or "value"');
+        else config.typoNaming = value2;
+      } else if (typeof value2 !== "string") {
+        problems.push(`"${key}" must be a string`);
+      } else {
+        ;
+        config[field] = value2.trim();
+      }
+    }
+    return { config, problems };
+  }
+  function applyFileTokenConfig(options, config) {
+    if (!config || Object.keys(config).length === 0) return options;
+    const tokens = __spreadValues(__spreadValues({}, options.tokens), fileTokenSettings(config));
+    if (config.mapping) delete tokens.structure;
+    return __spreadProps(__spreadValues({}, options), { tokens });
+  }
+  function fileTokenSettings(config) {
+    if (!config.mapping) return config;
+    const rest = __spreadValues({}, config);
+    for (const field of MAPPING_SUPERSEDES) delete rest[field];
+    return __spreadProps(__spreadValues(__spreadValues({}, rest), mappingToSettings(config.mapping)), { mapping: config.mapping });
+  }
+  function withMapping(config, mapping) {
+    const next = __spreadValues({}, config != null ? config : {});
+    delete next.structure;
+    return __spreadProps(__spreadValues(__spreadValues({}, next), mappingToSettings(mapping)), { mapping });
+  }
+  function pickFileTokenConfig(tokens, fields2 = FILE_CONFIG_FIELDS) {
+    const out = {};
+    for (const field of fields2) out[field] = tokens[field];
+    return out;
+  }
+  function readFileTokenConfig(root2 = figma.root) {
+    let raw = "";
+    try {
+      raw = root2.getSharedPluginData(FILE_CONFIG_NAMESPACE, FILE_CONFIG_KEY);
+    } catch (e) {
+      return null;
+    }
+    if (!raw) return null;
+    try {
+      const { config } = normalizeFileTokenConfig(JSON.parse(raw));
+      return Object.keys(config).length > 0 ? config : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function writeFileTokenConfig(config, root2 = figma.root) {
+    root2.setSharedPluginData(FILE_CONFIG_NAMESPACE, FILE_CONFIG_KEY, config && Object.keys(config).length > 0 ? JSON.stringify(config) : "");
+  }
+
   // src/targets/django/export/report.ts
   function buildExportReport(input) {
     return JSON.stringify(input, null, 2) + "\n";
@@ -13311,18 +15528,18 @@ ${mediaCss}`;
     return flattened;
   }
   function figmaFileSlug(name) {
-    const slug2 = name.trim().replace(/\s+/g, "-").replace(/[^A-Za-z0-9_-]+/g, "");
-    return slug2 || "file";
+    const slug3 = name.trim().replace(/\s+/g, "-").replace(/[^A-Za-z0-9_-]+/g, "");
+    return slug3 || "file";
   }
   function buildFigmaFileReference(input) {
     if (!input.key) return { key: null, name: input.name, pageUrls: {} };
-    const slug2 = figmaFileSlug(input.name);
+    const slug3 = figmaFileSlug(input.name);
     const pageUrls = {};
     for (const templatePath of Object.keys(input.fileNodeIds).sort()) {
       const nodeId = input.fileNodeIds[templatePath];
       if (!nodeId.includes(":")) continue;
       const anchor = nodeId.replace(/[^a-zA-Z0-9_-]+/g, "-");
-      pageUrls[templatePath] = `https://www.figma.com/design/${input.key}/${slug2}?node-id=${anchor}`;
+      pageUrls[templatePath] = `https://www.figma.com/design/${input.key}/${slug3}?node-id=${anchor}`;
     }
     return { key: input.key, name: input.name, pageUrls };
   }
@@ -14299,13 +16516,13 @@ ${mediaCss}`;
     }
   }
   function countRedundantAncestorsWithin(node, boundary) {
-    let count = 0;
+    let count2 = 0;
     let current2 = node.parent;
     while (current2 && current2 !== boundary && "children" in current2) {
-      if (isFlattenableWrapper(current2)) count++;
+      if (isFlattenableWrapper(current2)) count2++;
       current2 = current2.parent;
     }
-    return count;
+    return count2;
   }
   async function fixExcessiveNesting(node) {
     const instance = enclosingInstance(node);
@@ -15285,12 +17502,12 @@ ${tweenStatements.join("\n")}
     return TYPO_FIELDS.filter((field) => typeof boundVariables[field] === "string" && boundVariables[field]).length;
   }
   function presentFieldCount(style) {
-    let count = 0;
-    if (style.fontName) count += 2;
-    if (typeof style.fontSize === "number") count += 1;
-    if (style.lineHeight) count += 1;
-    if (style.letterSpacing) count += 1;
-    return count;
+    let count2 = 0;
+    if (style.fontName) count2 += 2;
+    if (typeof style.fontSize === "number") count2 += 1;
+    if (style.lineHeight) count2 += 1;
+    if (style.letterSpacing) count2 += 1;
+    return count2;
   }
   var MAX_MISSING_REPORTED = 12;
   function buildTokenAudit(graph) {
@@ -15422,8 +17639,8 @@ ${tweenStatements.join("\n")}
     flag: { label: "Boolean flag", css: "\u2014 (build-time switch)", rule: "Not a CSS value: a design-system switch. Read it, do not render it." },
     other: { label: "Unclassified", css: "\u2014", rule: "No role keyword in the name \u2014 inspect the path before using it." }
   };
-  function keywords(...words2) {
-    return new RegExp(`(^|-)(?:${words2.join("|")})(?:es|s)?(-|$)`);
+  function keywords(...words3) {
+    return new RegExp(`(^|-)(?:${words3.join("|")})(?:es|s)?(-|$)`);
   }
   var ROLE_RULES = [
     { role: "font-family", test: keywords("font-family", "font-familie", "typeface", "font-stack") },
@@ -15494,10 +17711,10 @@ ${tweenStatements.join("\n")}
     }
     return out;
   }
-  function classifyRole(slug2, type) {
+  function classifyRole(slug3, type) {
     for (const rule of ROLE_RULES) {
       if (rule.types && rule.types.indexOf(type) === -1) continue;
-      if (rule.test.test(slug2)) return rule.role;
+      if (rule.test.test(slug3)) return rule.role;
     }
     if (type === "color") return "color";
     if (type === "boolean") return "flag";
@@ -15525,16 +17742,16 @@ ${tweenStatements.join("\n")}
     "invalid"
   ];
   var BASE_WORDS = ["default", "rest", "resting", "enabled", "normal", "idle", "base"];
-  function splitState(slug2) {
+  function splitState(slug3) {
     for (const state of STATE_WORDS) {
-      if (slug2 === state) return { base: "", state };
-      if (slug2.endsWith(`-${state}`)) return { base: slug2.slice(0, -(state.length + 1)), state };
+      if (slug3 === state) return { base: "", state };
+      if (slug3.endsWith(`-${state}`)) return { base: slug3.slice(0, -(state.length + 1)), state };
     }
     for (const word of BASE_WORDS) {
-      if (slug2 === word) return { base: "" };
-      if (slug2.endsWith(`-${word}`)) return { base: slug2.slice(0, -(word.length + 1)) };
+      if (slug3 === word) return { base: "" };
+      if (slug3.endsWith(`-${word}`)) return { base: slug3.slice(0, -(word.length + 1)) };
     }
-    return { base: slug2 };
+    return { base: slug3 };
   }
   var IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
   function tsAccessorOf(path) {
@@ -15583,22 +17800,22 @@ ${tweenStatements.join("\n")}
     const themeList = themes.length > 0 ? themes : [defaultTheme];
     const entries = leaves(tree).map(({ path, token: token2 }) => {
       var _a, _b, _c, _d;
-      const slug2 = varName(path);
+      const slug3 = varName(path);
       const type = String(token2.$type || "");
-      const { base, state } = splitState(slug2);
+      const { base, state } = splitState(slug3);
       const themeValues = {};
       for (const theme of themeList) themeValues[theme] = cssValue(valueForTheme(token2, theme), path, token2);
       const distinct = new Set(Object.keys(themeValues).map((theme) => themeValues[theme]));
       const scopeRoles = rolesFromScopes((_b = (_a = token2.$extensions) == null ? void 0 : _a.figma) == null ? void 0 : _b.scopes);
       const collection = (_c = collectionOf(token2)) == null ? void 0 : _c.trim().toLowerCase();
       const isBreakpoint = path[0] === "bp" || collection === "breakpoints" && (type === "number" || type === "dimension");
-      const named = isBreakpoint ? "breakpoint" : classifyRole(base || slug2, type);
+      const named = isBreakpoint ? "breakpoint" : classifyRole(base || slug3, type);
       const mapped = scopeRoles.length === 0 && named === "other" ? collectionRoles[collection != null ? collection : ""] : void 0;
       const role = mapped != null ? mapped : scopeRoles.length === 0 ? named : scopeRoles.indexOf(named) !== -1 ? named : scopeRoles[0];
       return {
         path,
-        slug: slug2,
-        cssRef: `var(--${slug2})`,
+        slug: slug3,
+        cssRef: `var(--${slug3})`,
         tsAccessor: tsAccessorOf(path),
         type,
         role,
@@ -15860,8 +18077,8 @@ _+${rest.length} more of this role \u2014 values in ${more}:_ ${names}`;
       const info = ROLE_INFO[role];
       const sample = entries.slice(0, 3).map((entry) => `\`${entry.cssRef}\``).join(", ");
       const scoped = entries.filter((entry) => entry.roleSource === "scope").length;
-      const count = scoped === entries.length ? String(entries.length) : `${entries.length} (${scoped} scoped)`;
-      rows.push([info.label, `\`${info.css}\``, count, sample, info.rule]);
+      const count2 = scoped === entries.length ? String(entries.length) : `${entries.length} (${scoped} scoped)`;
+      rows.push([info.label, `\`${info.css}\``, count2, sample, info.rule]);
     }
     return mdTable(["Role", "Apply to", "Tokens", "Examples", "Rule"], rows);
   }
@@ -15993,10 +18210,39 @@ ${axes}
 \`\`\`` : "";
     return `${table2}${example}`;
   }
-  function themesSection(model, themeAttribute) {
+  function themesSection(model, themeAttribute, grid) {
     const themed = model.entries.filter((entry) => entry.themed).length;
     if (model.themes.length < 2) {
       return `Single theme (\`${model.defaultTheme}\`) \u2014 every variable is declared on \`:root\`. No theme attribute is required.`;
+    }
+    if (grid) {
+      const list2 = (values) => values.map((v) => `\`${v}\``).join(", ");
+      const other = (n) => {
+        var _a;
+        return (_a = grid.axes[n].values.find((v) => v !== grid.defaults[n])) != null ? _a : grid.defaults[n];
+      };
+      const inner = grid.axes[grid.axes.length - 1];
+      if (grid.axes.length === 1) {
+        return `Themes: \`${inner.attribute}\` (${list2(inner.values)}) \u2014 \`${grid.defaults[0]}\` is the default and is declared on \`:root\`. ${themed} token(s) change value between themes.
+
+Switch on \`<html>\`, or on any element inside to theme just that subtree:
+
+\`\`\`html
+<html ${inner.attribute}="${other(0)}">
+\`\`\`
+
+A component written with \`var(--\u2026)\` follows the attribute on its own. Do NOT write theme-specific overrides in component CSS, and do NOT branch on the theme in JS to pick a color.`;
+      }
+      const outer = grid.axes.slice(0, -1);
+      return `Themes are ${grid.axes.length} attributes: ${grid.axes.map((axis) => `\`${axis.attribute}\` (${list2(axis.values)})`).join(" \xD7 ")}. ${grid.defaults.map((d) => `\`${d}\``).join(" \xD7 ")} is the default and is declared on \`:root\`. ${themed} token(s) change value between themes.
+
+Set them on \`<html>\`:
+
+\`\`\`html
+<html ${grid.axes.map((axis, k) => `${axis.attribute}="${other(k)}"`).join(" ")}>
+\`\`\`
+
+` + (grid.nested ? `\`${inner.attribute}\` may be set again on any element inside, and ${outer.map((a) => `\`${a.attribute}\``).join(", ")} may sit below a themed ancestor. Never switch ${outer.map((a) => `\`${a.attribute}\``).join(" or ")} inside itself. ` : `Keep every attribute on that one element; never set one again further down. `) + `A component written with \`var(--\u2026)\` follows every attribute on its own. Do NOT write theme- or product-specific overrides in component CSS, and do NOT branch on an attribute in JS to pick a color.`;
     }
     const others = model.themes.filter((theme) => theme !== model.defaultTheme);
     return `Themes: ${model.themes.map((theme) => `\`${theme}\``).join(", ")} \u2014 \`${model.defaultTheme}\` is the default and is declared on \`:root\`. ${themed} token(s) change value between themes.
@@ -16085,7 +18331,7 @@ These are the only breakpoints. CSS custom properties do not work inside a media
       }
     }
     if (model.duplicateColors.length > 0) {
-      const sample = model.duplicateColors.slice(0, 3).map((group2) => `${group2.value} \u2192 ${group2.slugs.map((slug2) => `\`--${slug2}\``).join(" / ")}`).join("; ");
+      const sample = model.duplicateColors.slice(0, 3).map((group2) => `${group2.value} \u2192 ${group2.slugs.map((slug3) => `\`--${slug3}\``).join(" / ")}`).join("; ");
       rules.push(
         `**Pick tokens by role, not by value.** Some tokens currently resolve to the same value (${sample}) \u2014 they are separate on purpose and will diverge.`
       );
@@ -16467,8 +18713,8 @@ ${mdTable(["Component", "Contract (first line)", "Preview"], rows)}${more}${note
     },
     {
       match: (path) => path.endsWith(".module.css"),
-      what: "The same declarations, one file per theme (CSS Modules).",
-      use: "Import a single theme at build time, or all of them for runtime switching."
+      what: "The same declarations split into CSS Modules: one per theme, or \u2014 with theme attributes \u2014 the layers of `tokens.css` (`base`, each theme, each product).",
+      use: "Import all of them in the order of `tokens.css`; leave out only a theme or product the build never shows."
     },
     {
       match: (path) => path === "README.md",
@@ -16539,7 +18785,7 @@ ${mdTable(["Component", "Contract (first line)", "Preview"], rows)}${more}${note
     return rules;
   }
   function buildTokensDesignMd(input) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l;
     const model = buildTokenModel(input.tree, input.themes, input.defaultTheme, (_a = input.collectionRoles) != null ? _a : {});
     const breakpoints = breakpointsSection(model, input.breakpoints);
     const typography = typographySection(model.typography);
@@ -16614,7 +18860,7 @@ grep -o -- "--[a-z0-9-]*" src/**/*.css | sort -u | while read v; do grep -q -- "
       ["Token reference", tokenReferenceSection(model)],
       ["Component behaviour contracts", componentDocsSection((_k = input.componentDocs) != null ? _k : [], model.entries)],
       ["Typography", typography],
-      ["Themes", themesSection(model, input.themeAttribute)],
+      ["Themes", themesSection(model, input.themeAttribute, (_l = input.themeGrid) != null ? _l : themeGridOf(input.themes, input.options.themeAxes, input.defaultTheme))],
       ["Breakpoints", breakpoints],
       [
         "Strict guardrails (generated from a Figma audit)",
@@ -16645,19 +18891,22 @@ ${body}
       typoShorthand: opts.tokens.typoShorthand,
       typoNaming: opts.tokens.typoNaming,
       emitNative: opts.tokens.emitNative,
-      collectionRoles: opts.tokens.collectionRoles
+      collectionRoles: opts.tokens.collectionRoles,
+      slugThemes: opts.tokens.slugThemes,
+      themeAxes: opts.tokens.themeAxes
     };
     const pkg = buildPackage(graph, engineOptions, renames);
     const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles);
     const iconDocs = componentDocs.filter((doc) => isIconDoc(doc));
     const realComponentDocs = componentDocs.filter((doc) => !isIconDoc(doc));
     if (pkg.summary.tokenCount > 0) {
-      pkg.files["DESIGN.md"] = buildTokensDesignMd({
+      pkg.files["DESIGN.md"] = buildTokensDesignMd(__spreadProps(__spreadValues({
         fileName: pkg.summary.fileName,
         tree: pkg.emitted.tree,
         themes: pkg.emitted.themes,
         defaultTheme: pkg.emitted.defaultTheme,
-        themeAttribute: pkg.options.themeAttr,
+        themeAttribute: pkg.options.themeAttr
+      }, pkg.emitted.grid ? { themeGrid: pkg.emitted.grid } : {}), {
         files: [
           ...Object.keys(pkg.files),
           "DESIGN.md",
@@ -16671,7 +18920,7 @@ ${body}
         componentDocs: realComponentDocs,
         collectionRoles,
         generatedAt
-      });
+      }));
     }
     if (realComponentDocs.length > 0) {
       const componentsMd = buildComponentsMd(realComponentDocs, {
@@ -16945,11 +19194,11 @@ ${body}
   }
 
   // src/targets/tauri/scaffold.ts
-  function identifierFor(slug2) {
-    return `com.figma-export.${slug2 || "app"}`;
+  function identifierFor(slug3) {
+    return `com.figma-export.${slug3 || "app"}`;
   }
-  function crateNameFor(slug2) {
-    const name = slug2.replace(/-/g, "_").replace(/[^a-z0-9_]/g, "");
+  function crateNameFor(slug3) {
+    const name = slug3.replace(/-/g, "_").replace(/[^a-z0-9_]/g, "");
     return name || "app";
   }
   function tauriConfJson(opts) {
@@ -17141,8 +19390,8 @@ ${gsap}${manualAssets}`;
         hrefByPath.set(path, "index.html");
         continue;
       }
-      const slug3 = pageSlug(path);
-      hrefByPath.set(path, ((_c = slugCounts.get(slug3)) != null ? _c : 0) > 1 ? path.replace(/^pages\//, "") : `${slug3}.html`);
+      const slug4 = pageSlug(path);
+      hrefByPath.set(path, ((_c = slugCounts.get(slug4)) != null ? _c : 0) > 1 ? path.replace(/^pages\//, "") : `${slug4}.html`);
     }
     const hrefByNavKey = /* @__PURE__ */ new Map();
     const pageHrefs = {};
@@ -17206,12 +19455,12 @@ ${scrollGuards}` : project.css;
     if (input.motionTokensJs) files["src/assets/js/motion-tokens.js"] = input.motionTokensJs;
     if (transitionsCss) files["src/assets/css/transitions.css"] = transitionsCss;
     for (const asset of input.assets) files[`src/assets/img/${asset.filename}`] = asset.content;
-    const slug2 = input.productName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const slug3 = input.productName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
     Object.assign(
       files,
       buildTauriScaffold({
         productName: input.productName,
-        slug: slug2,
+        slug: slug3,
         window: input.window,
         manualAssetNotes: input.manualAssetNotes,
         usesGsapCdn: Boolean(input.animation.js)
@@ -17247,11 +19496,11 @@ ${scrollGuards}` : project.css;
     if (h >= 190 && h < 290) return 10;
     return -6;
   }
-  function baseLadder(count, lightnessMax, lightnessMin, curve) {
-    if (count === 1) return [(lightnessMax + lightnessMin) / 2];
+  function baseLadder(count2, lightnessMax, lightnessMin, curve) {
+    if (count2 === 1) return [(lightnessMax + lightnessMin) / 2];
     const gamma = curve > 0 ? curve : 1;
-    return Array.from({ length: count }, (_, i) => {
-      const t = Math.pow(i / (count - 1), gamma);
+    return Array.from({ length: count2 }, (_, i) => {
+      const t = Math.pow(i / (count2 - 1), gamma);
       return lightnessMax + (lightnessMin - lightnessMax) * t;
     });
   }
@@ -17305,18 +19554,18 @@ ${scrollGuards}` : project.css;
     }
     return best;
   }
-  function rampByMixing(key, count, anchor) {
-    return Array.from({ length: count }, (_, i) => {
+  function rampByMixing(key, count2, anchor) {
+    return Array.from({ length: count2 }, (_, i) => {
       if (i === anchor) return key;
-      const t = count === 1 ? 0 : i / (count - 1);
-      const tAnchor = count === 1 ? 0 : anchor / (count - 1);
+      const t = count2 === 1 ? 0 : i / (count2 - 1);
+      const tAnchor = count2 === 1 ? 0 : anchor / (count2 - 1);
       if (i < anchor) return mixRgb(key, WHITE, tAnchor === 0 ? 0 : (tAnchor - t) / tAnchor);
       return mixRgb(key, BLACK, tAnchor === 1 ? 0 : (t - tAnchor) / (1 - tAnchor));
     });
   }
   function rampByOklch(key, ladder, anchor, chromaCurve, torsion, neutralChroma) {
-    const count = ladder.length;
-    const tOf = (i) => count === 1 ? 0.5 : i / (count - 1);
+    const count2 = ladder.length;
+    const tOf = (i) => count2 === 1 ? 0.5 : i / (count2 - 1);
     const tAnchor = tOf(anchor);
     const anchorEnvelope = Math.max(chromaEnvelope(tAnchor, chromaCurve), 0.15);
     const keyChroma = neutralChroma === null ? key.c : key.c * neutralChroma;
@@ -17556,7 +19805,7 @@ ${scrollGuards}` : project.css;
     return best;
   }
   var stepAt = (spectrum, index2) => spectrum.swatches[clamp2(index2, 0, spectrum.swatches.length - 1)].name;
-  var pathOf = (spectrum, name) => `${spectrum.label}/${name}`;
+  var pathOf2 = (spectrum, name) => `${spectrum.label}/${name}`;
   function themeRoles(palette) {
     var _a;
     const neutral = (_a = palette.spectra.find((s) => s.neutral)) != null ? _a : palette.spectra[0];
@@ -17564,8 +19813,8 @@ ${scrollGuards}` : project.css;
     if (!neutral) return roles;
     const last = neutral.swatches.length - 1;
     const mirror = (index2) => ({
-      light: pathOf(neutral, stepAt(neutral, index2)),
-      dark: pathOf(neutral, stepAt(neutral, last - index2))
+      light: pathOf2(neutral, stepAt(neutral, index2)),
+      dark: pathOf2(neutral, stepAt(neutral, last - index2))
     });
     roles.push(__spreadValues({ name: "bg/canvas" }, mirror(0)));
     roles.push(__spreadValues({ name: "bg/surface" }, mirror(1)));
@@ -17583,18 +19832,18 @@ ${scrollGuards}` : project.css;
       const key = spectrum.label.toLowerCase();
       roles.push({
         name: `accent/${key}/base`,
-        light: pathOf(spectrum, stepAt(spectrum, main)),
-        dark: pathOf(spectrum, stepAt(spectrum, light === -1 ? main : light))
+        light: pathOf2(spectrum, stepAt(spectrum, main)),
+        dark: pathOf2(spectrum, stepAt(spectrum, light === -1 ? main : light))
       });
       roles.push({
         name: `accent/${key}/hover`,
-        light: pathOf(spectrum, stepAt(spectrum, dark === -1 ? main : dark)),
-        dark: pathOf(spectrum, stepAt(spectrum, main))
+        light: pathOf2(spectrum, stepAt(spectrum, dark === -1 ? main : dark)),
+        dark: pathOf2(spectrum, stepAt(spectrum, main))
       });
       roles.push({
         name: `accent/${key}/subtle`,
-        light: pathOf(spectrum, stepAt(spectrum, 1)),
-        dark: pathOf(spectrum, stepAt(spectrum, spectrum.swatches.length - 2))
+        light: pathOf2(spectrum, stepAt(spectrum, 1)),
+        dark: pathOf2(spectrum, stepAt(spectrum, spectrum.swatches.length - 2))
       });
     }
     return roles;
@@ -18095,7 +20344,7 @@ ${scrollGuards}` : project.css;
   var styleSiteId = (styleId2, property, index2, stop) => `style:${styleId2}#${property}:${index2}${stop === void 0 ? "" : `.${stop}`}`;
   var looseSiteId = (hex5, alpha) => `loose:${hex5}:${alpha.toFixed(3)}`;
   var isLooseSite = (id) => id.slice(0, 6) === "loose:";
-  var isAlias = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
+  var isAlias2 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   var isRgb = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
   var withAlpha = (color) => ({
     r: color.r,
@@ -18367,12 +20616,12 @@ ${scrollGuards}` : project.css;
       const collection = collectionById.get(variable.variableCollectionId);
       if (!collection) continue;
       const values = Object.entries(variable.valuesByMode);
-      const themed = collection.modes.length >= 2 || values.some(([, value2]) => isAlias(value2));
+      const themed = collection.modes.length >= 2 || values.some(([, value2]) => isAlias2(value2));
       const usage = (_a = walk3.usage.get(variable.id)) != null ? _a : 0;
       const owned = [];
       for (const mode of collection.modes) {
         const value2 = variable.valuesByMode[mode.modeId];
-        if (value2 === void 0 || isAlias(value2) || !isRgb(value2)) continue;
+        if (value2 === void 0 || isAlias2(value2) || !isRgb(value2)) continue;
         sites.push({
           id: siteId(variable.id, mode.modeId),
           groupId: variable.id,
@@ -18398,7 +20647,7 @@ ${scrollGuards}` : project.css;
       const owned = [];
       for (const mode of (_b = collection == null ? void 0 : collection.modes) != null ? _b : []) {
         const value2 = variable.valuesByMode[mode.modeId];
-        if (value2 === void 0 || isAlias(value2) || !isRgb(value2)) continue;
+        if (value2 === void 0 || isAlias2(value2) || !isRgb(value2)) continue;
         sites.push({
           id: siteId(variable.id, mode.modeId),
           groupId: variable.id,
@@ -19051,14 +21300,14 @@ ${scrollGuards}` : project.css;
     return text6.length;
   }
   function readChunked() {
-    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
+    const count2 = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
     let text6 = "";
-    for (let index2 = 0; index2 < count; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index2}`);
+    for (let index2 = 0; index2 < count2; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY}-${index2}`);
     return text6;
   }
   function clearSnapshot() {
-    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
-    for (let index2 = 0; index2 < count; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, "");
+    const count2 = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY) || "0");
+    for (let index2 = 0; index2 < count2; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY, "0");
   }
   function hasRemapSnapshot() {
@@ -19114,7 +21363,7 @@ ${scrollGuards}` : project.css;
       round42((_a = color.a) != null ? _a : 1)
     ];
   };
-  var colorOf = (channels) => ({ r: channels[0], g: channels[1], b: channels[2], a: channels[3] });
+  var colorOf2 = (channels) => ({ r: channels[0], g: channels[1], b: channels[2], a: channels[3] });
   var kept = (entry) => !entry.flags.includes("excluded");
   var writableVariable = (entry) => kept(entry) && entry.site.kind === "variable" && entry.site.editable && !entry.flags.includes("library") && !entry.flags.includes("unchanged");
   var writableStyle = (entry) => kept(entry) && (entry.site.kind === "style" || entry.site.kind === "gradient-stop" || entry.site.kind === "effect") && entry.site.editable && !entry.flags.includes("unchanged");
@@ -19556,7 +21805,7 @@ ${scrollGuards}` : project.css;
           for (const entry of group2) {
             const paint = paints2[entry.i];
             if (!paint) continue;
-            const color = colorOf(entry.c);
+            const color = colorOf2(entry.c);
             if (entry.j < 0 && paint.type === "SOLID") {
               paints2[entry.i] = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
             } else if (entry.j >= 0 && isGradient(paint)) {
@@ -19574,7 +21823,7 @@ ${scrollGuards}` : project.css;
           for (const entry of group2) {
             const effect = effects[entry.i];
             if (!effect || !isShadow(effect)) continue;
-            effects[entry.i] = __spreadProps(__spreadValues({}, effect), { color: colorOf(entry.c) });
+            effects[entry.i] = __spreadProps(__spreadValues({}, effect), { color: colorOf2(entry.c) });
             restored++;
           }
           ;
@@ -19608,7 +21857,7 @@ ${scrollGuards}` : project.css;
           for (const entry of mine) {
             const paint = paints2[entry[2]];
             if (!paint) continue;
-            const color = colorOf([entry[4], entry[5], entry[6], entry[7]]);
+            const color = colorOf2([entry[4], entry[5], entry[6], entry[7]]);
             if (entry[3] < 0 && paint.type === "SOLID") {
               let restoredPaint = __spreadProps(__spreadValues({}, paint), { color: { r: color.r, g: color.g, b: color.b }, opacity: color.a });
               if (entry[8] === 1) restoredPaint = figma.variables.setBoundVariableForPaint(restoredPaint, "color", null);
@@ -19630,7 +21879,7 @@ ${scrollGuards}` : project.css;
           for (const entry of shadows) {
             const effect = effects[entry[2]];
             if (!effect || !isShadow(effect)) continue;
-            effects[entry[2]] = __spreadProps(__spreadValues({}, effect), { color: colorOf([entry[4], entry[5], entry[6], entry[7]]) });
+            effects[entry[2]] = __spreadProps(__spreadValues({}, effect), { color: colorOf2([entry[4], entry[5], entry[6], entry[7]]) });
             restored++;
           }
           ;
@@ -19686,7 +21935,7 @@ ${scrollGuards}` : project.css;
       const variable = await loader.variable(entry.v);
       if (!variable) continue;
       try {
-        variable.setValueForMode(entry.m, colorOf(entry.c));
+        variable.setValueForMode(entry.m, colorOf2(entry.c));
         values++;
       } catch (error) {
         warnings.push(`${variable.name}: ${String(error.message)}`);
@@ -20435,14 +22684,14 @@ ${scrollGuards}` : project.css;
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, String(chunks.length));
   }
   function readChunked2() {
-    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    const count2 = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
     let text6 = "";
-    for (let index2 = 0; index2 < count; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index2}`);
+    for (let index2 = 0; index2 < count2; index2++) text6 += figma.root.getPluginData(`${SNAPSHOT_KEY2}-${index2}`);
     return text6;
   }
   function clearChunked() {
-    const count = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
-    for (let index2 = 0; index2 < count; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index2}`, "");
+    const count2 = Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0");
+    for (let index2 = 0; index2 < count2; index2++) figma.root.setPluginData(`${SNAPSHOT_KEY2}-${index2}`, "");
     figma.root.setPluginData(SNAPSHOT_COUNT_KEY2, "0");
   }
   var hasRebindSnapshot = () => Number(figma.root.getPluginData(SNAPSHOT_COUNT_KEY2) || "0") > 0;
@@ -21310,7 +23559,7 @@ ${scrollGuards}` : project.css;
       }
     }
     const blockedFamilies = /* @__PURE__ */ new Set();
-    for (const [family, count] of perFamily) if (count >= 2) blockedFamilies.add(family);
+    for (const [family, count2] of perFamily) if (count2 >= 2) blockedFamilies.add(family);
     const renames = [];
     for (const proposal of proposals) {
       const family = (_d = proposal.entry.fromFamily) != null ? _d : proposal.entry.site.name;
@@ -21829,7 +24078,7 @@ ${scrollGuards}` : project.css;
       return { collections: [], warnings: [`libraries are unreadable here: ${String(error.message)}`] };
     }
   }
-  var isAlias2 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
+  var isAlias3 = (value2) => typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   var isRgb2 = (value2) => typeof value2 === "object" && value2 !== null && "r" in value2 && "g" in value2 && "b" in value2;
   var ALIAS_DEPTH = 6;
   async function resolveColor(variable, modeId) {
@@ -21840,7 +24089,7 @@ ${scrollGuards}` : project.css;
       const value2 = (_a = current2.valuesByMode[mode]) != null ? _a : await defaultValueOf(current2);
       if (value2 === void 0) return null;
       if (isRgb2(value2)) return value2;
-      if (!isAlias2(value2)) return null;
+      if (!isAlias3(value2)) return null;
       const next = await figma.variables.getVariableByIdAsync(value2.id).catch(() => null);
       if (!next) return null;
       current2 = next;
@@ -21926,8 +24175,8 @@ ${scrollGuards}` : project.css;
     }
     const rules = [];
     for (const rule of Object.keys(LINT_RULE_TEXT)) {
-      const count = (_a = lint.counts[rule]) != null ? _a : 0;
-      if (count > 0) rules.push(LINT_RULE_TEXT[rule](count));
+      const count2 = (_a = lint.counts[rule]) != null ? _a : 0;
+      if (count2 > 0) rules.push(LINT_RULE_TEXT[rule](count2));
     }
     return rules;
   }
@@ -23002,16 +25251,16 @@ ${renderSections(sections)}
     const kind = String((_a = spec.type) != null ? _a : "LINEAR").toUpperCase();
     if (kind !== "LINEAR" && kind !== "RADIAL") return { problem: "type must be LINEAR or RADIAL" };
     const radial = kind === "RADIAL";
-    const count = spec.count === void 0 ? 3 : spec.count;
-    if (typeof count !== "number" || !Number.isInteger(count) || count < 2) return { problem: "count must be a whole number of at least 2" };
+    const count2 = spec.count === void 0 ? 3 : spec.count;
+    if (typeof count2 !== "number" || !Number.isInteger(count2) || count2 < 2) return { problem: "count must be a whole number of at least 2" };
     const offset = spec.offset === void 0 ? radial ? 0 : 1 : spec.offset;
     if (typeof offset !== "number" || !Number.isFinite(offset)) return { problem: "offset must be a number \u2014 a distance, not an angle" };
     const unit = String((_b = spec.unit) != null ? _b : "RELATIVE").toUpperCase();
     if (unit !== "RELATIVE" && unit !== "PIXELS") return { problem: "unit must be RELATIVE or PIXELS" };
-    if (radial) return { modifier: { type: "REPEAT", repeatType: "RADIAL", count, unitType: unit, offset } };
+    if (radial) return { modifier: { type: "REPEAT", repeatType: "RADIAL", count: count2, unitType: unit, offset } };
     const axis = String((_c = spec.axis) != null ? _c : "HORIZONTAL").toUpperCase();
     if (axis !== "HORIZONTAL" && axis !== "VERTICAL") return { problem: "axis must be HORIZONTAL or VERTICAL" };
-    return { modifier: { type: "REPEAT", repeatType: "LINEAR", count, unitType: unit, offset, axis } };
+    return { modifier: { type: "REPEAT", repeatType: "LINEAR", count: count2, unitType: unit, offset, axis } };
   }
   function repeatWords(modifier) {
     const radial = modifier.repeatType === "RADIAL";
@@ -23459,13 +25708,13 @@ ${renderSections(sections)}
             break;
           }
           for (const axis of ["rows", "columns"]) {
-            const count = span[axis];
-            if (count === void 0) continue;
-            if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+            const count2 = span[axis];
+            if (count2 === void 0) continue;
+            if (typeof count2 !== "number" || !Number.isInteger(count2) || count2 < 1) {
               fail2(`gridSpan.${axis} must be a whole number of at least 1`);
               continue;
             }
-            steps.push({ step: "assign", property: axis === "rows" ? "gridRowSpan" : "gridColumnSpan", value: count });
+            steps.push({ step: "assign", property: axis === "rows" ? "gridRowSpan" : "gridColumnSpan", value: count2 });
           }
           break;
         }
@@ -24838,7 +27087,7 @@ ${renderSections(sections)}
     trimEnd: "PATH_TRIM_END"
   }, SPACE_3D_KEYFRAME_FIELDS);
   var VECTOR_FIELDS = ["TRANSLATION_XY", "SCALE_XY"];
-  function planFrames(frames, at, valueOf, problems) {
+  function planFrames(frames, at, valueOf2, problems) {
     const keyframes = [];
     for (const [k, frame3] of frames.entries()) {
       const spot = `${at}.at[${k}]`;
@@ -24855,7 +27104,7 @@ ${renderSections(sections)}
         problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`);
         continue;
       }
-      const value2 = valueOf(asked.value, `${spot}.value`);
+      const value2 = valueOf2(asked.value, `${spot}.value`);
       if (value2 === null) continue;
       const easing = asked.easing === void 0 && asked.bezier === void 0 ? null : buildEasing(asked, (message) => problems.push(`${spot}: ${message}`));
       keyframes.push(__spreadValues({
@@ -24910,10 +27159,10 @@ ${renderSections(sections)}
       problems.push(`${at}.at must be a non-empty array of { time, value } \u2014 or null to take the track off`);
       return null;
     }
-    const valueOf = (value2, where) => shaderValue(value2, where, problems);
-    const keyframes = planFrames(one.at, at, valueOf, problems);
+    const valueOf2 = (value2, where) => shaderValue(value2, where, problems);
+    const keyframes = planFrames(one.at, at, valueOf2, problems);
     if (keyframes.length === 0) return null;
-    const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
+    const base = one.from === void 0 ? null : valueOf2(one.from, `${at}.from`);
     return __spreadProps(__spreadValues({}, target), { track: __spreadValues({ keyframes }, base ? { baseValue: base } : {}) });
   }
   function planKeyframes(raw, where, problems) {
@@ -24952,7 +27201,7 @@ ${renderSections(sections)}
         continue;
       }
       const kind = property ? VECTOR_FIELDS.includes(property) ? "VECTOR" : "FLOAT" : indexed.value;
-      const valueOf = (value2, at2) => {
+      const valueOf2 = (value2, at2) => {
         if (kind === "VECTOR") {
           const pair2 = value2;
           if (typeof (pair2 == null ? void 0 : pair2.x) !== "number" || typeof (pair2 == null ? void 0 : pair2.y) !== "number") {
@@ -24979,9 +27228,9 @@ ${renderSections(sections)}
         }
         return { type: "FLOAT", value: value2 };
       };
-      const keyframes = planFrames(one.at, at, valueOf, problems);
+      const keyframes = planFrames(one.at, at, valueOf2, problems);
       if (keyframes.length === 0) continue;
-      const base = one.from === void 0 ? null : valueOf(one.from, `${at}.from`);
+      const base = one.from === void 0 ? null : valueOf2(one.from, `${at}.from`);
       tracks.push({ name, field, track: __spreadValues({ keyframes }, base ? { baseValue: base } : {}) });
     }
     return tracks.length > 0 || shaderTracks.length > 0 ? __spreadValues({ step: "keyframes", tracks }, shaderTracks.length > 0 ? { shaderTracks } : {}) : null;
@@ -25386,12 +27635,12 @@ ${renderSections(sections)}
         continue;
       }
       const vertical = spec.columns !== void 0;
-      const count = vertical ? spec.columns : spec.rows;
-      if (count === void 0) {
+      const count2 = vertical ? spec.columns : spec.rows;
+      if (count2 === void 0) {
         fail2("must be { columns }, { rows } or { square }");
         continue;
       }
-      if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+      if (typeof count2 !== "number" || !Number.isInteger(count2) || count2 < 1) {
         fail2(`${vertical ? "columns" : "rows"} must be a whole number of at least 1`);
         continue;
       }
@@ -25426,12 +27675,12 @@ ${renderSections(sections)}
         pattern: vertical ? "COLUMNS" : "ROWS",
         alignment: align,
         gutterSize: gutter2,
-        count
+        count: count2
       }, size === void 0 ? {} : { sectionSize: size }), margin === 0 ? {} : { offset: margin }), {
         visible: spec.visible !== false
       }), colour));
       summary.push(
-        `${count} ${vertical ? "column" : "row"}(s) ${align.toLowerCase()}${gutter2 ? ` gutter ${gutter2}` : ""}${margin ? ` margin ${margin}` : ""}${size ? ` at ${size}` : ""}`
+        `${count2} ${vertical ? "column" : "row"}(s) ${align.toLowerCase()}${gutter2 ? ` gutter ${gutter2}` : ""}${margin ? ` margin ${margin}` : ""}${size ? ` at ${size}` : ""}`
       );
     }
     return { step: "grid", grids, summary: summary.join(" \xB7 ") || "none" };
@@ -25488,10 +27737,10 @@ ${renderSections(sections)}
     }
     for (const track of ["rows", "columns"]) {
       if (value2[track] === void 0) continue;
-      const count = value2[track];
-      if (typeof count !== "number" || !Number.isInteger(count) || count < 1) {
+      const count2 = value2[track];
+      if (typeof count2 !== "number" || !Number.isInteger(count2) || count2 < 1) {
         fail2(`${track} must be a whole number of at least 1`);
-      } else layout[track] = count;
+      } else layout[track] = count2;
     }
     if (value2.autoTracks !== void 0) {
       if (value2.autoTracks !== "NONE" && value2.autoTracks !== "ROWS") fail2("autoTracks must be NONE or ROWS");
@@ -25515,9 +27764,9 @@ ${renderSections(sections)}
         fail2(`${key}[${bad}] must be a number of pixels, "<n>fr" or "hug" \u2014 got ${JSON.stringify(list2[bad])}`);
         continue;
       }
-      const count = layout[axis];
-      if (count !== void 0 && count !== list2.length) {
-        fail2(`${key} has ${list2.length} track(s) but ${axis} is ${count}`);
+      const count2 = layout[axis];
+      if (count2 !== void 0 && count2 !== list2.length) {
+        fail2(`${key} has ${list2.length} track(s) but ${axis} is ${count2}`);
         continue;
       }
       layout[key] = list2;
@@ -26102,29 +28351,29 @@ ${renderSections(sections)}
       `collection "${collection.name}" has no mode "${ref}" \u2014 have: ${collection.modes.map((m) => m.name).join(", ")}`
     );
   }
-  function isAlias3(value2) {
+  function isAlias4(value2) {
     return typeof value2 === "object" && value2 !== null && value2.type === "VARIABLE_ALIAS";
   }
   function composedColorValue(value2) {
     if (typeof value2 !== "object" || value2 === null) return null;
     const entry = value2;
-    const color = isAlias3(entry.color) ? entry.color : parseColor2(entry.color);
-    const opacity = isAlias3(entry.opacity) ? entry.opacity : typeof entry.opacity === "number" ? entry.opacity : null;
+    const color = isAlias4(entry.color) ? entry.color : parseColor2(entry.color);
+    const opacity = isAlias4(entry.opacity) ? entry.opacity : typeof entry.opacity === "number" ? entry.opacity : null;
     if (!color || opacity === null) return null;
-    if (isAlias3(color)) return { color, opacity };
-    return isAlias3(opacity) ? { color, opacity } : null;
+    if (isAlias4(color)) return { color, opacity };
+    return isAlias4(opacity) ? { color, opacity } : null;
   }
   async function describeValue(value2) {
     if (value2 === void 0) return "(unset)";
-    if (isAlias3(value2)) {
+    if (isAlias4(value2)) {
       const target = await figma.variables.getVariableByIdAsync(value2.id);
       if (!target) return `\u2192 ${value2.id}`;
       return target.remote ? `\u2192 ${target.name} (library)` : `\u2192 ${target.name}`;
     }
     const composedColor = composedColorValue(value2);
     if (composedColor) {
-      const color = isAlias3(composedColor.color) ? await describeValue(composedColor.color) : describeColor(__spreadProps(__spreadValues({}, composedColor.color), { a: "a" in composedColor.color ? composedColor.color.a : 1 }));
-      const opacity = isAlias3(composedColor.opacity) ? await describeValue(composedColor.opacity) : `${composedColor.opacity}%`;
+      const color = isAlias4(composedColor.color) ? await describeValue(composedColor.color) : describeColor(__spreadProps(__spreadValues({}, composedColor.color), { a: "a" in composedColor.color ? composedColor.color.a : 1 }));
+      const opacity = isAlias4(composedColor.opacity) ? await describeValue(composedColor.opacity) : `${composedColor.opacity}%`;
       return `${color} \xB7 opacity ${opacity}`;
     }
     if (typeof value2 === "object" && value2 !== null && "r" in value2) {
@@ -26183,8 +28432,8 @@ ${renderSections(sections)}
         }
         opacity = percent;
       }
-      if (isAlias3(color)) return { color, opacity };
-      if (isAlias3(opacity)) return { color, opacity };
+      if (isAlias4(color)) return { color, opacity };
+      if (isAlias4(opacity)) return { color, opacity };
       throw new Error(`"${variable.name}" composed color needs a variable alias in "color" or "opacity"`);
     }
     switch (variable.resolvedType) {
@@ -27724,8 +29973,8 @@ ${scripts}`, "");
     return { [FILE_ENVELOPE]: { name, mime, encoding: "base64", data: figma.base64Encode(bytes) } };
   }
   function slugify2(name, fallback = "node") {
-    const slug2 = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
-    return slug2 || fallback;
+    const slug3 = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+    return slug3 || fallback;
   }
 
   // src/agent/sweep.ts
@@ -28550,15 +30799,15 @@ ${scripts}`, "");
           () => emitDjango(irNodes, sceneNodesById, tokens.names, { cssFile: params.cssFile })
         );
         const interactions = await clock.time("interactions", () => emitInteractions(irNodes, sceneNodesById));
-        const slug2 = slugify2(root2.name);
+        const slug3 = slugify2(root2.name);
         let screenshotScale = null;
         const files = [
-          textFile(`${slug2}.html`, "text/html", html),
-          textFile(`${slug2}.css`, "text/css", css)
+          textFile(`${slug3}.html`, "text/html", html),
+          textFile(`${slug3}.css`, "text/css", css)
         ];
         if (params.screenshot !== false) {
           const shot = await clock.time("screenshot", () => screenshot(root2, params.scale));
-          files.push(binaryFile(`${slug2}.png`, "image/png", shot.bytes));
+          files.push(binaryFile(`${slug3}.png`, "image/png", shot.bytes));
           screenshotScale = shot;
         }
         const assets = await clock.time("assets", () => collectContextAssets(irNodes, sceneNodesById));
@@ -28572,7 +30821,7 @@ ${scripts}`, "");
           screenshotScale: screenshotScale.scale
         }, screenshotScale.downscaled ? { requestedScreenshotScale: params.scale, screenshotDownscaled: true } : {}) : {}), {
           assets
-        }), interactions.css.length > 0 ? { interactionsCss: textFile(`${slug2}.interactions.css`, "text/css", interactions.css) } : {}), interactions.js.length > 0 ? { interactionsJs: textFile(`${slug2}.interactions.js`, "text/javascript", interactions.js) } : {}), typeof params.pair === "string" && params.pair !== "" ? {
+        }), interactions.css.length > 0 ? { interactionsCss: textFile(`${slug3}.interactions.css`, "text/css", interactions.css) } : {}), interactions.js.length > 0 ? { interactionsJs: textFile(`${slug3}.interactions.js`, "text/javascript", interactions.js) } : {}), typeof params.pair === "string" && params.pair !== "" ? {
           breakpoints: await clock.time("breakpoints", async () => {
             if (!("children" in ir)) {
               throw new Error(`"${root2.name}" (${root2.type}) has no children \u2014 nothing to pair a breakpoint frame against`);
@@ -28589,7 +30838,7 @@ ${scripts}`, "");
             const mergedSceneNodesById = new Map([...sceneNodesById, ...pairSceneNodesById]);
             const pairTokens = await collectTokens(mergedSceneNodesById.values());
             const group2 = {
-              slug: slug2,
+              slug: slug3,
               frames: [
                 { width: root2.width, breakpoint: "a", node: ir },
                 { width: pairRoot.width, breakpoint: "b", node: pairIr }
@@ -29976,7 +32225,7 @@ ${scripts}`, "");
         ) : null;
         const platform = isPlatform(params.platform) ? params.platform : null;
         const assets = params.assets === false ? [] : await collectContextAssets(irNodes, sceneNodesById);
-        const slug2 = slugify2(root2.name);
+        const slug3 = slugify2(root2.name);
         const tree = JSON.stringify(ir, null, 2);
         const componentUses = params.components === false ? [] : collectComponentUses(ir);
         if (componentUses.length > 0) await annotateComponentUses(componentUses);
@@ -29988,8 +32237,8 @@ ${scripts}`, "");
           tokens: tokens.usage
         }, params.components === false ? {} : { components: componentUses }), params.assets === false ? {} : { assets }), params.type === false ? {} : { type: await typographyOf(sceneNodesById.values(), tokens.names) }), params.screen === false ? {} : { screen: screenSummary(ir, { width: root2.width, height: root2.height }) }), platform ? { units: unitProfile(platform, root2.width) } : {}), painted ? { painted } : {}), {
           bytes: tree.length
-        }), params.inline === true ? { ir } : { ir: textFile(`${slug2}.ir.json`, "application/json", tree) }), preview2 ? __spreadValues({
-          preview: binaryFile(`${slug2}.png`, "image/png", preview2.bytes),
+        }), params.inline === true ? { ir } : { ir: textFile(`${slug3}.ir.json`, "application/json", tree) }), preview2 ? __spreadValues({
+          preview: binaryFile(`${slug3}.png`, "image/png", preview2.bytes),
           previewScale: preview2.scale
         }, preview2.downscaled ? { requestedPreviewScale: 2, previewDownscaled: true } : {}) : {});
       }
@@ -31401,7 +33650,7 @@ ${scripts}`, "");
       );
     });
   }
-  async function resolveImageUrls(root2, diffs, slug2) {
+  async function resolveImageUrls(root2, diffs, slug3) {
     const hashes = imageHashesIn(diffs);
     const urls = /* @__PURE__ */ new Map();
     const files = [];
@@ -31424,7 +33673,7 @@ ${scripts}`, "");
         continue;
       }
       const format = detectImageFillFormat(bytes);
-      const filename = `${slug2}-${hash.slice(0, 8)}.${format}`;
+      const filename = `${slug3}-${hash.slice(0, 8)}.${format}`;
       files.push(binaryFile(filename, format === "jpg" ? "image/jpeg" : `image/${format}`, bytes));
       urls.set(hash, filename);
     }
@@ -31481,9 +33730,9 @@ ${scripts}`, "");
         const strategy = params.strategy;
         const toggleClass = params.toggleClass;
         const wants = (kind) => strategy === "all" || strategy === kind;
-        const slug2 = slugify2(node.name, "transitions");
+        const slug3 = slugify2(node.name, "transitions");
         const diffed = pairs.map((pair2) => ({ pair: pair2, diff: diffStates(toDiffable2(pair2.from), toDiffable2(pair2.to)) }));
-        const imageCrossfade = wants("transition") ? await resolveImageUrls(node, diffed.map((entry) => entry.diff), slug2) : { urlFor: () => void 0, files: [], warnings: [] };
+        const imageCrossfade = wants("transition") ? await resolveImageUrls(node, diffed.map((entry) => entry.diff), slug3) : { urlFor: () => void 0, files: [], warnings: [] };
         const transitions = [];
         const css = [];
         const js = [];
@@ -31553,8 +33802,8 @@ ${scripts}`, "");
           }));
         }
         const files = [...imageCrossfade.files];
-        if (css.length > 0) files.push(textFile(`${slug2}.transitions.css`, "text/css", css.join("\n\n")));
-        if (js.length > 0) files.push(textFile(`${slug2}.transitions.js`, "text/javascript", js.join("\n\n")));
+        if (css.length > 0) files.push(textFile(`${slug3}.transitions.css`, "text/css", css.join("\n\n")));
+        if (js.length > 0) files.push(textFile(`${slug3}.transitions.js`, "text/javascript", js.join("\n\n")));
         return __spreadValues({
           componentSet: { id: node.id, name: node.name },
           transitions,
@@ -31671,7 +33920,7 @@ ${scripts}`, "");
     {
       name: "tokens.emit",
       summary: "The file's variables as token files for a named platform \u2014 CSS, an iOS asset catalogue, Android resources, Swift and Kotlin.",
-      agent: "Ask for the platform you are building; the panel's own export settings are not consulted, so the answer is the same on every machine. `web` gives tokens.css / tokens.json / tokens.ts; `ios` gives Assets.xcassets/*.colorset and Tokens.swift; `android` gives values/colors.xml, values-night/colors.xml and Tokens.kt. Themes come from the collection's modes: the dark one becomes the `luminosity` appearance on iOS and the `-night` qualifier on Android, and a token that does not change between themes is emitted once instead of twice. `library: true` also imports every enabled library variable \u2014 a minute or more on a large file; leave it off when the file owns its tokens.",
+      agent: "Ask for the platform you are building; the panel's own export settings are not consulted, so the answer is the same on every machine. `web` gives tokens.css / tokens.json / tokens.ts; `ios` gives Assets.xcassets/*.colorset and Tokens.swift; `android` gives values/colors.xml, values-night/colors.xml and Tokens.kt. Themes come from the collection's modes: the dark one becomes the `luminosity` appearance on iOS and the `-night` qualifier on Android, and a token that does not change between themes is emitted once instead of twice. `library: true` also imports every enabled library variable \u2014 a minute or more on a large file; leave it off when the file owns its tokens. When the file pins its token settings (tokens.configure), they apply here too \u2014 roles, theme attribute, slugs \u2014 unless this call passes its own. For the whole configured web PACKAGE exactly as the panel exports it (one module file per theme, README, products), call plugin.call with command SCAN_TOKENS.",
       mutates: false,
       params: {
         platform: {
@@ -31687,30 +33936,40 @@ ${scripts}`, "");
         },
         inlinePrimitives: {
           type: "boolean",
-          default: true,
-          description: "Resolve semantic tokens down to their primitive values. On for native output, where a constant cannot hold a reference: an unresolved alias would land in Swift as the literal `{colors.blue.500}`."
+          description: "Resolve semantic tokens down to their primitive values. On for native output, where a constant cannot hold a reference: an unresolved alias would land in Swift as the literal `{colors.blue.500}`. Omitted: the file's token config, else on."
         },
         themeAttribute: {
           type: "string",
-          default: "data-theme",
-          description: "Web only: the attribute `tokens.css` switches themes on."
+          description: "Web only: the attribute `tokens.css` switches themes on. Omitted: the file's token config, else data-theme."
+        },
+        fileConfig: {
+          type: "boolean",
+          default: true,
+          description: "Apply the token settings this file pins (see tokens.configure). false builds from the call's arguments alone."
         }
       },
       async run(params) {
-        var _a, _b, _c, _d;
+        var _a, _b, _c, _d, _e, _f, _g;
         const platform = String((_a = params.platform) != null ? _a : "web");
         const wants = (target) => platform === "all" || platform === target;
-        const inline = params.inlinePrimitives !== false;
+        const pinned = params.fileConfig === false ? {} : fileTokenSettings((_b = readFileTokenConfig()) != null ? _b : {});
+        const inline = typeof params.inlinePrimitives === "boolean" ? params.inlinePrimitives : (_c = pinned.inlinePrimitives) != null ? _c : true;
         const read = params.library === true ? await readAllVariables() : await readLocalVariables();
-        const targets = await readAliasTargets(read).catch(() => ({ collections: [], variables: [] }));
+        const targets = await readAliasTargets(read, { lookupMs: 3e3, budgetMs: 3e4 }).catch(() => ({ collections: [], variables: [] }));
+        const settled = await settleUnreachedAliases(read.variables, /* @__PURE__ */ new Set([...read.variables.map((v) => v.id), ...targets.variables.map((v) => v.id)]));
         const snapshot = {
           collections: [...read.collections, ...targets.collections],
-          variables: [...read.variables, ...targets.variables]
+          variables: [...settled.variables, ...targets.variables]
         };
+        const aliasNote = unreachedAliasNote(settled.settled, settled.left);
         const artifacts = emitTokenArtifacts(snapshot, {
           inlinePrimitives: inline,
-          flattenAliases: inline,
-          themeAttribute: String((_b = params.themeAttribute) != null ? _b : "data-theme")
+          flattenAliases: typeof params.inlinePrimitives === "boolean" ? inline : (_d = pinned.flattenAliases) != null ? _d : inline,
+          themeAttribute: String((_e = params.themeAttribute) != null ? _e : pinned.themeAttribute || "data-theme"),
+          collectionRoles: pinned.collectionRoles,
+          slugThemes: pinned.slugThemes,
+          themeAxes: pinned.themeAxes,
+          structure: pinned.mapping ? void 0 : pinned.structure
         });
         const { emitted, themes, defaultTheme } = artifacts;
         const files = {};
@@ -31731,7 +33990,7 @@ ${scripts}`, "");
           file: target.replace(/\.colorset\/Contents\.json$/, ".colorset.json").replace(/\//g, "__"),
           path: target
         }));
-        return {
+        return __spreadValues(__spreadValues({
           platform,
           themes,
           defaultTheme,
@@ -31739,8 +33998,81 @@ ${scripts}`, "");
           files: manifest.map(
             ({ file, path }) => textFile(file, path.endsWith(".json") ? "application/json" : "text/plain", files[path])
           ),
-          counts: { files: manifest.length, variables: (_d = (_c = snapshot.variables) == null ? void 0 : _c.length) != null ? _d : 0 }
-        };
+          counts: { files: manifest.length, variables: (_g = (_f = snapshot.variables) == null ? void 0 : _f.length) != null ? _g : 0 }
+        }, artifacts.notes.length > 0 || aliasNote ? { notes: [...artifacts.notes, ...aliasNote ? [aliasNote] : []] } : {}), Object.keys(pinned).length > 0 ? { fileConfig: pinned } : {});
+      }
+    },
+    {
+      name: "tokens.configure",
+      summary: "Read or set how THIS FILE ships its tokens \u2014 stored in the file, so the panel, Dev Mode and every agent build the same package.",
+      agent: 'The panel keeps its export settings per person; a file that is a design system\'s contract with code pins its token settings here instead, and from then on every export of the file \u2014 anyone\'s panel, Dev Mode, plugin.call SCAN_TOKENS, tokens.emit \u2014 uses them. Without arguments it is a read. `set` merges into the stored config (null removes a field), `clear` removes the whole config. The answer previews what the export would produce: the themes in order, the default one, and the notes on collections read at their default mode. How the file\'s variables become code is the MAPPING \u2014 the same words Settings \u2192 Tokens shows a person, so set it there or here and both see it. It declares the attributes code switches on (any names, at most two) and binds every value to file data: { mapping: { version: 1, attributes: [{ name: "data-product", from: "collections", shared: ["Shared"], values: [{ value: "one", collections: ["One"], base: true }, { value: "business", collections: ["Business"] }, { value: "platform", sameAs: "business" }] }, { name: "data-theme", from: "columns", nested: true, values: [{ value: "light", columns: ["Light"] }, { value: "dark", columns: ["Dark"] }] }], collections: { Colors: "palette", Breakpoints: "breakpoints", Product: "skip" } } }. from: collections (a collection per value, or several \u2014 the free plan\'s one-column collections; the base value is what the others start from), columns (modes; with no attribute from collections or names, name the one collection in the attribute\'s `collections`), names (a marker segment in the token names, `dark/bg/base`; the unmarked tokens are the base value). Every other collection: palette (values written into tokens), breakpoints, export, skip. A mapping replaces collectionRoles, themeAxes, themeAttribute, slugThemes and structure; those older fields are for files without one. plugin.commands TOKENS_MAPPING shows a collection as Figma does, with each token\'s name in code.',
+      mutates: true,
+      params: {
+        set: {
+          type: "json",
+          description: `Fields to pin: ${FILE_CONFIG_FIELDS.join(", ")}. E.g. { "mapping": { "version": 1, "attributes": [{ "name": "data-theme", "from": "columns", "collections": ["Theme"], "values": [{ "value": "light", "columns": ["Light"] }, { "value": "dark", "columns": ["Dark"] }] }] }, "inlinePrimitives": true }. A field set to null is unpinned.`
+        },
+        clear: { type: "boolean", default: false, description: "Remove the file's token config entirely; every export falls back to each person's own settings." },
+        dryRun: { type: "boolean", default: false, description: "Validate and preview the result without writing it." }
+      },
+      async run(params) {
+        var _a, _b;
+        const before = readFileTokenConfig();
+        let next = before;
+        if (params.clear === true) next = null;
+        else if (params.set !== void 0) {
+          if (!params.set || typeof params.set !== "object" || Array.isArray(params.set)) throw new Error('"set" must be an object of fields to pin');
+          const raw = __spreadValues({}, params.set);
+          const unset = Object.keys(raw).filter((key) => raw[key] === null);
+          const { config, problems } = normalizeFileTokenConfig(Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== null)));
+          if (problems.length > 0) throw new Error(`nothing was written: ${problems.join("; ")}`);
+          const merged = __spreadValues(__spreadValues({}, before != null ? before : {}), config);
+          for (const key of unset) delete merged[key];
+          if (merged.mapping) {
+            const overruled = MAPPING_SUPERSEDES.filter((field) => field in config);
+            if (overruled.length > 0) throw new Error(`nothing was written: this file's mapping decides ${overruled.join(", ")} \u2014 set it inside "mapping", or unpin the mapping with { "mapping": null }`);
+          }
+          next = merged.mapping ? withMapping(merged, merged.mapping) : Object.keys(merged).length > 0 ? merged : null;
+        }
+        const read = await readLocalVariables();
+        const effective = next ? fileTokenSettings(next) : null;
+        const roles = parseCollectionModes(effective == null ? void 0 : effective.collectionRoles);
+        const artifacts = emitTokenArtifacts(read, {
+          inlinePrimitives: (_a = effective == null ? void 0 : effective.inlinePrimitives) != null ? _a : true,
+          flattenAliases: (_b = effective == null ? void 0 : effective.flattenAliases) != null ? _b : false,
+          themeAttribute: (effective == null ? void 0 : effective.themeAttribute) || "data-theme-name",
+          collectionRoles: effective == null ? void 0 : effective.collectionRoles,
+          slugThemes: effective == null ? void 0 : effective.slugThemes,
+          themeAxes: effective == null ? void 0 : effective.themeAxes,
+          structure: (effective == null ? void 0 : effective.mapping) ? void 0 : effective == null ? void 0 : effective.structure
+        });
+        const grid = artifacts.grid;
+        const preview2 = __spreadProps(__spreadValues({
+          themes: artifacts.themes,
+          defaultTheme: artifacts.defaultTheme,
+          selector: grid ? gridSelector(grid, artifacts.defaultTheme) : `[${(effective == null ? void 0 : effective.themeAttribute) || "data-theme-name"}="${artifacts.defaultTheme}"]`
+        }, grid ? {
+          axes: __spreadProps(__spreadValues({}, Object.fromEntries(grid.axes.map((axis) => [axis.attribute, axis.values]))), {
+            default: Object.fromEntries(grid.axes.map((axis, n) => [axis.attribute, grid.defaults[n]]))
+          })
+        } : {}), {
+          notes: artifacts.notes,
+          unknownCollections: [...roles.hidden, ...roles.breakpoints, ...roles.products, ...roles.themes].filter(
+            (name) => {
+              var _a2;
+              return !((_a2 = read.collections) != null ? _a2 : []).some((c) => c.name.trim().toLowerCase() === name.trim().toLowerCase());
+            }
+          )
+        });
+        const changed2 = JSON.stringify(before) !== JSON.stringify(next);
+        if (params.dryRun === true || !changed2) return { dryRun: params.dryRun === true, changed: changed2, before, after: next, preview: preview2 };
+        try {
+          writeFileTokenConfig(next);
+        } catch (err) {
+          throw new Error(`the file is read-only here (Dev Mode or view access) \u2014 an editor has to pin the config: ${String((err == null ? void 0 : err.message) || err)}`);
+        }
+        const stored = readFileTokenConfig();
+        return { changed: changed2, before, after: stored, verified: JSON.stringify(stored) === JSON.stringify(next), preview: preview2 };
       }
     }
   ];
@@ -34608,7 +36940,7 @@ ${scripts}`, "");
   })();
 
   // src/agent/ui-commands.ts
-  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs, and the file's own guidelines under guidelines/) and hand back the files","cost":"tokens in seconds; with component docs on, a freshly opened large file loads its pages first \u2014 up to ~90 s, then a partial COMPONENTS.md that names what is missing; the next export completes it. Pass timeoutMs 170000","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide; a field the file pins (docs.configure) always comes from the file"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DOCS_TO_CANVAS","access":"write","classified":true,"summary":"lay a package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, \u2026) out on the canvas \u2014 one frame per document on the Docs page (FigJam: this board), refreshed in place when it is already there","params":[{"name":"files","required":false,"type":"Record<string, string | Uint8Array | { base64: string }>","note":"the package as \`{ 'DESIGN.md': 'markdown', 'previews/button.png': { base64 } }\` \u2014 the Markdown at its root becomes frames, the images it references are drawn in. Omitted, the design-token package is built from the saved settings (as SCAN_TOKENS would) and its documents are placed"}],"replies":["DOCS_PLACED","DOCS_ERROR"]},{"name":"MAIL_REFRESH","access":"deny","classified":true,"summary":"the designer's mail panel \u2014 agents use inbox.list","params":[],"replies":[]},{"name":"MAIL_SEND","access":"deny","classified":true,"summary":"sends as the designer \u2014 agents use inbox.send","params":[{"name":"to","required":true,"type":"string[]","note":"addresses \u2014 \`*\`, \`user:<id>\`, \`agent:<id>\`"},{"name":"text","required":true,"type":"string","note":"the message, 8 kB at most"},{"name":"kind","required":false,"type":"string","note":"note, request or reply"},{"name":"thread","required":false,"type":"string","note":"the id of the message a reply answers"},{"name":"ttlHours","required":false,"type":"number","note":"how long it lives, 1 hour to a week"},{"name":"attachSelection","required":false,"type":"boolean","note":"link the layers selected now"}],"replies":["MAIL_SENT","MAIL_ERROR"]},{"name":"MAIL_ACK","access":"deny","classified":true,"summary":"marks mail read for the designer \u2014 agents use inbox.ack","params":[{"name":"ids","required":true,"type":"string[]","note":"the messages to mark read"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_DECIDE","access":"deny","classified":true,"summary":"a person approving or declining a request is the one thing an agent must never do for them","params":[{"name":"id","required":true,"type":"string","note":"the request being answered"},{"name":"decision","required":true,"type":"'approved' | 'declined'","note":"approved or declined"},{"name":"note","required":false,"type":"string","note":"a word on why, 500 characters at most"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_FOCUS","access":"deny","classified":true,"summary":"the mail panel's jump to a layer \u2014 agents use SCROLL_INTO_VIEW","params":[{"name":"nodeId","required":true,"type":"string","note":"the layer a message links to"}],"replies":["MAIL_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"},{"name":"codeLayer","required":false,"type":"boolean","note":"true packs the project for a Figma code layer \u2014 the four .figma/make scripts (named in \`executables\`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files \u2014 ready to archive and import with Figma's MCP send_code_to_figma"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"},{"name":"budgetMs","required":false,"type":"unknown","note":"how long the bridge will still wait for the answer"}],"replies":["AGENT_RESPONSE"]},{"name":"AGENT_CANCEL","access":"deny","classified":true,"summary":"the bridge withdrawing its own request, not something to call","params":[{"name":"ids","required":false,"type":"unknown","note":"the request ids the bridge stopped waiting for"},{"name":"reason","required":false,"type":"unknown","note":"why it stopped waiting"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"HOST_VISIBILITY","access":"deny","classified":true,"summary":"panel housekeeping \u2014 the panel reports whether Figma's window is visible, so long loops stop paying throttled timers (see utils/budget.ts); an agent has nothing to tell it","params":[{"name":"hidden","required":true,"type":"boolean","note":"the panel's document.hidden \u2014 true while Figma's window is behind"}],"replies":[]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name \u2014 editor.capabilities says which this is"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; \\"none\\" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"},{"name":"offset","required":false,"type":"number","note":"skip this many node ids; when the answer has nextOffset, call again from there"},{"name":"maxPixels","required":false,"type":"number","note":"raster/video pixel ceiling checked before exportAsync (40 million by default)"},{"name":"budgetBytes","required":false,"type":"number","note":"raw reply-byte budget, clamped below the 3 MiB transport ceiling"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""},{"name":"divider","required":false,"type":"boolean","note":"true makes a divider \u2014 a heading in the pages list that holds no canvas, how a long file is split into sections"}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"SELECTION_COLORS","access":"read","classified":true,"summary":"the colours the designer's selection uses \u2014 Figma's own \\"Selection colors\\", with the styles and tokens behind them","params":[],"replies":["SELECTION_COLORS"]},{"name":"FILE_THUMBNAIL","access":"read","classified":true,"summary":"which frame is the file's cover in the file browser \u2014 null means Figma picks one itself","params":[],"replies":["FILE_THUMBNAIL"]},{"name":"FILE_THUMBNAIL_SET","access":"write","classified":true,"summary":"make a frame the file's cover in the file browser, or hand the choice back to Figma","params":[{"name":"nodeId","required":true,"type":"string | null","note":"a frame, component, component set or section; null restores Figma's default"}],"replies":["FILE_THUMBNAIL","CANVAS_ERROR"]},{"name":"UNDO","access":"write","classified":true,"summary":"take back the last change \u2014 Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it","params":[],"replies":["UNDONE"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATION_CATEGORIES","access":"read","classified":true,"summary":"the annotation categories this file defines \u2014 what ANNOTATE's category can name, with each one's colour and whether Figma shipped it","params":[],"replies":["ANNOTATION_CATEGORIES"]},{"name":"ANNOTATION_CATEGORY_SET","access":"write","classified":true,"summary":"add, rename, recolour or remove annotation categories \u2014 the vocabulary a team files its Dev Mode notes under","params":[{"name":"add","required":false,"type":"unknown","note":"[{ label, color }] \u2014 color is one of yellow, orange, red, pink, violet, blue, teal, green"},{"name":"edit","required":false,"type":"unknown","note":"[{ category, label?, color? }] \u2014 category by name or id"},{"name":"remove","required":false,"type":"unknown","note":"[category] by name or id. Figma's presets cannot be removed"}],"replies":["ANNOTATION_CATEGORIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","DOCS_PLACED","DOCS_ERROR","FILES_READY","EXPORT_ERROR","MAIL_STATE"]}]`;
+  var INJECTED2 = `[{"name":"SCAN_TOKENS","access":"read","classified":true,"summary":"build the design-token package (tokens, DESIGN.md, component docs, and the file's own guidelines under guidelines/) and hand back the files","cost":"tokens in seconds; with component docs on, a freshly opened large file loads its pages first \u2014 up to ~90 s, then a partial COMPONENTS.md that names what is missing; the next export completes it. Pass timeoutMs 170000","params":[{"name":"docs","required":false,"type":"{ componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }","note":"what goes into the documentation half \u2014 { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide; a field the file pins (docs.configure) always comes from the file"},{"name":"tokens","required":false,"type":"{ includeLibraries?: boolean; emitNative?: boolean }","note":"overrides for this one build \u2014 { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide"}],"replies":["TOKENS_RESULT","TOKENS_ERROR"]},{"name":"DOCS_TO_CANVAS","access":"write","classified":true,"summary":"lay a package's Markdown (DESIGN.md, COMPONENTS.md, ICONS.md, \u2026) out on the canvas \u2014 one frame per document on the Docs page (FigJam: this board), refreshed in place when it is already there","params":[{"name":"files","required":false,"type":"Record<string, string | Uint8Array | { base64: string }>","note":"the package as \`{ 'DESIGN.md': 'markdown', 'previews/button.png': { base64 } }\` \u2014 the Markdown at its root becomes frames, the images it references are drawn in. Omitted, the design-token package is built from the saved settings (as SCAN_TOKENS would) and its documents are placed"}],"replies":["DOCS_PLACED","DOCS_ERROR"]},{"name":"MAIL_REFRESH","access":"deny","classified":true,"summary":"the designer's mail panel \u2014 agents use inbox.list","params":[],"replies":[]},{"name":"MAIL_SEND","access":"deny","classified":true,"summary":"sends as the designer \u2014 agents use inbox.send","params":[{"name":"to","required":true,"type":"string[]","note":"addresses \u2014 \`*\`, \`user:<id>\`, \`agent:<id>\`"},{"name":"text","required":true,"type":"string","note":"the message, 8 kB at most"},{"name":"kind","required":false,"type":"string","note":"note, request or reply"},{"name":"thread","required":false,"type":"string","note":"the id of the message a reply answers"},{"name":"ttlHours","required":false,"type":"number","note":"how long it lives, 1 hour to a week"},{"name":"attachSelection","required":false,"type":"boolean","note":"link the layers selected now"}],"replies":["MAIL_SENT","MAIL_ERROR"]},{"name":"MAIL_ACK","access":"deny","classified":true,"summary":"marks mail read for the designer \u2014 agents use inbox.ack","params":[{"name":"ids","required":true,"type":"string[]","note":"the messages to mark read"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_DECIDE","access":"deny","classified":true,"summary":"a person approving or declining a request is the one thing an agent must never do for them","params":[{"name":"id","required":true,"type":"string","note":"the request being answered"},{"name":"decision","required":true,"type":"'approved' | 'declined'","note":"approved or declined"},{"name":"note","required":false,"type":"string","note":"a word on why, 500 characters at most"}],"replies":["MAIL_ERROR"]},{"name":"MAIL_FOCUS","access":"deny","classified":true,"summary":"the mail panel's jump to a layer \u2014 agents use SCROLL_INTO_VIEW","params":[{"name":"nodeId","required":true,"type":"string","note":"the layer a message links to"}],"replies":["MAIL_ERROR"]},{"name":"DELIVER","access":"write","classified":true,"summary":"POST a built package to the configured delivery endpoint \u2014 it leaves this machine; with dryRun the receiver writes nothing and answers with the plan it would have applied","params":[{"name":"files","required":true,"type":"Record<string, string | { base64: string }>","note":"the package as \`{ 'path/file.css': 'text' }\`, or \`{ base64 }\` for bytes"},{"name":"dryRun","required":false,"type":"boolean","note":"change nothing, just report the plan \u2014 omit to use the saved default"}],"replies":["DELIVERY_RESULT","DELIVERY_ERROR"]},{"name":"GENERATE_TYPOGRAPHY","access":"write","classified":true,"summary":"create typography variables and bind text styles to them","params":[],"replies":["TYPOGRAPHY_GENERATED","TYPOGRAPHY_ERROR"]},{"name":"PREVIEW_PALETTE","access":"read","classified":true,"summary":"recompute a palette from settings \u2014 pure maths, nothing is written","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 anything unrecognised is REPLACED BY DEFAULTS, silently: send {} and you get the plugin's own palette back, not an error"}],"replies":["PALETTE_PREVIEW"]},{"name":"SUGGEST_SPECTRUM","access":"read","classified":true,"summary":"suggest a harmonious spectrum for the current settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":["SPECTRUM_SUGGESTED"]},{"name":"FIX_PALETTE","access":"write","classified":true,"summary":"apply one palette fix and store the corrected settings","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"},{"name":"fix","required":true,"type":"unknown","note":"which repair to make \u2014 { kind: \\"anchor-step\\", spectrumId, step } to pin one ramp, or { kind: \\"reset-steps\\" | \\"rename-duplicates\\" | \\"split-dark-theme\\" }"}],"replies":["PALETTE_FIXED","COMMAND_REFUSED"]},{"name":"SAVE_PALETTE_SETTINGS","access":"write","classified":true,"summary":"store palette settings in clientStorage","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused"}],"replies":[]},{"name":"APPLY_PALETTE","access":"write","classified":true,"summary":"write a generated palette into the document as variables, theme roles and swatches","params":[{"name":"settings","required":true,"type":"unknown","shape":"{ formula: PaletteFormula; steps: number[]; neutralSteps: number[]; lightnessMax: number; lightnessMin: number; lightnessCurve: number; chromaCurve: number; hueTorsion: number | 'auto'; neutralChroma: number; spectra: S\u2026","note":"PaletteSettings \u2014 unrecognised input is replaced by defaults rather than refused; check what PREVIEW_PALETTE answers before writing"},{"name":"applyOptions","required":false,"type":"Partial<PaletteApplyOptions>","shape":"{ variables: boolean; theme: boolean; canvas: boolean; collectionName: string; themeCollectionName: string; splitDarkTheme: boolean }","note":"which halves are written \u2014 { variables, theme, canvas, collectionName, themeCollectionName, splitDarkTheme: keep the dark theme as a companion collection instead of a second mode }"}],"replies":["PALETTE_APPLIED","PALETTE_ERROR"]},{"name":"REMAP_SOURCE_PREVIEW","access":"read","classified":true,"summary":"resolve generator, selection, or library colors so one can be chosen for an exact replacement","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"{ kind: \\"generator\\", settings }, { kind: \\"selection\\" }, or { kind: \\"library\\", key }"}],"replies":["REMAP_SOURCE_COLORS","REMAP_SOURCE_ERROR"]},{"name":"REMAP_DIRECT_PREVIEW","access":"read","classified":true,"summary":"find exact RGB matches for one color without building a palette migration","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB; alpha is ignored while matching"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB; every matched site's alpha is preserved"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""}],"replies":["REMAP_DIRECT_PLAN","REMAP_DIRECT_ERROR"]},{"name":"REMAP_DIRECT_APPLY","access":"write","classified":true,"summary":"replace exact RGB matches in variables, styles, and/or loose canvas paints behind an undo snapshot","params":[{"name":"from","required":true,"type":"string","note":"source color as #RRGGBB"},{"name":"to","required":true,"type":"string","note":"replacement color as #RRGGBB"},{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"\\"document\\", \\"page\\", or \\"tokens\\""},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"choose variables, styles, canvas, and document/page scope; names and bindings never change"}],"replies":["REMAP_PROGRESS","REMAP_DIRECT_APPLIED","REMAP_DIRECT_ERROR"]},{"name":"REMAP_SCAN","access":"read","classified":true,"summary":"inventory every colour in the document \u2014 variables, styles, gradient stops, loose paints","cost":"one walk of the whole document \u2014 12s over 200k nodes. The reading is then reused by every preview until a write invalidates it.","params":[{"name":"depth","required":false,"type":"ScanDepth","shape":"'tokens' | 'page' | 'document'","note":"how far the walk goes \u2014 \\"document\\" (default, the honest answer), \\"page\\", or \\"tokens\\" for variables and styles alone. The shallower ones exist for files where a full walk is too expensive"}],"replies":["REMAP_INVENTORY","REMAP_ERROR"]},{"name":"REMAP_LIST_LIBRARIES","access":"read","classified":true,"summary":"list the published library collections a new palette could be read from","params":[],"replies":["REMAP_LIBRARIES"]},{"name":"REMAP_PREVIEW","access":"read","classified":true,"summary":"build the old-to-new colour mapping and return the table, structurally matched","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PLAN","REMAP_ERROR"]},{"name":"REMAP_APPLY","access":"write","classified":true,"summary":"write the mapping into the document (values, renames, styles, canvas paints) behind an undo snapshot","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"applyOptions","required":false,"type":"Partial<RemapApplyOptions>","shape":"{ values: boolean; rename: boolean; styles: boolean; canvas: boolean; bind: boolean; scope: RemapScope }","note":"which halves of the write happen \u2014 { values, rename, styles, canvas, bind, scope: document|page|selection }; all true and the whole document by default"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_APPLIED","REMAP_ERROR"]},{"name":"REMAP_REVERT","access":"write","classified":true,"summary":"restore the values, names and paints the last remap replaced","params":[],"replies":["REMAP_PROGRESS","REMAP_REVERTED","REMAP_ERROR"]},{"name":"REMAP_REBIND_PREVIEW","access":"read","classified":true,"summary":"count what a rebind onto the reference library would move \u2014 writes nothing","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_APPLY","access":"write","classified":true,"summary":"move the file's colour pointers onto the reference library","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"scope","required":false,"type":"RemapScope","shape":"'document' | 'page' | 'selection'","note":"how much of the file is rebound \u2014 document (default), page, or selection"}],"replies":["REMAP_PROGRESS","REMAP_ERROR"]},{"name":"REMAP_REBIND_REVERT","access":"write","classified":true,"summary":"undo the last rebind","params":[],"replies":["REMAP_PROGRESS","REMAP_REBIND_REVERTED","REMAP_ERROR"]},{"name":"REMAP_BOARD","access":"write","classified":true,"summary":"draw the standardised old/new swatch board \u2014 from a palette, or from any mapping.json you supply","params":[{"name":"source","required":false,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"mapping","required":false,"type":"unknown","shape":"{ format: typeof MAPPING_FORMAT; version: number; generatedAt: string | null; source: { file: string | null; palette: string | null }; families: Array<{ from: string; to: string; mode: string | null; shared: boolean }>;\u2026","note":"MappingFile \u2014 the mapping.json document REMAP_EXPORT_MAPPING writes; pass it instead of source to draw a correspondence computed anywhere"},{"name":"title","required":false,"type":"string","note":"what the board is called on the canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_PROGRESS","REMAP_BOARD_DRAWN","REMAP_ERROR"]},{"name":"REMAP_UNPARK","access":"write","classified":true,"summary":"give back the names this plugin parked under legacy/","params":[],"replies":["REMAP_UNPARKED","REMAP_ERROR"]},{"name":"REMAP_EXPORT_MAPPING","access":"read","classified":true,"summary":"serialise the mapping as mapping.json or .csv for the repository side","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"format","required":true,"type":"'json' | 'csv'","note":"\\"json\\" for the mapping document the rewriter reads, \\"csv\\" for a spreadsheet"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"}],"replies":["REMAP_MAPPING","REMAP_ERROR"]},{"name":"REMAP_REWRITE_FILES","access":"read","classified":true,"summary":"rewrite colours in supplied file contents off the same mapping \u2014 a pure transform","params":[{"name":"source","required":true,"type":"RemapSource","shape":"| { kind: 'paste'; text: string } | { kind: 'generator'; settings: unknown } | { kind: 'selection' } | { kind: 'library'; key: string; mode?: string | null }","note":"where the new palette comes from \u2014 { kind: \\"paste\\", text } for hexes or CSS, { kind: \\"library\\", key, mode? } for a published collection, { kind: \\"generator\\", settings }, or { kind: \\"selection\\" } to read the swatches on canvas"},{"name":"options","required":false,"type":"Partial<RemapOptions>","shape":"{ rename: boolean; separateAdjacent: boolean; legacyGroup: string }","note":"how the plan is built \u2014 { rename: rewrite primitive names onto their new family, separateAdjacent: move one of two colliding neighbours a step aside, legacyGroup: where a name a variable had to give up goes }"},{"name":"overrides","required":false,"type":"Record<string, string>","note":"site id \u2192 forced \\"#RRGGBB\\", the rows a human changed in the approval table; the plan keeps them and marks them manual"},{"name":"excluded","required":false,"type":"string[]","note":"site ids to leave out of the plan entirely \u2014 the rows nobody wants touched"},{"name":"files","required":true,"type":"Array<{ name: string; text: string }>","note":"[{ name, text }] \u2014 the file contents to rewrite. Nothing is read from disk and nothing is written back; the rewritten text comes back in the reply"},{"name":"snap","required":false,"type":"number","note":"how far a literal may be from a token colour and still count as it, on the \u0394E scale \u2014 2 by default, 0 for exact matches only"},{"name":"byName","required":false,"type":"boolean","note":"also rewrite declarations whose key is a token name, whatever value they hold"},{"name":"mode","required":false,"type":"string | null","note":"names the theme when the mapping has several. WITHOUT IT a multi-theme mapping replaces nothing and says so only in warnings."}],"replies":["REMAP_REWRITTEN","REMAP_ERROR"]},{"name":"LIST_VARIABLE_COLLECTIONS","access":"read","classified":true,"summary":"local variable collections for the settings table, plus whether this file has only single-mode collections","params":[],"replies":["VARIABLE_COLLECTIONS"]},{"name":"THEME_AXES_PREVIEW","access":"read","classified":true,"summary":"what a theme axes setting would ship \u2014 the file's collections and modes, every cell of the grid and how it was filled, the problems, the html to set and the stylesheet's blocks \u2014 without saving anything","params":[{"name":"tokens","required":false,"type":"Partial<ExportTokensOptions>","shape":"{ inlinePrimitives: boolean; flattenAliases: boolean; themeAttribute: string; emitJson: boolean; emitScss: boolean; emitModuleFiles: boolean; cssModulesGlobal: boolean; typoExtract: boolean; typoScaleOnly: boolean; typo\u2026","note":"the token settings to preview with, over the saved ones \u2014 { themeAxes: the string or the picker's { axes, cells?, sameAs? } object, collectionRoles, slugThemes, themeAttribute }"},{"name":"detect","required":false,"type":"boolean","note":"also suggest a starting setup read off the file (product collections, a grid of mode names, or one attribute)"}],"replies":["THEME_AXES_PREVIEW_RESULT"]},{"name":"TOKENS_MAPPING","access":"read","classified":true,"summary":"the Tokens settings screen \u2014 the attributes code switches on (any names: data-product, data-theme, data-brand\u2026) and the file data each value is bound to (collections, columns, or a marker in the token names), the role of every other collection, one collection as Figma shows it with every token's name in code and, for a collection on top of the base one, whether each token overrides, repeats or takes the base's value, and what the export ships \u2014 the mapping in force (pinned in the file, else read off its older settings, else suggested), nothing saved","params":[{"name":"collection","required":false,"type":"string","note":"the collection to show as a table, by name"},{"name":"mapping","required":false,"type":"unknown","note":"a mapping to preview instead of the one in force \u2014 { version: 1, attributes: [{ name, from: collections|columns|names, values: [{ value, collections?, columns?, marker?, base?, sameAs? }], shared?, collections?, nested? }], collections?: { Name: palette|breakpoints|export|skip } }"},{"name":"suggest","required":false,"type":"boolean","note":"preview the mapping suggested from how the file is set up, instead of the one in force"},{"name":"file","required":false,"type":"string","note":"one of the shipped files the answer lists (tokens.css, base.module.css, dark.module.css\u2026), whose text to include"},{"name":"request","required":false,"type":"number","note":"echoed back, so a panel can drop an answer to a request it has since replaced"}],"replies":["TOKENS_MAPPING_RESULT"]},{"name":"TOKENS_MAPPING_SET","access":"write","classified":true,"summary":"pin how this file's variables become code \u2014 the attributes, the file data each value is bound to, and the role of every other collection \u2014 stored in the file, so everyone who exports it, in the panel, Dev Mode or through an agent, gets the same package; replaces the older collection roles, theme axes and structure","params":[{"name":"mapping","required":true,"type":"unknown","note":"the mapping to pin, in the shape TOKENS_MAPPING answers with"},{"name":"collection","required":false,"type":"string","note":"the collection to show in the answer"},{"name":"file","required":false,"type":"string","note":"one of the shipped files the answer lists, whose text to include"},{"name":"request","required":false,"type":"number","note":"echoed back, so a panel can drop an answer to a request it has since replaced"}],"replies":["TOKENS_MAPPING_RESULT"]},{"name":"READ_VARIABLES","access":"read","classified":true,"summary":"the raw variable snapshot: collections, modes, values, aliases","cost":"imports every variable of every enabled library one at a time \u2014 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.","params":[],"replies":["VARIABLES_SNAPSHOT"]},{"name":"EMIT_TOKENS","access":"read","classified":true,"summary":"emit tokens.json / tokens.css / _tokens.scss from the current variables","cost":"same library import as READ_VARIABLES \u2014 80-90s on a large file","params":[],"replies":["TOKENS_CSS"]},{"name":"SYNC_BREAKPOINT_FRAMES","access":"write","classified":true,"summary":"resize page frames whose names carry a breakpoint to that breakpoint width","params":[],"replies":["BREAKPOINT_FRAMES_SYNCED"]},{"name":"GENERATE_BREAKPOINT_COLLECTION","access":"write","classified":true,"summary":"create the breakpoint variable collection","params":[{"name":"breakpoints","required":false,"type":"Record<string, number>","note":"{ name: width } \u2014 e.g. { mobile: 375, tablet: 768, desktop: 1440 }. One mode per entry"}],"replies":["BREAKPOINT_COLLECTION_GENERATED","BREAKPOINT_COLLECTION_ERROR"]},{"name":"EMIT_DJANGO","access":"read","classified":true,"summary":"render the scope as one Django template plus its CSS","cost":"reads the scope \u2014 the variables it needs are the ones the scope binds, not the library","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["DJANGO_TEMPLATE"]},{"name":"EMIT_REACT","access":"read","classified":true,"summary":"render the scope as a React repository \u2014 a component per Figma component, the screen that uses them, tokens as CSS variables, the data as props with a mock, the copy in a locale","cost":"reads the scope and every variable, like the Django emitter \u2014 narrow the scope to a frame","params":[{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"name","required":false,"type":"string","note":"what the screen component is called; without it, the frame's own name"},{"name":"pageId","required":false,"type":"string","note":"render a whole PAGE OF COMPONENTS as the library instead of a screen \u2014 every variant set becomes one typed component with a class per variant, which is also where the hover and pressed states live"},{"name":"pages","required":false,"type":"unknown","note":"page ids whose components come out ALONGSIDE the screen \u2014 the screen then imports the real component, with every variant and every state, instead of one built from the single instance it happened to hold"},{"name":"components","required":false,"type":"unknown","note":"component or component-set ids that come out alongside the screen \u2014 how you take the two icons a screen needs without emitting a page of four hundred"},{"name":"libraryComponents","required":false,"type":"boolean","note":"whether the design-system components the screen instantiates are read out of the library file and emitted too \u2014 true by default, false to leave them as imports for a package you already have in code"},{"name":"limit","required":false,"type":"number","note":"how many component sets to take from that page, largest first; a page of 256-variant inputs is not something to emit by accident"},{"name":"fileUrl","required":false,"type":"string","note":"the design file's Figma URL (or bare key) \u2014 what the Code Connect templates link to when this plugin cannot read figma.fileKey, which is everywhere except a private Organization plugin"},{"name":"codeLayer","required":false,"type":"boolean","note":"true packs the project for a Figma code layer \u2014 the four .figma/make scripts (named in \`executables\`, which must be chmod 755), a dev server on Figma's $PORT, src/App.tsx, no Code Connect files \u2014 ready to archive and import with Figma's MCP send_code_to_figma"}],"replies":["REACT_PROJECT","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"EMIT_DJANGO_PROJECT","access":"read","classified":true,"summary":"render the scope as a multi-page Django project and plan the regeneration","cost":"reads the scope; the full token snapshot is paid only when tokens are emitted","params":[{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"scope","required":false,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"existingFiles","required":false,"type":"Record<string, string | Uint8Array>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it and reports what would change rather than overwriting blindly"}],"replies":["DJANGO_PROJECT_PLAN"]},{"name":"SCAN","access":"read","classified":true,"summary":"index the scope: frames, text nodes, lint findings, video assets","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"lintMaxDepth","required":false,"type":"number","note":"how deep the lint walk goes under each root \u2014 deeper finds more and costs more"}],"replies":["SCAN_RESULT","SELECTION_CHANGED"]},{"name":"SCAN_TOP","access":"read","classified":true,"summary":"the page top-level frames, cheaply","params":[],"replies":["SCAN_TOP_RESULT","SELECTION_CHANGED"]},{"name":"SCROLL_INTO_VIEW","access":"read","classified":true,"summary":"scroll the designer to a node \u2014 viewport only, the document is untouched","params":[{"name":"nodeId","required":true,"type":"string","note":"the node to bring into view"}],"replies":["FOCUSED","COMMAND_REFUSED"]},{"name":"FIX_LINT","access":"write","classified":true,"summary":"apply the linter fixes named in findings","params":[{"name":"findings","required":true,"type":"LintFixRequest[]","shape":"{ nodeId: string; rule: LintRule }","note":"[{ nodeId, rule }] \u2014 the findings to repair, named the way SCAN reported them. Only the fixable rules are accepted"}],"replies":["LINT_FIX_PROGRESS","LINT_FIX_RESULT"]},{"name":"LOAD_ANNOTATION_PANEL","access":"read","classified":true,"summary":"read the annotation form state for one node","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"}],"replies":["ANNOTATION_PANEL","COMMAND_REFUSED"]},{"name":"SET_ANNOTATION","access":"write","classified":true,"summary":"write a node's annotation: export settings, docs, interaction notes","params":[{"name":"nodeId","required":true,"type":"string","note":"a TEXT node, and one the last SCAN indexed \u2014 the index is per scan, not per document"},{"name":"form","required":true,"type":"AnnotationFormState","shape":"{ context: string; pluralEnabled: boolean; pluralOne: string; pluralOther: string; placeholders: PlaceholderAnnotation[] }","note":"the annotation as the panel holds it \u2014 { context, pluralEnabled, pluralOne, pluralOther, placeholders }"}],"replies":["ANNOTATION_SAVED","ANNOTATION_ERROR","COMMAND_REFUSED"]},{"name":"AGENT_SET_GATES","access":"deny","classified":true,"summary":"the gates are the designer's switch \u2014 an agent must never set its own permissions","params":[{"name":"read","required":true,"type":"boolean","note":"the channel's read gate \u2014 the panel's own switch, not something an agent sets for itself"},{"name":"write","required":true,"type":"boolean","note":"the channel's write gate, likewise"}],"replies":["AGENT_GATES"]},{"name":"AGENT_REQUEST","access":"deny","classified":true,"summary":"this is the channel itself; routing it through itself only recurses","params":[{"name":"id","required":true,"type":"string","note":"the request's own id, echoed back on the response"},{"name":"op","required":true,"type":"string","note":"the channel operation being asked for"},{"name":"params","required":false,"type":"unknown","note":"that operation's parameters"},{"name":"budgetMs","required":false,"type":"unknown","note":"how long the bridge will still wait for the answer"}],"replies":["AGENT_RESPONSE"]},{"name":"AGENT_CANCEL","access":"deny","classified":true,"summary":"the bridge withdrawing its own request, not something to call","params":[{"name":"ids","required":false,"type":"unknown","note":"the request ids the bridge stopped waiting for"},{"name":"reason","required":false,"type":"unknown","note":"why it stopped waiting"}],"replies":[]},{"name":"SAVE_EXPORT_OPTIONS","access":"write","classified":true,"summary":"store export options in clientStorage","params":[{"name":"options","required":true,"type":"Partial<ExportOptions>","shape":"{ target: TargetId; dsTool: DsToolId; scopeMode: 'page' | 'selection' | 'frame'; modules: ExportModulesOptions; targetOptions: ExportTargetOptions; tokens: ExportTokensOptions; i18n: ExportI18nOptions; delivery: ExportD\u2026","note":"the export settings to store, in part or whole \u2014 target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs"}],"replies":[]},{"name":"SAVE_UPDATE_PREFERENCES","access":"deny","classified":true,"summary":"update discovery is the designer's outbound-network preference","params":[{"name":"preferences","required":true,"type":"unknown","note":"normalized update-discovery preference and cached release metadata"}],"replies":[]},{"name":"OPEN_EXTERNAL","access":"deny","classified":true,"summary":"only visible UI controls may open a browser link for the designer","params":[{"name":"url","required":true,"type":"string","note":"the validated https://github.com release or archive URL to open"}],"replies":["UPDATE_LINK_ERROR"]},{"name":"HOST_VISIBILITY","access":"deny","classified":true,"summary":"panel housekeeping \u2014 the panel reports whether Figma's window is visible, so long loops stop paying throttled timers (see utils/budget.ts); an agent has nothing to tell it","params":[{"name":"hidden","required":true,"type":"boolean","note":"the panel's document.hidden \u2014 true while Figma's window is behind"}],"replies":[]},{"name":"UI_RESIZE","access":"read","classified":true,"summary":"resize the plugin panel chrome; the Figma document is untouched","params":[{"name":"width","required":true,"type":"number","note":"requested panel width in pixels, clamped to 340\u20261240"},{"name":"height","required":true,"type":"number","note":"requested panel height in pixels, clamped to 320\u20261200"},{"name":"persist","required":false,"type":"boolean","note":"schedule the clamped size for storage; false is for live drag frames"}],"replies":["UI_SIZE"]},{"name":"SAVE_USER_PRESET","access":"write","classified":true,"summary":"store a user preset in clientStorage","params":[{"name":"label","required":true,"type":"string","note":"what the preset is called in the list"},{"name":"values","required":true,"type":"unknown","note":"the settings it holds"}],"replies":["USER_PRESETS"]},{"name":"DELETE_USER_PRESET","access":"write","classified":true,"summary":"delete a stored user preset","params":[{"name":"id","required":true,"type":"string","note":"the preset to delete, as the preset list gives it"}],"replies":["USER_PRESETS"]},{"name":"NODE_CREATE","access":"write","classified":true,"summary":"make nodes from a description \u2014 frames, text, shapes, sections, components, instances \u2014 nested","cost":"proportional to what you ask for; one call is one undo step for the designer","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { kind, of?, at?, props?, children? }; kind is frame|text|rectangle|ellipse|line|section|component|instance|vector|svg|star|polygon|textPath|slice, on a FigJam board also sticky|shapeWithText|connector|codeBlock|table|linkPreview (of: the URL)|gif (of: the hash), in Slides slide|slideRow (at: [row, column]), in Buzz asset (at: [row, column], of: a component to instance). A kind made in the wrong editor is refused by name \u2014 editor.capabilities says which this is"},{"name":"parent","required":false,"type":"string","note":"the node the new nodes go inside \u2014 omitted, they land on the current page. This is how a card is built into a screen rather than beside it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"of","required":false,"nested":true,"note":"for kind \\"svg\\", the markup itself \u2014 Figma parses it and hands back a frame of real vector layers, which is how an icon arrives without anyone writing path data by hand \xB7 for kind \\"instance\\", the component to make \u2014 the id or key COMPONENT_CATALOG gives you; a component SET answers with its default variant, which props.properties then configures"},{"name":"props","required":false,"nested":true,"note":"the same property vocabulary NODE_SET takes \u2014 name, geometry, layout, fill/stroke (a colour or {variable}), text, cornerRadius, constraints; on an instance also properties/swap/reset"}],"replies":["NODES_CREATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_SET","access":"write","classified":true,"summary":"set properties on existing nodes, in batch, with per-property before/after","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props: {\u2026} } \u2014 the same vocabulary NODE_CREATE takes"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"},{"name":"props","required":false,"nested":true,"note":"the node vocabulary \u2014 geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is \`plugin.vocabulary\`, read out of the source so it cannot go stale \xB7 on an INSTANCE, properties: { Size: \\"Large\\", Label: \\"Continue\\" } sets component properties by their catalogue names, swap: \\"<id|key>\\" changes which component it is, reset: true drops every override first \xB7 transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; \\"none\\" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API \xB7 links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: \\"<id>\\"|\\"back\\"|\\"close\\", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|\u2026, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|\u2026 or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here. \xB7 one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url \u2014 they run in that order before the navigation, so \\"remember they agreed and go on\\" is one interaction"}],"replies":["NODES_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_QUERY","access":"read","classified":true,"summary":"find nodes by name and type, read one by id, or list what is inside another","params":[{"name":"name","required":false,"type":"string","note":"keep only nodes whose name contains this, case-insensitively"},{"name":"types","required":false,"type":"string[]","note":"Figma node types to keep, e.g. [\\"FRAME\\",\\"TEXT\\"]; omitted means any"},{"name":"nodeId","required":false,"type":"string","note":"read this one node and nothing else \u2014 the shortest way to check what a call just did"},{"name":"within","required":false,"type":"string","note":"search inside this node's subtree instead of the whole page \u2014 how you reach the children of something you just made"},{"name":"pageId","required":false,"type":"string","note":"search this page instead of the current one"},{"name":"data","required":false,"type":"Record<string, string>","note":"keep only nodes carrying this plugin data, e.g. { flow: \\"onboarding\\" } \u2014 how you find what an earlier call stamped"},{"name":"limit","required":false,"type":"number","note":"how many nodes come back, 50 by default and 500 at most"},{"name":"props","required":false,"type":"boolean","note":"true adds each node's readable properties \u2014 geometry, layout, paints, text, prototype links, this plugin's own data, and what an instance is"}],"replies":["NODES_FOUND","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_CATALOG","access":"read","classified":true,"summary":"what this file can build with \u2014 every local component and every library one it already uses \u2014 with variant options, descriptions and how often each is used","cost":"the current page is quick; scope \\"document\\" loads every page first and can take a minute or more on a large file \u2014 the older components.list op times out at 180s doing that on AllCrew Figma Workspace","params":[{"name":"query","required":false,"type":"string","note":"a name substring; omitted means everything"},{"name":"source","required":false,"type":"'local' | 'library' | 'all'","note":"local, library or all (default all)"},{"name":"scope","required":false,"type":"'page' | 'document'","note":"page (default) or document \u2014 the page is what a caller building a flow is working on, and loading every page is the expensive half"},{"name":"usage","required":false,"type":"boolean","note":"false skips the instance census \u2014 quicker, but then NO library component can be found, since Figma gives plugins no way to list a library's contents"},{"name":"limit","required":false,"type":"number","note":"how many components come back \u2014 100 by default, 500 at most; the reply says when it had more"}],"replies":["COMPONENTS_FOUND","CANVAS_ERROR"]},{"name":"NODE_CLONE","access":"write","classified":true,"summary":"copy nodes, and change the copies in the same call \u2014 the quickest way to a consistent screen is another screen","cost":"a copy of everything inside the node; one call is one undo step","params":[{"name":"nodes","required":true,"type":"unknown","note":"an array of { node: \\"<id>\\", props?: {\u2026} }; the copy is made first and the props are applied to it, so props.name renames the copy and props.parent places it"},{"name":"dryRun","required":false,"type":"boolean","note":"true answers with what it would do and changes nothing \u2014 the way to see a plan before it lands"}],"replies":["NODES_CLONED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_GROUP","access":"write","classified":true,"summary":"group, ungroup, or combine nodes with a boolean operation","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to combine \u2014 they must share one parent; for \\"ungroup\\", the single group to release"},{"name":"as","required":false,"type":"string","note":"group (default), ungroup, union, subtract, intersect, exclude, flatten, outline, detach \u2014 or repeat, which is Figma Draw's transform group"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out \u2014 the same vocabulary NODE_SET takes, so one call can group and name"},{"name":"repeat","required":false,"type":"unknown","note":"for as \\"repeat\\" \u2014 { type: LINEAR|RADIAL, count, offset, unit: RELATIVE|PIXELS, axis: HORIZONTAL|VERTICAL }. \`offset\` is a DISTANCE, not an angle: a radial repeat spaces its copies around the circle by itself and the offset pushes them out from the centre"}],"replies":["NODES_GROUPED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_MAKE","access":"write","classified":true,"summary":"turn nodes into components, or combine components into a variant set","params":[{"name":"nodes","required":true,"type":"unknown","note":"ids, or { node: \\"<id>\\", name: \\"Size=L\\" } to name each one on the way \u2014 a variant set's axes ARE the components' names, so \\"Size=L, State=Default\\" is what makes Size and State"},{"name":"as","required":false,"type":"string","note":"component (default \u2014 each node becomes its own component) or set (they are combined as variants, converting any that are not components yet)"},{"name":"name","required":false,"type":"string","note":"what the result is called \u2014 the set when as is \\"set\\", otherwise the first component"},{"name":"description","required":false,"type":"string","note":"the result's description, which is what a designer reads in the assets panel and what an agent reads instead of guessing from layer names"},{"name":"links","required":false,"type":"unknown","note":"documentation URLs for the component \u2014 where the real spec lives"},{"name":"props","required":false,"type":"unknown","note":"applied to what comes out, the same vocabulary NODE_SET takes"}],"replies":["COMPONENTS_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"COMPONENT_PROPERTY","access":"write","classified":true,"summary":"add, rename, retype or remove a component's properties \u2014 and bind them to the layers they drive","params":[{"name":"component","required":true,"type":"string","note":"the COMPONENT or COMPONENT_SET to change"},{"name":"add","required":false,"type":"unknown","note":"[{ name, type: BOOLEAN|TEXT|INSTANCE_SWAP|VARIANT|SLOT, default, bind?: [\\"<layer id>\\"], preferred?: [\\"<component id or key>\\"] }] \xB7 a SLOT takes no default and needs no binding \u2014 Figma creates its node and its property together, and settings: { minChildren, maxChildren, stretchChildOnInsert, displayEmptyByDefault, allowPreferredValuesOnly } configures what may go in it"},{"name":"edit","required":false,"type":"unknown","note":"[{ name, rename?, default?, preferred? }] \u2014 name the property as it stands and give at least one change"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<property name>\\"] \u2014 the property goes, and every instance loses what it was setting"},{"name":"bind","required":false,"type":"unknown","note":"[{ node, property }] \u2014 pointing an existing property at another layer. WITHOUT a binding a property shows in the panel and changes nothing on the canvas, which is the usual reason one \\"does not work\\""}],"replies":["COMPONENT_PROPERTIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_EXPORT","access":"read","classified":true,"summary":"render nodes to PNG, JPG, SVG or PDF and hand the files back \u2014 nothing in the document changes (withoutChildren briefly clones and deletes a throwaway node; the document is back to itself once the call returns)","cost":"one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to render"},{"name":"format","required":false,"type":"string","note":"PNG (default), JPG, SVG, PDF \u2014 or MP4, GIF, WEBM, which render the frame's ANIMATION rather than its appearance"},{"name":"scale","required":false,"type":"number","note":"1 by default; or give width or height instead and the other follows. A video takes a scale from 0.5, 0.75, 1, 1.5, 2, 3, 4 and nothing between"},{"name":"width","required":false,"type":"number","note":"render to this width in pixels and let the height follow \u2014 instead of scale, not beside it"},{"name":"height","required":false,"type":"number","note":"render to this height in pixels and let the width follow"},{"name":"outlineText","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) turns text into paths, so the file needs no font; false keeps it as text"},{"name":"fps","required":false,"type":"number","note":"video only \u2014 MP4 and WEBM take 12, 24, 30 or 60; GIF takes 8, 12, 15, 24 or 30"},{"name":"quality","required":false,"type":"string","note":"MP4 and WEBM only \u2014 LOW, MEDIUM or HIGH"},{"name":"loop","required":false,"type":"number","note":"GIF only \u2014 how many times it repeats; 0 is forever"},{"name":"withoutChildren","required":false,"type":"boolean","note":"PNG or JPG only \u2014 renders the node's own pixels with every descendant hidden, so an overlay (a badge, a reading-time chip) Figma would otherwise bake into the render stays out of it. See image.plate for the same render with the transient write called out explicitly."},{"name":"contentsOnly","required":false,"type":"boolean","note":"PNG, JPG or SVG \u2014 false renders what overlaps the node from outside it too (Figma's \\"Ignore overlapping layers\\" switch, inverted); true is Figma's default"},{"name":"useAbsoluteBounds","required":false,"type":"boolean","note":"render the node's full bounds even where a parent clips or a mask crops it \u2014 the way to get a layer whose art spills outside its frame"},{"name":"colorProfile","required":false,"type":"string","note":"DOCUMENT (default), SRGB or DISPLAY_P3_V4 \u2014 the profile the raster is written in"},{"name":"svgIdAttribute","required":false,"type":"boolean","note":"SVG only \u2014 keep Figma's layer ids as \`id=\` attributes, so a build can address a part of the drawing"},{"name":"svgSimplifyStroke","required":false,"type":"boolean","note":"SVG only \u2014 true (the default) collapses a stroke into an outlined path; false keeps it a stroked path"},{"name":"offset","required":false,"type":"number","note":"skip this many node ids; when the answer has nextOffset, call again from there"},{"name":"maxPixels","required":false,"type":"number","note":"raster/video pixel ceiling checked before exportAsync (40 million by default)"},{"name":"budgetBytes","required":false,"type":"number","note":"raw reply-byte budget, clamped below the 3 MiB transport ceiling"}],"replies":["NODES_EXPORTED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FONT_FAMILY_AXES","access":"read","classified":true,"summary":"list the OpenType variation axis tags a font family accepts; null means the family is static","params":[{"name":"family","required":true,"type":"string","note":"exact font family name, for example \\"Roboto Flex\\""}],"replies":["FONT_FAMILY_AXES","CANVAS_ERROR"]},{"name":"MOTION_STYLES","access":"read","classified":true,"summary":"Figma-provided and local custom animation styles, including every ordered entry a custom style owns","params":[],"replies":["MOTION_STYLES","CANVAS_ERROR"]},{"name":"MOTION_STYLE_SET","access":"write","classified":true,"summary":"create a local custom animation style or replace one by id, preserving its ordered Figma animation entries","params":[{"name":"id","required":false,"type":"string","note":"local custom animation style id to update; omit to create a new style"},{"name":"name","required":true,"type":"string","note":"final custom style name"},{"name":"description","required":false,"type":"string","note":"final description; omitted preserves it on update"},{"name":"entries","required":true,"type":"Array<{ style: string; props?: Record<string, unknown> }>","note":"ordered [{ style, props? }] using Figma animation styleIds or names from MOTION_STYLES"}],"replies":["MOTION_STYLE_UPDATED","CANVAS_ERROR"]},{"name":"MOTION_STYLE_MOVE","access":"write","classified":true,"summary":"reorder a local custom animation style or one of its folders","params":[{"name":"id","required":false,"type":"string","note":"custom animation style id to move; mutually exclusive with folder"},{"name":"folder","required":false,"type":"string","note":"full slash-delimited folder name to move; mutually exclusive with id"},{"name":"after","required":false,"type":"string | null","note":"style id or folder name to place it after; null/omitted moves it first"}],"replies":["MOTION_STYLE_MOVED","MOTION_STYLE_FOLDER_MOVED","CANVAS_ERROR"]},{"name":"SHADER_LIST","access":"read","classified":true,"summary":"the shaders this file can use, and the ones it is already using \u2014 ids, whether they paint or filter, and the settings each takes","params":[{"name":"kind","required":false,"type":"string","note":"fill or effect; omitted means both"},{"name":"scope","required":false,"type":"string","note":"page or document \u2014 where to look for shaders in use; page by default, none skips the scan"}],"replies":["SHADERS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_LIST","access":"read","classified":true,"summary":"the file's own styles \u2014 paint, text, effect, grid and custom animation \u2014 with what each one holds","params":[{"name":"kind","required":false,"type":"string","note":"paint, text, effect, grid or animation; omitted means all five"},{"name":"query","required":false,"type":"string","note":"a name substring"},{"name":"limit","required":false,"type":"number","note":"how many styles come back \u2014 100 by default, 500 at most"}],"replies":["STYLES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MAKE","access":"write","classified":true,"summary":"create a style, or update one of the same name","params":[{"name":"as","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are made with MOTION_STYLE_SET"},{"name":"name","required":true,"type":"string","note":"what the style is called \u2014 an existing style of the same name and kind is updated rather than duplicated"},{"name":"description","required":false,"type":"string","note":"the style's description, which is what a designer reads in the panel"},{"name":"from","required":false,"type":"string","note":"read what the style should hold off this node \u2014 the usual way one is made, since the layer is already right"},{"name":"paints","required":false,"type":"unknown","note":"for a paint style, the same fill vocabulary NODE_SET takes: \\"#RRGGBB\\" or a CSS colour like \\"oklch(70% 0.2 140)\\", { variable }, { gradient }, { image }, or a list"},{"name":"effects","required":false,"type":"unknown","note":"for an effect style, the same effects vocabulary NODE_SET takes"},{"name":"text","required":false,"type":"unknown","note":"for a text style, { fontName: { family, style?, variationSettings? }, fontSize, lineHeight?, letterSpacing?, textCase?, textDecoration? } \u2014 variationSettings names a variable font's axes, like { wght: 550 }"},{"name":"grid","required":false,"type":"unknown","note":"for a grid style, the same grid vocabulary NODE_SET takes \u2014 [{ columns: 12, gutter: 16, margin: 24 }]"}],"replies":["STYLE_MADE","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_REMOVE","access":"write","classified":true,"summary":"delete a local style. Layers that followed it keep the values it gave them","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect, grid or animation \u2014 a name alone is ambiguous across kinds"},{"name":"name","required":true,"type":"string","note":"its name, id or key \u2014 the same way every other style is named here"}],"replies":["STYLE_REMOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"STYLE_MOVE","access":"write","classified":true,"summary":"reorder local styles in the panel \u2014 one style after another, or a whole folder after another folder","params":[{"name":"kind","required":true,"type":"string","note":"paint, text, effect or grid \u2014 custom animation styles are reordered with MOTION_STYLE_MOVE"},{"name":"name","required":false,"type":"string","note":"the style to move \u2014 its name, id or key. Give this, or folder"},{"name":"after","required":false,"type":"string | null","note":"the style it should follow, from the same folder; null or \\"\\" puts it first"},{"name":"folder","required":false,"type":"string","note":"the folder to move instead of a style, by its full path (\\"Brand/Primary\\")"},{"name":"afterFolder","required":false,"type":"string | null","note":"the sibling folder it should follow; null or \\"\\" puts it first in its parent"}],"replies":["STYLE_MOVED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_LIST","access":"read","classified":true,"summary":"the prototype's starting points on a page \u2014 the named flows a designer sees in the Prototype panel","params":[{"name":"pageId","required":false,"type":"string","note":"the page to read instead of the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"FLOW_SET","access":"write","classified":true,"summary":"name the prototype's starting points on a page \u2014 this is what makes a set of frames read as \\"Onboarding\\" in the Prototype panel","params":[{"name":"flows","required":true,"type":"unknown","note":"an array of { node: \\"<frame id>\\", name: \\"Onboarding\\" }, in order; the first is the one the play button opens. [] removes them all"},{"name":"pageId","required":false,"type":"string","note":"the page the flow belongs to, when it is not the current one"}],"replies":["FLOWS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"PAGE_LIST","access":"read","classified":true,"summary":"the pages of this file, and which one is open","params":[],"replies":["PAGES"]},{"name":"PAGE_CREATE","access":"write","classified":true,"summary":"add a page \u2014 where a new flow goes","params":[{"name":"name","required":true,"type":"string","note":"what the new page is called; with divider: true, the divider's label (omitted, Figma's own line)"},{"name":"activate","required":false,"type":"boolean","note":"true also opens it; left out, the designer's view does not move and NODE_CREATE reaches the new page through parent: \\"<id>\\""},{"name":"divider","required":false,"type":"boolean","note":"true makes a divider \u2014 a heading in the pages list that holds no canvas, how a long file is split into sections"}],"replies":["PAGE_CREATED","COMMAND_REFUSED"]},{"name":"SELECTION_COLORS","access":"read","classified":true,"summary":"the colours the designer's selection uses \u2014 Figma's own \\"Selection colors\\", with the styles and tokens behind them","params":[],"replies":["SELECTION_COLORS"]},{"name":"FILE_THUMBNAIL","access":"read","classified":true,"summary":"which frame is the file's cover in the file browser \u2014 null means Figma picks one itself","params":[],"replies":["FILE_THUMBNAIL"]},{"name":"FILE_THUMBNAIL_SET","access":"write","classified":true,"summary":"make a frame the file's cover in the file browser, or hand the choice back to Figma","params":[{"name":"nodeId","required":true,"type":"string | null","note":"a frame, component, component set or section; null restores Figma's default"}],"replies":["FILE_THUMBNAIL","CANVAS_ERROR"]},{"name":"UNDO","access":"write","classified":true,"summary":"take back the last change \u2014 Cmd+Z, for an agent. Every write here closes its own undo step, so this undoes the most recent one; if the designer has worked since, it undoes theirs instead, so read before you reach for it","params":[],"replies":["UNDONE"]},{"name":"DEV_LINK_LIST","access":"read","classified":true,"summary":"the links to code a designer left on nodes \u2014 what Dev Mode shows under \\"Links\\"","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to read; omitted, the current selection"},{"name":"includeChildren","required":false,"type":"boolean","note":"also the links on everything inside, each answered with the node it sits on"}],"replies":["DEV_LINKS","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"DEV_LINK_SET","access":"write","classified":true,"summary":"put a link to code on a node, rename it, or take it off \u2014 the other half of a handoff, from the design side","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to change; omitted, the current selection"},{"name":"add","required":false,"type":"unknown","note":"[{ url, name? }] \u2014 the URL is the identity, so adding the same URL twice is one link"},{"name":"edit","required":false,"type":"unknown","note":"[{ url, newUrl?, name? }] \u2014 name the link as it stands, then say what changes"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<url>\\"] \u2014 by URL, for the same reason"}],"replies":["DEV_LINKS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATE","access":"write","classified":true,"summary":"the note Dev Mode shows on a layer \u2014 what the designer wants said about it, and which of its properties to pin beside the note","params":[{"name":"nodes","required":false,"type":"unknown","note":"ids to annotate; omitted, the current selection"},{"name":"label","required":false,"type":"string","note":"the note itself, markdown. Without properties this is the whole annotation"},{"name":"properties","required":false,"type":"unknown","note":"names of the node's own properties to pin beside the note \u2014 width, fills, cornerRadius, fontSize, padding, layoutMode\u2026 A refusal lists all 33"},{"name":"category","required":false,"type":"string","note":"the category by name or id, as the file defines them; the refusal names the ones there are"},{"name":"clear","required":false,"type":"boolean","note":"true takes every annotation off instead of adding one"}],"replies":["ANNOTATED","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"ANNOTATION_CATEGORIES","access":"read","classified":true,"summary":"the annotation categories this file defines \u2014 what ANNOTATE's category can name, with each one's colour and whether Figma shipped it","params":[],"replies":["ANNOTATION_CATEGORIES"]},{"name":"ANNOTATION_CATEGORY_SET","access":"write","classified":true,"summary":"add, rename, recolour or remove annotation categories \u2014 the vocabulary a team files its Dev Mode notes under","params":[{"name":"add","required":false,"type":"unknown","note":"[{ label, color }] \u2014 color is one of yellow, orange, red, pink, violet, blue, teal, green"},{"name":"edit","required":false,"type":"unknown","note":"[{ category, label?, color? }] \u2014 category by name or id"},{"name":"remove","required":false,"type":"unknown","note":"[category] by name or id. Figma's presets cannot be removed"}],"replies":["ANNOTATION_CATEGORIES","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"MEASURE_LIST","access":"read","classified":true,"summary":"the measurement lines on this page \u2014 the distances a designer drew for the person building it","params":[{"name":"nodes","required":false,"type":"unknown","note":"only the measurements touching these nodes; omitted, every one on the page"}],"replies":["MEASUREMENTS","CANVAS_ERROR"]},{"name":"MEASURE_SET","access":"write","classified":true,"summary":"draw, retitle or erase a measurement line between two nodes","params":[{"name":"add","required":false,"type":"unknown","note":"[{ from: { node, side }, to: { node, side }, text?, offset? }] \u2014 side is TOP|RIGHT|BOTTOM|LEFT; offset is { inner: 0..1 } to sit along the span, or { outer: <pixels> } to stand off it"},{"name":"edit","required":false,"type":"unknown","note":"[{ id, text?, offset? }] \u2014 the id MEASURE_LIST gives"},{"name":"remove","required":false,"type":"unknown","note":"[\\"<id>\\"]"}],"replies":["MEASUREMENTS_SET","CANVAS_ERROR","COMMAND_REFUSED"]},{"name":"NODE_ROUNDTRIP","access":"read","classified":true,"summary":"does a reading survive being sent back? Reads a node, builds a copy out of nothing but the reading, compares the two and removes the copy","cost":"one copy made and removed per node \u2014 the document is left as it was unless you keep it","params":[{"name":"nodes","required":true,"type":"unknown","note":"the ids to check"},{"name":"depth","required":false,"type":"number","note":"how many levels of children to carry across \u2014 0 is the node alone, 3 by default"},{"name":"keep","required":false,"type":"boolean","note":"true leaves the copy on the canvas beside the original, to look at"},{"name":"ignore","required":false,"type":"unknown","note":"property names to leave out of the comparison, for the ones a file legitimately changes"}],"replies":["ROUNDTRIP","CANVAS_ERROR"]},{"name":"MODULES_LIST","access":"read","classified":true,"summary":"the installed user modules, what each may run, and why any of them is unusable","params":[],"replies":["MODULES"]},{"name":"MODULE_SCHEMA","access":"read","classified":true,"summary":"the canonical user-module JSON Schema, starter file, runtime rules and limits","params":[],"replies":["MODULE_SCHEMA"]},{"name":"MODULE_INSPECT","access":"read","classified":true,"summary":"what a module file would be and what it would be allowed to run \u2014 installs nothing","params":[{"name":"file","required":true,"type":"unknown","note":"the module document, object or JSON text; nothing is stored either way"}],"replies":["MODULE_REJECTED","MODULE_INSPECTED"]},{"name":"MODULE_INSTALL","access":"write","classified":true,"summary":"validate a module file and install it \u2014 refused whole if anything in it does not check out","params":[{"name":"file","required":true,"type":"unknown","note":"the complete declarative module object"},{"name":"replace","required":false,"type":"boolean","note":"true overwrites a module already installed under the same id"},{"name":"allowDowngrade","required":false,"type":"boolean","note":"true explicitly permits replacing a newer SemVer"}],"replies":["MODULE_INSTALLED","MODULE_REJECTED","MODULE_ERROR"]},{"name":"MODULE_REMOVE","access":"write","classified":true,"summary":"uninstall a module, and forget what it stored","params":[{"name":"id","required":true,"type":"string","note":"the module to uninstall, as MODULES_LIST names it"}],"replies":["MODULE_REMOVED","COMMAND_REFUSED"]},{"name":"MODULE_ENABLE","access":"write","classified":true,"summary":"switch a module on or off without uninstalling it","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"enabled","required":true,"type":"boolean","note":"true to switch it on, false to leave it installed and inert"}],"replies":["MODULES","COMMAND_REFUSED"]},{"name":"MODULE_VIEW","access":"read","classified":true,"summary":"a module's screens as declared, with the values its fields currently hold","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":false,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\""}],"replies":["MODULE_SCREEN","COMMAND_REFUSED"]},{"name":"MODULE_STATE_SET","access":"write","classified":true,"summary":"set one field of a module's own state, checked against the type it declared","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"field","required":true,"type":"string","note":"the state field it declared"},{"name":"value","required":true,"type":"unknown","note":"the new value, checked against the declared type and numeric bounds"}],"replies":["MODULE_STATE","COMMAND_REFUSED"]},{"name":"MODULE_RUN","access":"write","classified":true,"summary":"run one button of a module's screen \u2014 write-gated because the button may be","params":[{"name":"id","required":true,"type":"string","note":"the module, as MODULES_LIST names it"},{"name":"screen","required":true,"type":"'main' | 'settings'","note":"\\"main\\" or \\"settings\\" \u2014 which screen the button is on"},{"name":"block","required":true,"type":"number","note":"the index of the button in that screen's blocks, as MODULE_VIEW numbers them"},{"name":"confirm","required":false,"type":"boolean","note":"true gets past a \`confirm\` step the module put in the way; without it the run stops there and says so"}],"replies":["MODULE_RUN_REPORT","MODULE_ERROR","COMMAND_REFUSED"]},{"name":"MODULE_EXPORT","access":"read","classified":true,"summary":"hand back a module's file exactly as it was installed, to save or pass on","params":[{"name":"id","required":true,"type":"string","note":"the module to hand back as its manifest"}],"replies":["MODULE_FILE","COMMAND_REFUSED"]},{"name":"GENERATE_KIT","access":"write","classified":true,"summary":"draw the starter component kit onto the canvas","params":[],"replies":["KIT_GENERATED","KIT_ERROR"]},{"name":"IMPORT_TRANSLATIONS","access":"write","classified":true,"summary":"write translated strings back into the text layers","params":[{"name":"content","required":true,"type":"string","note":"the file itself, as text"},{"name":"format","required":true,"type":"ImportFormat","shape":"'po' | 'json'","note":"\\"po\\" or \\"json\\""},{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"}],"replies":["IMPORT_TRANSLATIONS_RESULT","IMPORT_TRANSLATIONS_ERROR"]},{"name":"CONFIRM_EXPORT","access":"write","classified":true,"summary":"run the full export: builds every file, saves version history and relaunch data","params":[{"name":"scope","required":true,"type":"ExportScope","shape":"{ mode: 'page' } | { mode: 'selection' } | { mode: 'frame'; frameId: string }","note":"what is read \u2014 { mode: \\"page\\" }, { mode: \\"selection\\" }, or { mode: \\"frame\\", frameId } for one frame and everything under it"},{"name":"modules","required":true,"type":"ExportModules","shape":"{ tokens: boolean; templates: boolean; i18n: boolean; animation: boolean }","note":"which halves of the package are built \u2014 { tokens, templates, i18n, animation }"},{"name":"cssFile","required":true,"type":"string","note":"the name the stylesheet is written and linked as, e.g. \\"tokens.css\\""},{"name":"existingFiles","required":false,"type":"Record<string, string>","note":"what the repository already holds, as { path: contents } \u2014 the plan compares against it rather than overwriting blindly"}],"replies":["EXPORT_PROGRESS","DOCS_PLACED","DOCS_ERROR","FILES_READY","EXPORT_ERROR","MAIL_STATE"]}]`;
   var UI_COMMANDS = (() => {
     if (!INJECTED2.startsWith("[")) return [];
     try {
@@ -34782,10 +37114,10 @@ ${scripts}`, "");
     const dot = key.lastIndexOf(".");
     const ext = dot > 0 ? key.slice(dot + 1).toLowerCase() : "";
     const stem = dot > 0 ? key.slice(0, dot) : key;
-    const slug2 = stem.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80).toLowerCase();
+    const slug3 = stem.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80).toLowerCase();
     const suffix = /^[a-z0-9]{1,8}$/.test(ext) ? ext : "txt";
-    let candidate = `${slug2 || "reply"}.${suffix}`;
-    for (let n = 2; taken.has(candidate); n++) candidate = `${slug2 || "reply"}-${n}.${suffix}`;
+    let candidate = `${slug3 || "reply"}.${suffix}`;
+    for (let n = 2; taken.has(candidate); n++) candidate = `${slug3 || "reply"}-${n}.${suffix}`;
     return isSafeFileName(candidate) ? candidate : null;
   }
 
@@ -35652,13 +37984,13 @@ ${scripts}`, "");
     var _a;
     const byName = new Map(known.map((command) => [command.name, command]));
     const uses = /* @__PURE__ */ new Map();
-    const count = (steps) => {
+    const count2 = (steps) => {
       var _a2;
       for (const step2 of steps) if ("call" in step2) uses.set(step2.call, ((_a2 = uses.get(step2.call)) != null ? _a2 : 0) + 1);
     };
-    for (const command of module.commands) count(command.steps);
+    for (const command of module.commands) count2(command.steps);
     for (const screen of [module.screens.main, module.screens.settings]) {
-      for (const block3 of (_a = screen == null ? void 0 : screen.blocks) != null ? _a : []) if (block3.block === "button") count(block3.steps);
+      for (const block3 of (_a = screen == null ? void 0 : screen.blocks) != null ? _a : []) if (block3.block === "button") count2(block3.steps);
     }
     return [...uses.entries()].map(([command, times]) => {
       var _a2;
@@ -36816,7 +39148,7 @@ ${scripts}`, "");
     for (let i = 0; i < 6; i++) tail += Math.floor(random() * 36).toString(36);
     return `${now.toString(36)}-${tail}`;
   }
-  function utf8Bytes2(text6) {
+  function utf8Bytes3(text6) {
     var _a;
     let bytes = 0;
     for (const char of text6) {
@@ -36870,7 +39202,7 @@ ${scripts}`, "");
     const to = [...new Set(toList)];
     const text6 = String((_b = draft.text) != null ? _b : "").trim();
     if (text6 === "") throw new Error("the message is empty");
-    const bytes = utf8Bytes2(text6);
+    const bytes = utf8Bytes3(text6);
     if (bytes > MAX_TEXT_BYTES) throw new Error(`the message is ${bytes} bytes; the limit is ${MAX_TEXT_BYTES} \u2014 link to a frame or a page instead of pasting it`);
     const kind = (_c = draft.kind) != null ? _c : "note";
     if (!MAIL_KINDS.includes(kind)) throw new Error(`kind is one of ${MAIL_KINDS.join(", ")}`);
@@ -36944,14 +39276,14 @@ ${scripts}`, "");
       } else remove.add(key);
     }
     let size = 0;
-    for (const [key, value2] of Object.entries(entries)) if (key.startsWith(MAIL_PREFIX) && !remove.has(key)) size += key.length + utf8Bytes2(value2);
+    for (const [key, value2] of Object.entries(entries)) if (key.startsWith(MAIL_PREFIX) && !remove.has(key)) size += key.length + utf8Bytes3(value2);
     let evicted = 0;
     for (const message of box2.messages) {
       if (size <= budget) break;
       if (!alive.has(message.id)) continue;
       for (const key of [messageKey(message.id), decisionKey(message.id), ...[...(_d = (_c = box2.receipts.get(message.id)) == null ? void 0 : _c.keys()) != null ? _d : []].map((reader) => receiptKey(message.id, reader))]) {
         if (key in entries && !remove.has(key)) {
-          size -= key.length + utf8Bytes2(entries[key]);
+          size -= key.length + utf8Bytes3(entries[key]);
           remove.add(key);
         }
       }
@@ -38096,7 +40428,7 @@ ${scripts}`, "");
       if (name === null) continue;
       counts.set(name, ((_a = counts.get(name)) != null ? _a : 0) + 1);
     }
-    return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+    return [...counts.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((a, b) => b.count - a.count);
   }
   async function targetIds(params) {
     var _a;
@@ -38284,8 +40616,8 @@ ${scripts}`, "");
             instances: group2.total,
             nested: group2.nested,
             placed: group2.total - group2.nested,
-            byPage: [...group2.pages.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
-            byVariant: [...group2.variants.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+            byPage: [...group2.pages.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((a, b) => b.count - a.count),
+            byVariant: [...group2.variants.entries()].map(([name, count2]) => ({ name, count: count2 })).sort((a, b) => b.count - a.count),
             rows: group2.rows,
             truncated: group2.rows.length < (params.nested === true ? group2.total : group2.total - group2.nested)
           };
@@ -38703,6 +41035,80 @@ ${scripts}`, "");
     }
   ];
 
+  // src/tokens/merge-plan.ts
+  function planMerge(sources, options = {}) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const modes = [];
+    for (const source of sources) {
+      for (const target of Object.values(source.modes)) {
+        if (modes.some((m) => m.toLowerCase() === target.toLowerCase())) throw new Error(`target mode "${target}" is mapped twice`);
+        modes.push(target);
+      }
+    }
+    for (const seed of (_a = options.seed) != null ? _a : []) {
+      if (modes.some((m) => m.toLowerCase() === seed.mode.toLowerCase())) throw new Error(`seed mode "${seed.mode}" already exists`);
+      if (!modes.includes(seed.from)) throw new Error(`seed "${seed.mode}" copies "${seed.from}", which is not a target mode \u2014 have: ${modes.join(", ")}`);
+    }
+    for (const [mode, from] of Object.entries((_b = options.fill) != null ? _b : {})) {
+      if (!modes.includes(mode)) throw new Error(`fill names "${mode}", which is not a target mode`);
+      if (!modes.includes(from)) throw new Error(`fill for "${mode}" borrows from "${from}", which is not a target mode`);
+    }
+    const byName = /* @__PURE__ */ new Map();
+    for (const source of sources) {
+      for (const variable of source.variables) {
+        if (!byName.has(variable.name)) byName.set(variable.name, []);
+        byName.get(variable.name).push({ source, variable });
+      }
+    }
+    const rows = [];
+    const conflicts = [];
+    const scopeDiffs = [];
+    for (const [name, entries] of byName) {
+      const types = new Set(entries.map((e) => e.variable.type));
+      if (types.size > 1) {
+        conflicts.push({ name, types: Object.fromEntries(entries.map((e) => [e.source.name, e.variable.type])) });
+        continue;
+      }
+      const cells = {};
+      for (const { source, variable } of entries) {
+        for (const [sourceMode, targetMode] of Object.entries(source.modes)) {
+          if (sourceMode in variable.values) cells[targetMode] = { value: variable.values[sourceMode], origin: "source" };
+        }
+      }
+      const first = entries[0].variable;
+      const scopeSets = new Set(entries.map((e) => {
+        var _a2;
+        return JSON.stringify([...(_a2 = e.variable.scopes) != null ? _a2 : []].sort());
+      }));
+      if (scopeSets.size > 1) scopeDiffs.push(name);
+      rows.push({
+        name,
+        type: first.type,
+        cells,
+        sourceIds: entries.map((e) => e.variable.id),
+        meta: { scopes: first.scopes, description: first.description || ((_c = entries.find((e) => e.variable.description)) == null ? void 0 : _c.variable.description), hiddenFromPublishing: first.hiddenFromPublishing, codeSyntax: first.codeSyntax }
+      });
+    }
+    const filled = [];
+    let seeded = 0;
+    for (const row of rows) {
+      for (const [mode, from] of Object.entries((_d = options.fill) != null ? _d : {})) {
+        if (row.cells[mode] || ((_e = row.cells[from]) == null ? void 0 : _e.origin) !== "source") continue;
+        row.cells[mode] = { value: row.cells[from].value, origin: "fill", from };
+        filled.push({ name: row.name, mode, from });
+      }
+      for (const seed of (_f = options.seed) != null ? _f : []) {
+        if (!row.cells[seed.from]) continue;
+        row.cells[seed.mode] = { value: row.cells[seed.from].value, origin: "seed", from: seed.from };
+        seeded += 1;
+      }
+    }
+    const allModes = [...modes, ...((_g = options.seed) != null ? _g : []).map((s) => s.mode)];
+    const holes = [];
+    for (const row of rows) for (const mode of allModes) if (!row.cells[mode]) holes.push({ name: row.name, mode });
+    return { modes: allModes, rows, filled, seeded, holes, conflicts, scopeDiffs };
+  }
+
   // src/agent/admin-ops.ts
   function object(value2, where) {
     if (!value2 || typeof value2 !== "object" || Array.isArray(value2)) throw new Error(`${where} must be an object`);
@@ -38928,7 +41334,7 @@ ${scripts}`, "");
     for (const modeId of modeIds) {
       const value2 = valuesByMode[modeId];
       if (value2 === void 0) missing++;
-      else if (isAlias3(value2)) {
+      else if (isAlias4(value2)) {
         aliases2++;
         if (unresolved.has(value2.id)) broken++;
       } else literals++;
@@ -38942,7 +41348,7 @@ ${scripts}`, "");
   var isLibraryId = (id) => id.includes("/");
   async function describeCached(value2, lookups) {
     if (value2 === void 0) return "(unset)";
-    if (isAlias3(value2)) {
+    if (isAlias4(value2)) {
       const target = lookups.get(value2.id);
       if (target === void 0 && isLibraryId(value2.id)) return "\u2192 (library variable, not read)";
       if (!target) return `\u2192 ${value2.id} (unresolved)`;
@@ -38952,18 +41358,18 @@ ${scripts}`, "");
   }
   async function auditVariables(params) {
     var _a, _b, _c;
-    const strings = (raw) => (Array.isArray(raw) ? raw : []).filter((entry) => typeof entry === "string" && entry !== "");
+    const strings2 = (raw) => (Array.isArray(raw) ? raw : []).filter((entry) => typeof entry === "string" && entry !== "");
     const started = Date.now();
     const budgetMs = Math.min(11e4, Math.max(1e3, typeof params.budgetMs === "number" ? params.budgetMs : 6e4));
     const deadline2 = started + budgetMs;
     const includeRemote = params.libraries !== false;
-    const ignore = strings(params.ignore);
-    const wanted = strings(params.collections);
+    const ignore = strings2(params.ignore);
+    const wanted = strings2(params.collections);
     const locals = await localCollections();
     const queue3 = wanted.length ? await Promise.all(wanted.map((ref) => resolveCollection(ref))) : [...locals];
     const audited = new Set(queue3.map((collection) => collection.id));
     const aliasOnly = /* @__PURE__ */ new Set();
-    for (const ref of strings(params.aliasOnly)) {
+    for (const ref of strings2(params.aliasOnly)) {
       if (ref.endsWith("*")) {
         const prefix = ref.slice(0, -1).toLowerCase();
         for (const collection of locals) {
@@ -39023,7 +41429,7 @@ ${scripts}`, "");
         const values = (_b = variable.valuesByMode) != null ? _b : {};
         const unresolved = /* @__PURE__ */ new Set();
         for (const value2 of Object.values(values)) {
-          if (!isAlias3(value2)) continue;
+          if (!isAlias4(value2)) continue;
           if (!isLibraryId(value2.id)) {
             if (!lookups.get(value2.id)) unresolved.add(value2.id);
             continue;
@@ -39123,6 +41529,158 @@ ${scripts}`, "");
     };
   }
   var ADMIN_OPS = [
+    {
+      name: "collections.merge",
+      summary: "Build one collection out of several \u2014 product themes as modes of one collection, so every product has the same keys.",
+      agent: "Plans first and refuses whole: a name with two types, a mode mapped twice, or a cell nobody fills (unless allowHoles). Sources are never modified. Aliases are copied as aliases; one that points inside a source collection is re-aimed at the merged variable of the same name. The result carries `rebind` \u2014 [{ from, to }] from every source variable to its merged one \u2014 which is exactly the map variables.rebind takes to move layers over. Every filled cell is listed: it is a value borrowed from another product, which a designer has not chosen.",
+      mutates: true,
+      params: {
+        into: { type: "string", required: true, description: "Name of the collection to build. Created when missing; an existing one is refused unless update is true." },
+        sources: {
+          type: "json",
+          required: true,
+          description: 'Array of { collection, modes }: `collection` a local collection name or id, `modes` maps each of its mode names to a target mode name, e.g. { "collection": "Business", "modes": { "Light": "Business Light", "Dark": "Business Dark" } }. Unmapped source modes are left out.'
+        },
+        fill: {
+          type: "json",
+          description: 'Object { targetMode: targetMode }: where a key one product lacks takes its value from, e.g. { "Business Light": "One Light" }. Only real product values are borrowed, never other fills.'
+        },
+        seed: {
+          type: "json",
+          description: "Array of { mode, from }: extra target modes started as a copy of another target mode \u2014 a product that has no tokens yet."
+        },
+        allowHoles: { type: "boolean", default: false, description: "Write even when some cells have no value; Figma then shows the default mode's value there." },
+        update: { type: "boolean", default: false, description: "Write into an existing `into` collection: missing modes are added, same-named variables are overwritten." },
+        dryRun: { type: "boolean", default: false, description: "Plan and report \u2014 modes, rows, filled cells, holes, conflicts \u2014 and write nothing." }
+      },
+      async run(params) {
+        var _a, _b;
+        const rawSources = params.sources;
+        if (!Array.isArray(rawSources) || rawSources.length === 0) throw new Error('"sources" must be a non-empty array');
+        const dryRun = params.dryRun === true;
+        const all = await figma.variables.getLocalVariablesAsync();
+        const collections = [];
+        const sources = [];
+        for (const [index2, raw] of rawSources.entries()) {
+          if (!raw || typeof raw !== "object") throw new Error(`sources[${index2}] must be { collection, modes }`);
+          const entry = raw;
+          const collection = await resolveCollection(entry.collection);
+          const map = entry.modes;
+          if (!map || typeof map !== "object" || Object.keys(map).length === 0) throw new Error(`sources[${index2}].modes must map ${collection.name}'s modes to target modes`);
+          const modes = {};
+          const idToName = /* @__PURE__ */ new Map();
+          for (const [ref, target2] of Object.entries(map)) {
+            const mode = resolveMode(collection.modes, ref, `sources[${index2}].modes`);
+            if (typeof target2 !== "string" || target2.trim() === "") throw new Error(`sources[${index2}].modes["${ref}"] must be a target mode name`);
+            modes[mode.name] = target2.trim();
+            idToName.set(mode.modeId, mode.name);
+          }
+          collections.push(collection);
+          sources.push({
+            name: collection.name,
+            modes,
+            variables: all.filter((variable) => variable.variableCollectionId === collection.id).map((variable) => ({
+              id: variable.id,
+              name: variable.name,
+              type: variable.resolvedType,
+              values: Object.fromEntries(Object.entries(variable.valuesByMode).filter(([id]) => idToName.has(id)).map(([id, value2]) => [idToName.get(id), value2])),
+              scopes: variable.scopes,
+              description: variable.description,
+              hiddenFromPublishing: variable.hiddenFromPublishing,
+              codeSyntax: variable.codeSyntax
+            }))
+          });
+        }
+        const plan = planMerge(sources, {
+          fill: params.fill === void 0 ? void 0 : params.fill,
+          seed: params.seed === void 0 ? void 0 : params.seed
+        });
+        const into = String(params.into).trim();
+        let target = null;
+        try {
+          target = await resolveCollection(into);
+        } catch (e) {
+          target = null;
+        }
+        if (target && collections.some((c) => c.id === target.id)) throw new Error(`"${into}" is one of the sources \u2014 merge into a new collection`);
+        if (target && params.update !== true) throw new Error(`a collection "${into}" already exists \u2014 pass update: true to write into it`);
+        const report2 = {
+          into,
+          exists: Boolean(target),
+          modes: plan.modes,
+          variables: plan.rows.length,
+          cells: plan.rows.reduce((n, row) => n + Object.keys(row.cells).length, 0),
+          fromSources: plan.rows.reduce((n, row) => n + Object.values(row.cells).filter((c) => c.origin === "source").length, 0),
+          filled: plan.filled,
+          seeded: plan.seeded,
+          holes: plan.holes,
+          conflicts: plan.conflicts,
+          scopeDiffs: plan.scopeDiffs
+        };
+        if (plan.conflicts.length && !dryRun) throw new Error(`${plan.conflicts.length} name(s) carry different types across sources, e.g. "${plan.conflicts[0].name}" \u2014 rename one first; nothing was written`);
+        if (plan.holes.length && params.allowHoles !== true && !dryRun) {
+          throw new Error(`${plan.holes.length} cell(s) would have no value, e.g. "${plan.holes[0].name}" in ${plan.holes[0].mode} \u2014 add a fill, or allowHoles; nothing was written`);
+        }
+        if (dryRun) return __spreadValues({ dryRun: true }, report2);
+        figma.commitUndo();
+        if (!target) target = figma.variables.createVariableCollection(into);
+        const fresh = target.modes.length === 1 && !report2.exists;
+        const modeIds = /* @__PURE__ */ new Map();
+        for (const [i, name] of plan.modes.entries()) {
+          const have = target.modes.find((m) => m.name.toLowerCase() === name.toLowerCase());
+          if (have) modeIds.set(name, have.modeId);
+          else if (fresh && i === 0) {
+            target.renameMode(target.modes[0].modeId, name);
+            modeIds.set(name, target.modes[0].modeId);
+          } else modeIds.set(name, target.addMode(name));
+        }
+        const existing = new Map(all.filter((v) => v.variableCollectionId === target.id).map((v) => [v.name, v]));
+        const created = /* @__PURE__ */ new Map();
+        for (const row of plan.rows) {
+          const variable = (_a = existing.get(row.name)) != null ? _a : figma.variables.createVariable(row.name, target, row.type);
+          created.set(row.name, variable);
+        }
+        const remap = /* @__PURE__ */ new Map();
+        for (const row of plan.rows) for (const id of row.sourceIds) remap.set(id, created.get(row.name).id);
+        const nameOfId = new Map(all.map((v) => [v.id, v.name]));
+        let written = 0;
+        const mismatches = [];
+        for (const row of plan.rows) {
+          const variable = created.get(row.name);
+          for (const [mode, cell] of Object.entries(row.cells)) {
+            let value2 = cell.value;
+            if (isAlias4(value2) && remap.has(value2.id)) value2 = { type: "VARIABLE_ALIAS", id: remap.get(value2.id) };
+            variable.setValueForMode(modeIds.get(mode), value2);
+            written += 1;
+          }
+          if (row.meta.scopes) variable.scopes = [...row.meta.scopes];
+          if (row.meta.description) variable.description = row.meta.description;
+          if (row.meta.hiddenFromPublishing !== void 0) variable.hiddenFromPublishing = row.meta.hiddenFromPublishing;
+          for (const [platform, syntax] of Object.entries((_b = row.meta.codeSyntax) != null ? _b : {})) {
+            if (syntax) variable.setVariableCodeSyntax(platform, syntax);
+          }
+        }
+        for (const row of plan.rows) {
+          const fresh2 = await figma.variables.getVariableByIdAsync(created.get(row.name).id);
+          for (const [mode, cell] of Object.entries(row.cells)) {
+            const got = fresh2 == null ? void 0 : fresh2.valuesByMode[modeIds.get(mode)];
+            let want = cell.value;
+            if (isAlias4(want) && remap.has(want.id)) want = { type: "VARIABLE_ALIAS", id: remap.get(want.id) };
+            if (JSON.stringify(got) !== JSON.stringify(want)) mismatches.push(`${row.name} @ ${mode}`);
+          }
+        }
+        return __spreadProps(__spreadValues({
+          ok: mismatches.length === 0
+        }, report2), {
+          collection: { id: target.id, name: target.name, modes: target.modes.map((m) => m.name) },
+          created: plan.rows.filter((row) => !existing.has(row.name)).length,
+          updated: plan.rows.filter((row) => existing.has(row.name)).length,
+          written,
+          mismatches,
+          rebind: plan.rows.flatMap((row) => row.sourceIds.map((from) => ({ from, fromName: nameOfId.get(from), to: created.get(row.name).id })))
+        });
+      }
+    },
     {
       name: "collections.update",
       summary: "Rename, hide, edit modes or remove local variable collections as one validated plan.",
@@ -40729,10 +43287,10 @@ ${scripts}`, "");
         const out = [...groups.values()].map((group2) => {
           let bindings = 0;
           const collections = /* @__PURE__ */ new Set();
-          for (const [id, count] of group2.idCounts) {
+          for (const [id, count2] of group2.idCounts) {
             const collection = remoteCollection.get(id);
             if (collection) {
-              bindings += count;
+              bindings += count2;
               collections.add(collection);
             }
           }
@@ -42039,15 +44597,15 @@ ${scripts}`, "");
     return name.replace(/#.*$/, "");
   }
   function propName(name) {
-    const words2 = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
-    const camel = words2.map((word, index2) => index2 === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
+    const words3 = stripPropSuffix(name).replace(/[^A-Za-z0-9]+/g, " ").trim().split(" ");
+    const camel = words3.map((word, index2) => index2 === 0 ? word.toLowerCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join("");
     if (camel === "") return "value";
     return /^[A-Za-z_]/.test(camel) ? camel : `value${camel.charAt(0).toUpperCase()}${camel.slice(1)}`;
   }
   function copyKey(scope, text6, taken) {
-    const slug2 = text6.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 32) || "text";
-    let key = `${scope}.${slug2}`;
-    for (let n = 2; key in taken && taken[key] !== text6; n++) key = `${scope}.${slug2}_${n}`;
+    const slug3 = text6.trim().toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "_").replace(/^_+|_+$/g, "").slice(0, 32) || "text";
+    let key = `${scope}.${slug3}`;
+    for (let n = 2; key in taken && taken[key] !== text6; n++) key = `${scope}.${slug3}_${n}`;
     return key;
   }
   function textsInside(node) {
@@ -42387,8 +44945,8 @@ ${pad2}</${tag}>`;
   var objectKey = (text6) => isIdentifier.test(text6) ? text6 : sq(text6);
   var urlNodeId = (nodeId) => nodeId.replace(/:/g, "-");
   var urlFileName = (fileName) => {
-    const slug2 = fileName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return slug2 === "" ? "Untitled" : slug2;
+    const slug3 = fileName.trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug3 === "" ? "Untitled" : slug3;
   };
   function componentUrl(fileKey, fileName, nodeId) {
     return `https://www.figma.com/design/${fileKey}/${urlFileName(fileName)}?node-id=${urlNodeId(nodeId)}`;
@@ -43594,13 +46152,13 @@ figma make deploy --build-dir dist
         for (const [from, to] of moveColumns != null ? moveColumns : []) node.moveColumn(from, to);
         if (cells) {
           for (const [row, line] of cells.entries()) {
-            for (const [column2, words2] of line.entries()) {
-              if (words2 === null || row >= node.numRows || column2 >= node.numColumns) continue;
+            for (const [column2, words3] of line.entries()) {
+              if (words3 === null || row >= node.numRows || column2 >= node.numColumns) continue;
               const text6 = node.cellAt(row, column2).text;
               const font = text6.fontName;
               if (font !== figma.mixed) await figma.loadFontAsync(font);
               else await loadNodeFont(text6);
-              text6.characters = words2;
+              text6.characters = words3;
             }
           }
         }
@@ -45068,7 +47626,7 @@ figma make deploy --build-dir dist
   }
   function compare(before, after, ignore) {
     var _a, _b, _c, _d;
-    const same = [];
+    const same4 = [];
     const diverged = [];
     const keys = /* @__PURE__ */ new Set([...Object.keys(before), ...Object.keys(after)]);
     const shaped = [...keys].some((key) => SUMMARIES.has(key) && before[key] !== void 0);
@@ -45079,10 +47637,10 @@ figma make deploy --build-dir dist
       if (key === "x" || key === "y") continue;
       const left = JSON.stringify((_a = before[key]) != null ? _a : null);
       const right = JSON.stringify((_b = after[key]) != null ? _b : null);
-      if (left === right) same.push(key);
+      if (left === right) same4.push(key);
       else diverged.push({ property: key, was: (_c = before[key]) != null ? _c : null, became: (_d = after[key]) != null ? _d : null });
     }
-    return { same: same.sort(), diverged };
+    return { same: same4.sort(), diverged };
   }
 
   // src/canvas/markdown.ts
@@ -45348,8 +47906,8 @@ figma make deploy --build-dir dist
         continue;
       }
       if (TAG_LINE.test(line)) {
-        const words2 = line.replace(/<[^<>]*>/g, "").trim();
-        if (words2) blocks2.push({ kind: "paragraph", runs: parseInline(words2) });
+        const words3 = line.replace(/<[^<>]*>/g, "").trim();
+        if (words3) blocks2.push({ kind: "paragraph", runs: parseInline(words3) });
         i++;
         continue;
       }
@@ -46075,7 +48633,7 @@ figma make deploy --build-dir dist
   var LIBRARY_VARIABLES_BUDGET_MS = 3e4;
   async function variableNamesForExport() {
     var _a;
-    const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
+    const exportOptions = await loadExportOptions();
     const asCss = (snapshot) => emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css;
     try {
       const snapshot = await readAllVariables({
@@ -46367,6 +48925,76 @@ figma make deploy --build-dir dist
     }
     return facts;
   }
+  async function loadExportOptions() {
+    return applyFileTokenConfig(normalizeExportOptions(await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)), readFileTokenConfig());
+  }
+  var aliasTargetsCache = null;
+  async function screenAliasTargets(local) {
+    const known = new Set(local.variables.map((v) => v.id));
+    const outside = /* @__PURE__ */ new Set();
+    const walk3 = (value2) => {
+      if (value2 && typeof value2 === "object") {
+        if (value2.type === "VARIABLE_ALIAS" && typeof value2.id === "string") {
+          if (!known.has(value2.id)) outside.add(value2.id);
+        } else for (const inner of Object.values(value2)) walk3(inner);
+      }
+    };
+    for (const v of local.variables) for (const value2 of Object.values(v.valuesByMode)) walk3(value2);
+    const key = [...outside].sort().join("|");
+    if ((aliasTargetsCache == null ? void 0 : aliasTargetsCache.key) === key) return aliasTargetsCache.targets;
+    const targets = await readAliasTargets(local, { lookupMs: 2e3, budgetMs: 6e3 }).catch(() => ({ collections: [], variables: [] }));
+    aliasTargetsCache = { key, targets };
+    return targets;
+  }
+  async function mappingAnswer(collection, draft, suggest = false, file) {
+    var _a;
+    const local = await readLocalVariables();
+    const targets = await screenAliasTargets(local);
+    const settled = await settleUnreachedAliases(local.variables, /* @__PURE__ */ new Set([...local.variables.map((v) => v.id), ...targets.variables.map((v) => v.id)]));
+    const snapshot = __spreadProps(__spreadValues({}, local), { collections: [...local.collections, ...targets.collections], variables: [...settled.variables, ...targets.variables] });
+    const pinned = readFileTokenConfig();
+    const options = await loadExportOptions();
+    const problems = [];
+    let mapping;
+    let source;
+    if (suggest) {
+      mapping = suggestMapping(local);
+      source = "suggested";
+    } else if (draft !== void 0 && draft !== null) {
+      const checked = normalizeMapping(draft);
+      problems.push(...checked.problems);
+      mapping = (_a = checked.mapping) != null ? _a : suggestMapping(local);
+      source = "draft";
+    } else if (pinned == null ? void 0 : pinned.mapping) {
+      mapping = pinned.mapping;
+      source = "pinned";
+    } else {
+      const fromSettings = mappingFromSettings(options.tokens, local);
+      mapping = fromSettings != null ? fromSettings : suggestMapping(local);
+      source = fromSettings ? "settings" : "suggested";
+    }
+    problems.push(...mappingFileProblems(local, mapping));
+    const tokens = __spreadValues(__spreadValues({}, options.tokens), mappingToSettings(mapping));
+    delete tokens.structure;
+    const summary = summarizeExport(snapshot, tokenEmitOptionsFrom(__spreadProps(__spreadValues({}, options), { tokens }), readRenameMap()), file, tokens.cssModulesGlobal);
+    const aliasNote = unreachedAliasNote(settled.settled, settled.left);
+    if (aliasNote) summary.notes = [...summary.notes, aliasNote];
+    return {
+      mapping,
+      source,
+      problems,
+      view: describeMapping(local, mapping, { collection, resolve: targets }),
+      summary,
+      access: {
+        editable: figma.editorType !== "dev",
+        // A mapping is saved in the file: a preview's "use" replaces it, and the screen says so.
+        pinned: Boolean(pinned == null ? void 0 : pinned.mapping),
+        // An export structure an agent pinned is not something the screen can show; saving a
+        // mapping replaces it, and the screen says so before anyone does.
+        agentStructure: Boolean(pinned == null ? void 0 : pinned.structure)
+      }
+    };
+  }
   async function readGraph(includeLibraries = false, collectionMerges = []) {
     var _a, _b, _c, _d;
     const [collections, variables, textStyles, effectStyles] = await Promise.all([
@@ -46401,11 +49029,20 @@ figma make deploy --build-dir dist
         })),
         ...(_b = library == null ? void 0 : library.variables) != null ? _b : []
       ]
-    }).catch(() => ({ collections: [], variables: [] }));
+      // Bounded: a library that stopped handing its variables to this file (a consumer file's aliases
+      // onto it) hangs a lookup for minutes and still answers nothing; those are settled below.
+    }, { lookupMs: 3e3, budgetMs: 3e4 }).catch(() => ({ collections: [], variables: [] }));
     const outside = {
       collections: [...(_c = library == null ? void 0 : library.collections) != null ? _c : [], ...aliasTargets.collections],
       variables: [...(_d = library == null ? void 0 : library.variables) != null ? _d : [], ...aliasTargets.variables]
     };
+    const reached = /* @__PURE__ */ new Set([...variables.map((v) => v.id), ...outside.variables.map((v) => v.id)]);
+    const settledLocal = await settleUnreachedAliases(
+      variables.map((v) => ({ id: v.id, name: v.name, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
+      reached
+    );
+    const valuesOf = new Map(settledLocal.variables.map((v) => [v.id, v.valuesByMode]));
+    const aliasNote = unreachedAliasNote(settledLocal.settled, settledLocal.left);
     const libraryNote = includeLibraries ? void 0 : await libraryCollectionsNote();
     const graph = foldSplitThemeCollections({
       fileName: figma.root.name,
@@ -46425,16 +49062,19 @@ figma make deploy --build-dir dist
       }).concat(
         outside.collections.filter((entry) => !collections.some((local) => local.id === entry.id)).map((entry) => __spreadProps(__spreadValues({}, entry), { generated: false }))
       ),
-      variables: variables.map((v) => ({
-        id: v.id,
-        name: v.name,
-        collectionId: v.variableCollectionId,
-        resolvedType: v.resolvedType,
-        valuesByMode: v.valuesByMode,
-        // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
-        // guessing the role from the token name.
-        scopes: v.scopes
-      })).concat(
+      variables: variables.map((v) => {
+        var _a2;
+        return {
+          id: v.id,
+          name: v.name,
+          collectionId: v.variableCollectionId,
+          resolvedType: v.resolvedType,
+          valuesByMode: (_a2 = valuesOf.get(v.id)) != null ? _a2 : v.valuesByMode,
+          // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
+          // guessing the role from the token name.
+          scopes: v.scopes
+        };
+      }).concat(
         outside.variables.filter((entry) => !variables.some((local) => local.id === entry.id)).map((entry) => ({
           id: entry.id,
           name: entry.name,
@@ -46478,7 +49118,7 @@ figma make deploy --build-dir dist
         })
       }))
     }, collectionMerges);
-    return __spreadValues({ graph }, libraryNote ? { libraryNote } : {});
+    return __spreadValues(__spreadValues({ graph }, libraryNote ? { libraryNote } : {}), aliasNote ? { aliasNote } : {});
   }
   async function libraryCollectionsNote() {
     try {
@@ -46497,8 +49137,8 @@ figma make deploy --build-dir dist
     return Math.max(0.25, Math.min(PREVIEW_MAX_SCALE, PREVIEW_MAX_WIDTH / width));
   }
   function previewPath(name, id) {
-    const slug2 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return `previews/${slug2 || "component"}--${id.replace(/[^a-zA-Z0-9]+/g, "-")}.png`;
+    const slug3 = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return `previews/${slug3 || "component"}--${id.replace(/[^a-zA-Z0-9]+/g, "-")}.png`;
   }
   function componentPropertiesOf(node) {
     var _a;
@@ -46866,7 +49506,7 @@ figma make deploy --build-dir dist
       postToUi(__spreadProps(__spreadValues({ type: "UI_SIZE" }, uiSize), { bounds: UI_BOUNDS }));
     }
     await loadUserModules();
-    const options = withFileDocs(normalizeExportOptions(storedOptions));
+    const options = withFileDocs(applyFileTokenConfig(normalizeExportOptions(storedOptions), readFileTokenConfig()));
     const remembered = await gatesFor();
     options.agent = __spreadProps(__spreadValues({}, options.agent), { read: remembered.read, write: remembered.read && remembered.write });
     postToUi({
@@ -47195,9 +49835,9 @@ figma make deploy --build-dir dist
     }
     if (bag.layoutPositioning === "ABSOLUTE") props.absolute = true;
     if (node.type === "TRANSFORM_GROUP" && Array.isArray(bag.transformModifiers) && bag.transformModifiers.length > 0) {
-      const words2 = bag.transformModifiers.map(repeatWords);
-      const same = words2.every((one) => JSON.stringify(one) === JSON.stringify(words2[0]));
-      props.repeat = same ? words2[0] : words2;
+      const words3 = bag.transformModifiers.map(repeatWords);
+      const same4 = words3.every((one) => JSON.stringify(one) === JSON.stringify(words3[0]));
+      props.repeat = same4 ? words3[0] : words3;
     }
     if (node.type === "TEXT_PATH") {
       const start = bag.textPathStartData;
@@ -47580,12 +50220,11 @@ figma make deploy --build-dir dist
   }
   async function buildTokenPackage(flags) {
     var _a, _b, _c, _d;
-    const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY);
-    const saved = withFileDocs(normalizeExportOptions(stored));
+    const saved = withFileDocs(await loadExportOptions());
     const options = __spreadProps(__spreadValues({}, saved), {
       tokens: __spreadValues(__spreadValues(__spreadValues({}, saved.tokens), ((_a = flags.tokens) == null ? void 0 : _a.includeLibraries) === void 0 ? {} : { includeLibraries: flags.tokens.includeLibraries }), ((_b = flags.tokens) == null ? void 0 : _b.emitNative) === void 0 ? {} : { emitNative: flags.tokens.emitNative })
     });
-    const { graph, libraryNote } = await readGraph(
+    const { graph, libraryNote, aliasNote } = await readGraph(
       options.tokens.includeLibraries,
       options.themeMerges.groups
     );
@@ -47618,12 +50257,17 @@ figma make deploy --build-dir dist
     }
     const notes = [];
     if (libraryNote) notes.push(libraryNote);
+    if (aliasNote) notes.push(aliasNote);
     if (componentDocs.note) notes.push(componentDocs.note);
     if (pinnedDocs) notes.push(`Documentation settings come from this file (${Object.keys(pinnedDocs).join(", ")}) \u2014 the same for everyone who exports it`);
     if (guidelines.manifest) {
       const damaged = guidelines.damaged.length > 0 ? ` \u2014 ${guidelines.damaged.length} stored incompletely: ${guidelines.damaged.join(", ")}` : "";
       notes.push(`Guidelines from this file: "${guidelines.manifest.name}", ${guidelines.files.length} file(s) under guidelines/${damaged}`);
       artifacts.summary.guidelines = guidelinesSummary(guidelines.manifest);
+    }
+    const pinnedTokens = readFileTokenConfig();
+    if (pinnedTokens) {
+      notes.push(`Token settings come from this file (${Object.keys(pinnedTokens).join(", ")}) \u2014 the same for everyone who exports it`);
     }
     if (notes.length > 0) {
       const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : [];
@@ -47698,7 +50342,7 @@ figma make deploy --build-dir dist
     if (problem) throw new Error(problem);
   }
   async function handleUiMessage(msg) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _A, _B, _C, _D, _E, _F, _G, _H, _I, _J, _K, _L, _M, _N, _O, _P, _Q, _R, _S, _T, _U, _V, _W, _X, _Y, _Z, __, _$, _aa, _ba;
     switch (msg.type) {
       /* ---- design-tokens target ---- */
       case "SCAN_TOKENS": {
@@ -47772,8 +50416,7 @@ figma make deploy --build-dir dist
       }
       case "DELIVER": {
         try {
-          const stored = await figma.clientStorage.getAsync("exportOptions");
-          const options = normalizeExportOptions(stored);
+          const options = await loadExportOptions();
           const result = await deliverPackage(msg.files || {}, {
             endpoint: options.delivery.endpoint,
             secret: options.delivery.secret,
@@ -47791,8 +50434,7 @@ figma make deploy --build-dir dist
       }
       case "GENERATE_TYPOGRAPHY": {
         try {
-          const stored = await figma.clientStorage.getAsync("exportOptions");
-          const report2 = await generateTypographyVariables(normalizeExportOptions(stored));
+          const report2 = await generateTypographyVariables(await loadExportOptions());
           figma.notify(`Created ${report2.created} variables \xB7 bound ${report2.bound} field(s)` + (report2.failed ? ` \xB7 ${report2.failed} failed` : ""));
           postToUi({ type: "TYPOGRAPHY_GENERATED", report: report2 });
         } catch (err) {
@@ -48142,14 +50784,61 @@ figma make deploy --build-dir dist
         postToUi(__spreadProps(__spreadValues({ type: "VARIABLE_COLLECTIONS" }, state), { all }));
         break;
       }
+      case "THEME_AXES_PREVIEW": {
+        try {
+          const saved = await loadExportOptions();
+          const options = __spreadProps(__spreadValues({}, saved), { tokens: __spreadValues(__spreadValues({}, saved.tokens), (_l = msg.tokens) != null ? _l : {}) });
+          const preview2 = previewThemeAxes(await readLocalVariables(), __spreadProps(__spreadValues({}, tokenEmitOptionsFrom(options, readRenameMap())), { detect: msg.detect === true }));
+          const pinned = readFileTokenConfig();
+          const access = { editable: figma.editorType !== "dev", filePins: Boolean(pinned), pinnedAxes: Boolean(pinned && pinned.themeAxes) };
+          postToUi({ type: "THEME_AXES_PREVIEW_RESULT", preview: preview2, access });
+        } catch (err) {
+          postToUi({ type: "THEME_AXES_PREVIEW_RESULT", error: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "TOKENS_MAPPING": {
+        try {
+          postToUi(__spreadValues({ type: "TOKENS_MAPPING_RESULT", request: msg.request }, await mappingAnswer(msg.collection, msg.mapping, msg.suggest === true, typeof msg.file === "string" ? msg.file : void 0)));
+        } catch (err) {
+          postToUi({ type: "TOKENS_MAPPING_RESULT", request: msg.request, error: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
+      case "TOKENS_MAPPING_SET": {
+        try {
+          const { mapping, problems } = normalizeMapping(msg.mapping);
+          if (!mapping || problems.length > 0) throw new Error(`nothing was saved: ${problems.join("; ") || "no mapping"}`);
+          const missing = mappingFileProblems(await readLocalVariables(), mapping);
+          if (missing.length > 0) throw new Error(`nothing was saved: ${missing.join("; ")}`);
+          const next = withMapping(readFileTokenConfig(), mapping);
+          try {
+            writeFileTokenConfig(next);
+          } catch (err) {
+            throw new Error(`the file is read-only here (Dev Mode or view access) \u2014 an editor has to save the mapping: ${String((err == null ? void 0 : err.message) || err)}`);
+          }
+          const stored = readFileTokenConfig();
+          const answer = await mappingAnswer(msg.collection, void 0, false, typeof msg.file === "string" ? msg.file : void 0);
+          postToUi(__spreadValues({
+            type: "TOKENS_MAPPING_RESULT",
+            request: msg.request,
+            saved: true,
+            verified: JSON.stringify(stored == null ? void 0 : stored.mapping) === JSON.stringify(mapping),
+            // The panel's other token settings read the file's config too: hand it back in full.
+            tokens: (await loadExportOptions()).tokens
+          }, answer));
+        } catch (err) {
+          postToUi({ type: "TOKENS_MAPPING_RESULT", request: msg.request, error: String((err == null ? void 0 : err.message) || err) });
+        }
+        break;
+      }
       case "READ_VARIABLES": {
         const data = await readAllVariables();
         postToUi({ type: "VARIABLES_SNAPSHOT", data });
         break;
       }
       case "EMIT_TOKENS": {
-        const stored = await figma.clientStorage.getAsync("exportOptions");
-        const options = normalizeExportOptions(stored);
+        const options = await loadExportOptions();
         const snapshot = await readAllVariables({ collectionMerges: options.themeMerges.groups });
         const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(options, readRenameMap())).css;
         postToUi({ type: "TOKENS_CSS", css });
@@ -48243,7 +50932,7 @@ figma make deploy --build-dir dist
                 picked.length = 0;
                 break;
               }
-              picked.push(((_l = node.parent) == null ? void 0 : _l.type) === "COMPONENT_SET" ? node.parent : node);
+              picked.push(((_m = node.parent) == null ? void 0 : _m.type) === "COMPONENT_SET" ? node.parent : node);
             }
             if (picked.length > 0) {
               const built = (await Promise.all(picked.map((one2) => serializeNode(one2)))).filter(
@@ -48372,7 +51061,7 @@ figma make deploy --build-dir dist
             // Code Connect addresses a node by URL, and the key in it comes from the document when
             // the plugin is granted `figma.fileKey`, else from the URL the caller passed — never
             // guessed, because a template published against the wrong file maps nothing.
-            fileKey: (_n = (_m = figma.fileKey) != null ? _m : fileKeyFrom(msg.fileUrl)) != null ? _n : void 0,
+            fileKey: (_o = (_n = figma.fileKey) != null ? _n : fileKeyFrom(msg.fileUrl)) != null ? _o : void 0,
             fileName: figma.root.name,
             // By master, not by name: the library emitted these exact components, and a screen
             // holding a DIFFERENT component of the same name must still build its own.
@@ -48414,7 +51103,7 @@ figma make deploy --build-dir dist
         const variableNamesById = await variableNamesForScope(sceneNodesById.values());
         await annotateVectorLeaves(pageRoots, sceneNodesById);
         await addReactionDestinationsToScene(pageRoots, sceneNodesById);
-        const previewOptions = normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions"));
+        const previewOptions = await loadExportOptions();
         const tokensOn = previewOptions.modules.tokens;
         const previewThemeSets = previewOptions.targetOptions.framework === "bootstrap" && previewOptions.targetOptions.bootstrapFidelity === "theme" ? await collectThemableSets(sceneNodesById) : void 0;
         const snapshot = tokensOn ? await readAllVariables({ collectionMerges: previewOptions.themeMerges.groups }) : await readLocalVariables();
@@ -48445,7 +51134,7 @@ figma make deploy --build-dir dist
         for (const asset of regenAssets) {
           freshFiles.set(`static/img/${asset.filename}`, { nodeId: "", content: asset.content });
         }
-        const existingFiles = new Map(Object.entries((_o = msg.existingFiles) != null ? _o : {}));
+        const existingFiles = new Map(Object.entries((_p = msg.existingFiles) != null ? _p : {}));
         const plan = planRegeneration(existingFiles, freshFiles);
         let tokensCss;
         let bootstrapTokensCss;
@@ -48486,7 +51175,7 @@ figma make deploy --build-dir dist
           textNodes.push({ id: node.id, name: node.name, characters: node.characters });
           if (textNodes.length % 200 === 0) await checkpoint();
         }
-        const lintMaxDepth = typeof msg.lintMaxDepth === "number" ? msg.lintMaxDepth : normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions")).lint.maxNestingDepth;
+        const lintMaxDepth = typeof msg.lintMaxDepth === "number" ? msg.lintMaxDepth : (await loadExportOptions()).lint.maxNestingDepth;
         const lint = await lintScopeAsync(roots, { maxNestingDepth: lintMaxDepth });
         await annotateUnfixableFindings(lint, index2);
         const videoAssets = [];
@@ -48512,7 +51201,7 @@ figma make deploy --build-dir dist
         break;
       }
       case "SCROLL_INTO_VIEW": {
-        const node = (_p = lastScanIndex.get(msg.nodeId)) != null ? _p : await figma.getNodeByIdAsync(msg.nodeId);
+        const node = (_q = lastScanIndex.get(msg.nodeId)) != null ? _q : await figma.getNodeByIdAsync(msg.nodeId);
         if (!node || !("visible" in node)) {
           refuse("SCROLL_INTO_VIEW", `no scene node with id ${msg.nodeId} \u2014 it may have been removed, or live on a page this session has not loaded`);
           break;
@@ -48606,7 +51295,7 @@ figma make deploy --build-dir dist
           commands: UI_COMMANDS,
           file: figma.root.name,
           pages: figma.root.children.map((page) => ({ id: page.id, name: page.name })),
-          fileKey: (_q = figma.fileKey) != null ? _q : null
+          fileKey: (_r = figma.fileKey) != null ? _r : null
         }));
         break;
       }
@@ -48624,7 +51313,25 @@ figma make deploy --build-dir dist
       }
       case "SAVE_EXPORT_OPTIONS": {
         const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY);
-        await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options));
+        const merged = mergeExportOptions(stored, msg.options);
+        const pinned = readFileTokenConfig();
+        const own = pinned ? normalizeExportOptions(stored) : merged;
+        const decidedByFile = new Set(pinned ? Object.keys(pinned) : []);
+        if (pinned == null ? void 0 : pinned.mapping) for (const field of MAPPING_SUPERSEDES) decidedByFile.add(field);
+        const personal = __spreadProps(__spreadValues({}, merged), { tokens: __spreadValues({}, merged.tokens) });
+        for (const field of decidedByFile) {
+          if (field === "mapping") continue;
+          personal.tokens[field] = own.tokens[field];
+        }
+        await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, personal);
+        if (pinned) {
+          const fields2 = [...decidedByFile].filter((field) => field !== "mapping" && !(pinned.mapping && MAPPING_SUPERSEDES.includes(field)));
+          try {
+            const kept2 = pickFileTokenConfig(merged.tokens, fields2);
+            writeFileTokenConfig(pinned.mapping ? withMapping(kept2, pinned.mapping) : kept2);
+          } catch (e) {
+          }
+        }
         break;
       }
       case "SAVE_UPDATE_PREFERENCES": {
@@ -48683,7 +51390,7 @@ figma make deploy --build-dir dist
           }
           const parent = msg.parent && msg.parent !== "page" ? await figma.getNodeByIdAsync(msg.parent) : figma.currentPage;
           if (!parent || !("appendChild" in parent)) {
-            refuse("NODE_CREATE", `parent ${(_r = msg.parent) != null ? _r : "(page)"} is not a container`);
+            refuse("NODE_CREATE", `parent ${(_s = msg.parent) != null ? _s : "(page)"} is not a container`);
             break;
           }
           const dry = msg.dryRun === true;
@@ -48775,7 +51482,7 @@ figma make deploy --build-dir dist
       case "NODE_QUERY": {
         try {
           const wantProps = msg.props === true;
-          const limit = Math.min(Math.max((_s = msg.limit) != null ? _s : 50, 1), 500);
+          const limit = Math.min(Math.max((_t = msg.limit) != null ? _t : 50, 1), 500);
           if (msg.nodeId) {
             const node = await figma.getNodeByIdAsync(msg.nodeId);
             if (!node || !("type" in node)) {
@@ -48957,14 +51664,14 @@ figma make deploy --build-dir dist
             break;
           }
           if (as === "repeat") {
-            const parsed = repeatModifier((_t = msg.repeat) != null ? _t : {});
+            const parsed = repeatModifier((_u = msg.repeat) != null ? _u : {});
             if ("problem" in parsed) {
               refuse("NODE_GROUP", `repeat ${parsed.problem}`);
               break;
             }
             const modifier = parsed.modifier;
             const radial = modifier.repeatType === "RADIAL";
-            const { count, offset } = modifier;
+            const { count: count2, offset } = modifier;
             const unit = modifier.unitType;
             const axis = modifier.repeatType === "LINEAR" ? modifier.axis : "HORIZONTAL";
             const home2 = nodes[0].parent;
@@ -48980,13 +51687,13 @@ figma make deploy --build-dir dist
             );
             const report3 = await applyProps(group2, plan.steps, false);
             figma.commitUndo();
-            figma.notify(`${radial ? "Radial" : "Linear"} repeat \xD7${count}`);
+            figma.notify(`${radial ? "Radial" : "Linear"} repeat \xD7${count2}`);
             postToUi({
               type: "NODES_GROUPED",
               as,
               from: ids,
               node: { id: group2.id, name: group2.name, type: group2.type },
-              repeat: `${radial ? "radial" : axis.toLowerCase()} \xD7${count} offset ${offset} ${unit.toLowerCase()}`,
+              repeat: `${radial ? "radial" : axis.toLowerCase()} \xD7${count2} offset ${offset} ${unit.toLowerCase()}`,
               applied: report3.applied,
               failed: report3.failed
             });
@@ -49253,7 +51960,7 @@ figma make deploy --build-dir dist
                 preferred ? { preferredValues: preferred } : void 0
               );
               done.push({ added: full, type: entry.type });
-              for (const node of (_u = entry.bind) != null ? _u : []) bindings.push({ node, property: full, type: entry.type });
+              for (const node of (_v = entry.bind) != null ? _v : []) bindings.push({ node, property: full, type: entry.type });
             } catch (error) {
               done.push({ added: entry.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
             }
@@ -49277,7 +51984,7 @@ figma make deploy --build-dir dist
               done.push({ removed: name, ok: false, error: noSuchProperty(owner, name) });
               continue;
             }
-            const wasSlot = ((_v = definitionsOf(owner)[key]) == null ? void 0 : _v.type) === "SLOT";
+            const wasSlot = ((_w = definitionsOf(owner)[key]) == null ? void 0 : _w.type) === "SLOT";
             try {
               owner.deleteComponentProperty(key);
               done.push(__spreadValues({ removed: key }, wasSlot ? { note: "the slot's own layer stays on the canvas" } : {}));
@@ -49309,7 +52016,7 @@ figma make deploy --build-dir dist
             }
             try {
               const layer = node;
-              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_w = layer.componentPropertyReferences) != null ? _w : {}), { [field]: entry.property });
+              layer.componentPropertyReferences = __spreadProps(__spreadValues({}, (_x = layer.componentPropertyReferences) != null ? _x : {}), { [field]: entry.property });
               done.push({ bound: entry.property, to: layer.name, drives: field });
             } catch (error) {
               done.push({ bound: entry.property, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -49389,7 +52096,7 @@ figma make deploy --build-dir dist
           while (cursor < ids.length) {
             const gate = await guard.beforeRender(cursor);
             if (!gate.include) {
-              stoppedOn = (_x = gate.stoppedOn) != null ? _x : "bytes";
+              stoppedOn = (_y = gate.stoppedOn) != null ? _y : "bytes";
               break;
             }
             const id = ids[cursor];
@@ -49411,7 +52118,7 @@ figma make deploy --build-dir dist
               cursor += 1;
               continue;
             }
-            if (video && ((_y = scene.parent) == null ? void 0 : _y.type) !== "PAGE") {
+            if (video && ((_z = scene.parent) == null ? void 0 : _z.type) !== "PAGE") {
               const top = scene.getTopLevelFrame();
               reports.push({
                 node: id,
@@ -49591,7 +52298,7 @@ figma make deploy --build-dir dist
               throw new Error(`entries[${index2}].props must be an object`);
             }
             const props = {};
-            for (const [prop, value2] of Object.entries((_z = raw.props) != null ? _z : {})) {
+            for (const [prop, value2] of Object.entries((_A = raw.props) != null ? _A : {})) {
               const alias = value2;
               if (typeof (alias == null ? void 0 : alias.variable) === "string" && alias.variable.trim()) {
                 const variable = await resolveVariableRef(alias.variable.trim());
@@ -49675,10 +52382,10 @@ figma make deploy --build-dir dist
             const styles = await figma.getLocalCustomAnimationStylesAsync();
             const target = styles.find((style) => style.id === id);
             if (!target) throw new Error(`no local custom animation style has id "${id}"`);
-            const reference2 = after ? (_A = styles.find((style) => style.id === after)) != null ? _A : null : null;
+            const reference2 = after ? (_B = styles.find((style) => style.id === after)) != null ? _B : null : null;
             if (after && reference2 === null) throw new Error(`no local custom animation style has id "${after}"`);
             figma.moveLocalCustomAnimationStyleAfter(target, reference2);
-            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_B = reference2 == null ? void 0 : reference2.id) != null ? _B : null });
+            postToUi({ type: "MOTION_STYLE_MOVED", id, after: (_C = reference2 == null ? void 0 : reference2.id) != null ? _C : null });
           } else {
             figma.moveLocalCustomAnimationFolderAfter(folder, after);
             postToUi({ type: "MOTION_STYLE_FOLDER_MOVED", folder, after });
@@ -49804,7 +52511,7 @@ figma make deploy --build-dir dist
             break;
           }
           const query = typeof msg.query === "string" ? msg.query.trim().toLowerCase() : "";
-          const limit = Math.min(Math.max((_C = msg.limit) != null ? _C : 100, 1), 500);
+          const limit = Math.min(Math.max((_D = msg.limit) != null ? _D : 100, 1), 500);
           const styles = [];
           for (const kind of kinds) {
             for (const style of await localStyles(kind)) {
@@ -49861,18 +52568,18 @@ figma make deploy --build-dir dist
             }
             source = node;
           }
-          const existing = (_D = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _D : null;
+          const existing = (_E = (await localStyles(kind)).find((style2) => style2.name === name)) != null ? _E : null;
           const style = existing != null ? existing : kind === "paint" ? figma.createPaintStyle() : kind === "text" ? figma.createTextStyle() : kind === "effect" ? figma.createEffectStyle() : figma.createGridStyle();
           style.name = name;
           if (typeof msg.description === "string") style.description = msg.description;
           if (kind === "paint") {
-            const paints2 = source ? (_E = source.fills) != null ? _E : [] : (await applyToScratch(msg.paints, "paints")).fills;
+            const paints2 = source ? (_F = source.fills) != null ? _F : [] : (await applyToScratch(msg.paints, "paints")).fills;
             style.paints = paints2;
           } else if (kind === "effect") {
-            const effects = source ? (_F = source.effects) != null ? _F : [] : (await applyToScratch(msg.effects, "effects")).effects;
+            const effects = source ? (_G = source.effects) != null ? _G : [] : (await applyToScratch(msg.effects, "effects")).effects;
             style.effects = effects;
           } else if (kind === "grid") {
-            const grids = source ? (_G = source.layoutGrids) != null ? _G : [] : (await applyToScratch(msg.grid, "grid")).grids;
+            const grids = source ? (_H = source.layoutGrids) != null ? _H : [] : (await applyToScratch(msg.grid, "grid")).grids;
             style.layoutGrids = grids;
           } else {
             const from = (source == null ? void 0 : source.type) === "TEXT" ? source : null;
@@ -49998,7 +52705,7 @@ figma make deploy --build-dir dist
           moveStyle.call(figma, style, reference2);
           figma.commitUndo();
           const order = (await localStyles(kind)).map((s) => s.name);
-          postToUi({ type: "STYLE_MOVED", kind, name: style.name, after: (_H = reference2 == null ? void 0 : reference2.name) != null ? _H : null, order });
+          postToUi({ type: "STYLE_MOVED", kind, name: style.name, after: (_I = reference2 == null ? void 0 : reference2.name) != null ? _I : null, order });
         } catch (error) {
           const message = String((error == null ? void 0 : error.message) || error);
           postToUi({ type: "CANVAS_ERROR", command: "STYLE_MOVE", message });
@@ -50016,7 +52723,7 @@ figma make deploy --build-dir dist
           const flows = [];
           for (const point2 of page.flowStartingPoints) {
             const node = await figma.getNodeByIdAsync(point2.nodeId).catch(() => null);
-            flows.push({ name: point2.name, node: point2.nodeId, frame: (_I = node == null ? void 0 : node.name) != null ? _I : "(missing)" });
+            flows.push({ name: point2.name, node: point2.nodeId, frame: (_J = node == null ? void 0 : node.name) != null ? _J : "(missing)" });
           }
           postToUi({ type: "FLOWS", page: { id: page.id, name: page.name }, flows });
         } catch (error) {
@@ -50046,7 +52753,7 @@ figma make deploy --build-dir dist
               continue;
             }
             const node = await figma.getNodeByIdAsync(entry.node).catch(() => null);
-            if (!node || node.type !== "FRAME" || ((_J = node.parent) == null ? void 0 : _J.type) !== "PAGE") {
+            if (!node || node.type !== "FRAME" || ((_K = node.parent) == null ? void 0 : _K.type) !== "PAGE") {
               problems.push(`flows[${index2}]: ${entry.node} is not a top-level frame on this page`);
               continue;
             }
@@ -50144,7 +52851,7 @@ figma make deploy --build-dir dist
           figma.commitUndo();
           const after = await figma.getFileThumbnailNodeAsync();
           const brief2 = (node) => node ? { id: node.id, name: node.name } : null;
-          postToUi({ type: "FILE_THUMBNAIL", before: brief2(before), node: brief2(after), verified: ((_K = after == null ? void 0 : after.id) != null ? _K : null) === ((_L = target == null ? void 0 : target.id) != null ? _L : null) });
+          postToUi({ type: "FILE_THUMBNAIL", before: brief2(before), node: brief2(after), verified: ((_L = after == null ? void 0 : after.id) != null ? _L : null) === ((_M = target == null ? void 0 : target.id) != null ? _M : null) });
         } catch (error) {
           postToUi({ type: "CANVAS_ERROR", command: "FILE_THUMBNAIL_SET", message: String((error == null ? void 0 : error.message) || error) });
         }
@@ -50268,7 +52975,7 @@ figma make deploy --build-dir dist
             if (typeof msg.category === "string" && msg.category.trim() !== "") {
               const categories = await figma.annotations.getAnnotationCategoriesAsync();
               const wanted = msg.category.trim();
-              const found = (_M = categories.find((one) => one.id === wanted)) != null ? _M : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
+              const found = (_N = categories.find((one) => one.id === wanted)) != null ? _N : categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase());
               if (!found) {
                 refuse("ANNOTATE", `no category "${wanted}" \u2014 this file has: ${categories.map((one) => one.label).join(", ") || "(none)"}`);
                 break;
@@ -50285,12 +52992,12 @@ figma make deploy --build-dir dist
               continue;
             }
             try {
-              bag.annotations = clearing ? [] : [...(_N = bag.annotations) != null ? _N : [], annotation];
+              bag.annotations = clearing ? [] : [...(_O = bag.annotations) != null ? _O : [], annotation];
               rows.push({
                 node: node.id,
                 name: node.name,
                 ok: true,
-                annotations: await describeAnnotations((_O = bag.annotations) != null ? _O : [])
+                annotations: await describeAnnotations((_P = bag.annotations) != null ? _P : [])
               });
             } catch (error) {
               rows.push({ node: node.id, name: node.name, ok: false, error: String((error == null ? void 0 : error.message) || error) });
@@ -50335,7 +53042,7 @@ figma make deploy --build-dir dist
               if (known.some((existing) => existing.label.toLowerCase() === one.label.trim().toLowerCase())) {
                 throw new Error(`a category "${one.label}" already exists \u2014 edit it instead`);
               }
-              const made = await figma.annotations.addAnnotationCategoryAsync({ label: one.label.trim(), color: colour((_P = one.color) != null ? _P : "blue") });
+              const made = await figma.annotations.addAnnotationCategoryAsync({ label: one.label.trim(), color: colour((_Q = one.color) != null ? _Q : "blue") });
               rows.push({ action: "add", ok: true, category: describeCategory(made) });
             } catch (error) {
               rows.push({ action: "add", ok: false, label: one == null ? void 0 : one.label, error: String((error == null ? void 0 : error.message) || error) });
@@ -50447,7 +53154,7 @@ figma make deploy --build-dir dist
       case "NODE_ROUNDTRIP": {
         try {
           const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id));
-          const depth = Math.min(Math.max((_Q = msg.depth) != null ? _Q : 3, 0), 12);
+          const depth = Math.min(Math.max((_R = msg.depth) != null ? _R : 3, 0), 12);
           const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)));
           const reports = [];
           for (const id of ids) {
@@ -50495,17 +53202,17 @@ figma make deploy --build-dir dist
               reports.push({ node: id, name: original.name, ok: false, error: problems.join(" \xB7 ") || "the reading did not plan", dropped });
               continue;
             }
-            const parent = (_R = original.parent) != null ? _R : figma.currentPage;
+            const parent = (_S = original.parent) != null ? _S : figma.currentPage;
             const copy = await createNode(plan, parent, false);
             const made = await figma.getNodeByIdAsync(copy.id);
             if (!made || !("type" in made)) {
               reports.push({ node: id, name: original.name, ok: false, error: "the copy was not made", dropped });
               continue;
             }
-            const before = (_S = (await describeNode2(original, true)).props) != null ? _S : {};
-            const after = (_T = (await describeNode2(made, true)).props) != null ? _T : {};
-            const { same, diverged } = compare(before, after, ignore);
-            const failed2 = (_U = copy.failures) != null ? _U : [];
+            const before = (_T = (await describeNode2(original, true)).props) != null ? _T : {};
+            const after = (_U = (await describeNode2(made, true)).props) != null ? _U : {};
+            const { same: same4, diverged } = compare(before, after, ignore);
+            const failed2 = (_V = copy.failures) != null ? _V : [];
             if (msg.keep !== true) made.remove();
             else figma.commitUndo();
             reports.push(__spreadValues(__spreadValues(__spreadValues(__spreadValues(__spreadValues({
@@ -50513,7 +53220,7 @@ figma make deploy --build-dir dist
               name: original.name,
               type: original.type,
               ok: diverged.length === 0 && dropped.length === 0 && failed2.length === 0,
-              same: same.length
+              same: same4.length
             }, diverged.length > 0 ? { diverged } : {}), dropped.length > 0 ? { dropped } : {}), failed2.length > 0 ? { failed: failed2 } : {}), notValues.length > 0 ? { notValues } : {}), msg.keep === true ? { copy: copy.id } : {}));
           }
           const broken = reports.filter((one) => one.ok === false).length;
@@ -50652,7 +53359,7 @@ figma make deploy --build-dir dist
       }
       case "MODULE_RUN": {
         const entry = userModules.find((candidate) => candidate.id === msg.id);
-        const screen = (_V = entry == null ? void 0 : entry.module) == null ? void 0 : _V.screens[msg.screen];
+        const screen = (_W = entry == null ? void 0 : entry.module) == null ? void 0 : _W.screens[msg.screen];
         const block3 = screen == null ? void 0 : screen.blocks[msg.block];
         if (!(entry == null ? void 0 : entry.module) || !block3) {
           refuse("MODULE_RUN", `no block ${msg.block} on the ${msg.screen} screen of "${msg.id}"`);
@@ -50775,7 +53482,7 @@ figma make deploy --build-dir dist
         let stage = "scan";
         try {
           postToUi({ type: "EXPORT_PROGRESS", stage: "scan", percent: 10 });
-          const exportOptions = withFileDocs(normalizeExportOptions(await figma.clientStorage.getAsync("exportOptions")));
+          const exportOptions = withFileDocs(await loadExportOptions());
           const [irNodes, sceneNodesById, snapshot] = await Promise.all([
             Promise.all(roots.map((root2) => serializeNode(root2))),
             indexSceneNodes2(roots),
@@ -50816,7 +53523,7 @@ figma make deploy --build-dir dist
           const targetLanguages = modules2.i18n ? parseLanguages(exportOptions.i18n.languages, exportOptions.i18n.sourceLanguage) : [];
           let startPageId;
           try {
-            startPageId = (_W = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _W.nodeId;
+            startPageId = (_X = figma.currentPage.flowStartingPoints[0]) == null ? void 0 : _X.nodeId;
           } catch (e) {
           }
           const [project, assets] = await Promise.all([
@@ -50882,7 +53589,7 @@ figma make deploy --build-dir dist
           if (!project && motionExport.animation.js) files["static/js/animations.js"] = motionExport.animation.js;
           let tauriPageHrefs;
           if (exportOptions.targetOptions.platform === "tauri" && project) {
-            const startRootId = startPageId && pageRoots.some((root2) => root2.id === startPageId) ? startPageId : (_X = pageRoots[0]) == null ? void 0 : _X.id;
+            const startRootId = startPageId && pageRoots.some((root2) => root2.id === startPageId) ? startPageId : (_Y = pageRoots[0]) == null ? void 0 : _Y.id;
             const startScene = startRootId ? sceneNodesById.get(startRootId) : void 0;
             const windowSize = startScene && "width" in startScene ? { width: startScene.width, height: startScene.height } : { width: 1024, height: 768 };
             const bootstrapTokensCss = files["static/css/bootstrap-tokens.css"];
@@ -50915,9 +53622,9 @@ figma make deploy --build-dir dist
             const documentable = /* @__PURE__ */ new Map();
             for (const path of Object.keys(project.partials)) {
               const nodeId = project.fileNodeIds[path];
-              const node = (_Y = sceneNodesById.get(nodeId)) != null ? _Y : await figma.getNodeByIdAsync(nodeId).catch(() => null);
+              const node = (_Z = sceneNodesById.get(nodeId)) != null ? _Z : await figma.getNodeByIdAsync(nodeId).catch(() => null);
               if (!node) continue;
-              const owner = node.type === "COMPONENT" && ((_Z = node.parent) == null ? void 0 : _Z.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
+              const owner = node.type === "COMPONENT" && ((__ = node.parent) == null ? void 0 : __.type) === "COMPONENT_SET" ? node.parent : node.type === "COMPONENT" || node.type === "COMPONENT_SET" ? node : null;
               if (owner && !documentable.has(owner.id)) documentable.set(owner.id, owner);
             }
             const collected = await collectComponentDocs(
@@ -50940,7 +53647,7 @@ figma make deploy --build-dir dist
           try {
             const findings = await lintScopeAsync(roots, { maxNestingDepth: exportOptions.lint.maxNestingDepth });
             const counts = {};
-            for (const finding of findings) counts[finding.rule] = ((__ = counts[finding.rule]) != null ? __ : 0) + 1;
+            for (const finding of findings) counts[finding.rule] = ((_$ = counts[finding.rule]) != null ? _$ : 0) + 1;
             lintAudit = { counts, total: findings.length, nodeCount: sceneNodesById.size };
           } catch (error) {
             console.warn("[export] DESIGN.md canvas audit skipped", error);
@@ -50990,7 +53697,7 @@ figma make deploy --build-dir dist
           let exportedBy = "unknown";
           let activeUserCount = 0;
           try {
-            exportedBy = (_aa = (_$ = figma.currentUser) == null ? void 0 : _$.name) != null ? _aa : "unknown";
+            exportedBy = (_ba = (_aa = figma.currentUser) == null ? void 0 : _aa.name) != null ? _ba : "unknown";
             activeUserCount = figma.activeUsers.length;
           } catch (e) {
           }

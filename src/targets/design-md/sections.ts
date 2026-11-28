@@ -14,6 +14,7 @@ import {
   type TokenEntry,
   type TypographyStyle,
 } from './model.ts'
+import type { ThemeGrid } from '../../tokens/engine.ts'
 
 /** Row cap per table. Long systems point at tokens.css/tokens.json for the remainder instead of
  * burning the agent's context — the cut is always stated, never silent. */
@@ -261,12 +262,46 @@ export function typographySection(styles: readonly TypographyStyle[]): string {
 
 /* ------------------------------------------------------------------ themes */
 
-export function themesSection(model: DesignTokenModel, themeAttribute: string): string {
+export function themesSection(model: DesignTokenModel, themeAttribute: string, grid?: ThemeGrid): string {
   const themed = model.entries.filter((entry) => entry.themed).length
   if (model.themes.length < 2) {
     return (
       `Single theme (\`${model.defaultTheme}\`) — every variable is declared on \`:root\`. ` +
       'No theme attribute is required.'
+    )
+  }
+  if (grid) {
+    const list = (values: string[]) => values.map((v) => `\`${v}\``).join(', ')
+    const other = (n: number) => grid.axes[n].values.find((v) => v !== grid.defaults[n]) ?? grid.defaults[n]
+    const inner = grid.axes[grid.axes.length - 1]
+    if (grid.axes.length === 1) {
+      return (
+        `Themes: \`${inner.attribute}\` (${list(inner.values)}) — \`${grid.defaults[0]}\` is the default ` +
+        `and is declared on \`:root\`. ${themed} token(s) change value between themes.\n\n` +
+        'Switch on `<html>`, or on any element inside to theme just that subtree:\n\n' +
+        '```html\n' +
+        `<html ${inner.attribute}="${other(0)}">\n` +
+        '```\n\n' +
+        'A component written with `var(--…)` follows the attribute on its own. Do NOT write theme-specific overrides in ' +
+        'component CSS, and do NOT branch on the theme in JS to pick a color.'
+      )
+    }
+    const outer = grid.axes.slice(0, -1)
+    return (
+      `Themes are ${grid.axes.length} attributes: ${grid.axes.map((axis) => `\`${axis.attribute}\` (${list(axis.values)})`).join(' × ')}. ` +
+      `${grid.defaults.map((d) => `\`${d}\``).join(' × ')} is the default and is declared on \`:root\`. ` +
+      `${themed} token(s) change value between themes.\n\n` +
+      'Set them on `<html>`:\n\n' +
+      '```html\n' +
+      `<html ${grid.axes.map((axis, k) => `${axis.attribute}="${other(k)}"`).join(' ')}>\n` +
+      '```\n\n' +
+      (grid.nested
+        ? `\`${inner.attribute}\` may be set again on any element inside, and ${outer.map((a) => `\`${a.attribute}\``).join(', ')} may sit below a themed ` +
+          `ancestor. Never switch ${outer.map((a) => `\`${a.attribute}\``).join(' or ')} inside itself. `
+        : `Keep every attribute on that one element; never set one again further down. `) +
+      `A component written with \`var(--…)\` follows ` +
+      'every attribute on its own. Do NOT write theme- or product-specific overrides in component CSS, and do NOT ' +
+      'branch on an attribute in JS to pick a color.'
     )
   }
   const others = model.themes.filter((theme) => theme !== model.defaultTheme)

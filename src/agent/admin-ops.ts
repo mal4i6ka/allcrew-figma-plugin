@@ -1,4 +1,5 @@
 import type { OpDef } from './protocol.ts'
+import { planMerge, type MergeSource } from '../tokens/merge-plan.ts'
 import {
   coerceVariableValue,
   describeValue,
@@ -508,7 +509,183 @@ async function describeExtension(collection: ExtendedVariableCollection) {
   }
 }
 
+/* ------------------------------------------------------------ merging */
+
+export { planMerge, type CellOrigin, type MergePlan, type MergeRow, type MergeSource, type MergeSourceVar } from '../tokens/merge-plan.ts'
+
+/* -------------------------------------------------------------------- ops */
+
 export const ADMIN_OPS: readonly OpDef[] = [
+  {
+    name: 'collections.merge',
+    summary: 'Build one collection out of several — product themes as modes of one collection, so every product has the same keys.',
+    agent:
+      'Plans first and refuses whole: a name with two types, a mode mapped twice, or a cell nobody fills (unless allowHoles). Sources are never modified. ' +
+      'Aliases are copied as aliases; one that points inside a source collection is re-aimed at the merged variable of the same name. ' +
+      'The result carries `rebind` — [{ from, to }] from every source variable to its merged one — which is exactly the map variables.rebind takes to move layers over. ' +
+      'Every filled cell is listed: it is a value borrowed from another product, which a designer has not chosen.',
+    mutates: true,
+    params: {
+      into: { type: 'string', required: true, description: 'Name of the collection to build. Created when missing; an existing one is refused unless update is true.' },
+      sources: {
+        type: 'json',
+        required: true,
+        description:
+          'Array of { collection, modes }: `collection` a local collection name or id, `modes` maps each of its mode names to a target mode name, ' +
+          'e.g. { "collection": "Business", "modes": { "Light": "Business Light", "Dark": "Business Dark" } }. Unmapped source modes are left out.',
+      },
+      fill: {
+        type: 'json',
+        description: 'Object { targetMode: targetMode }: where a key one product lacks takes its value from, e.g. { "Business Light": "One Light" }. Only real product values are borrowed, never other fills.',
+      },
+      seed: {
+        type: 'json',
+        description: 'Array of { mode, from }: extra target modes started as a copy of another target mode — a product that has no tokens yet.',
+      },
+      allowHoles: { type: 'boolean', default: false, description: 'Write even when some cells have no value; Figma then shows the default mode\'s value there.' },
+      update: { type: 'boolean', default: false, description: 'Write into an existing `into` collection: missing modes are added, same-named variables are overwritten.' },
+      dryRun: { type: 'boolean', default: false, description: 'Plan and report — modes, rows, filled cells, holes, conflicts — and write nothing.' },
+    },
+    async run(params) {
+      const rawSources = params.sources
+      if (!Array.isArray(rawSources) || rawSources.length === 0) throw new Error('"sources" must be a non-empty array')
+      const dryRun = params.dryRun === true
+      const all = await figma.variables.getLocalVariablesAsync()
+
+      const collections: VariableCollection[] = []
+      const sources: MergeSource[] = []
+      for (const [index, raw] of rawSources.entries()) {
+        if (!raw || typeof raw !== 'object') throw new Error(`sources[${index}] must be { collection, modes }`)
+        const entry = raw as Record<string, unknown>
+        const collection = await resolveCollection(entry.collection)
+        const map = entry.modes
+        if (!map || typeof map !== 'object' || Object.keys(map).length === 0) throw new Error(`sources[${index}].modes must map ${collection.name}'s modes to target modes`)
+        const modes: Record<string, string> = {}
+        const idToName = new Map<string, string>()
+        for (const [ref, target] of Object.entries(map as Record<string, unknown>)) {
+          const mode = resolveMode(collection.modes, ref, `sources[${index}].modes`)
+          if (typeof target !== 'string' || target.trim() === '') throw new Error(`sources[${index}].modes["${ref}"] must be a target mode name`)
+          modes[mode.name] = target.trim()
+          idToName.set(mode.modeId, mode.name)
+        }
+        collections.push(collection)
+        sources.push({
+          name: collection.name,
+          modes,
+          variables: all
+            .filter((variable) => variable.variableCollectionId === collection.id)
+            .map((variable) => ({
+              id: variable.id,
+              name: variable.name,
+              type: variable.resolvedType,
+              values: Object.fromEntries(Object.entries(variable.valuesByMode).filter(([id]) => idToName.has(id)).map(([id, value]) => [idToName.get(id)!, value])),
+              scopes: variable.scopes,
+              description: variable.description,
+              hiddenFromPublishing: variable.hiddenFromPublishing,
+              codeSyntax: variable.codeSyntax as Record<string, string>,
+            })),
+        })
+      }
+
+      const plan = planMerge(sources, {
+        fill: params.fill === undefined ? undefined : (params.fill as Record<string, string>),
+        seed: params.seed === undefined ? undefined : (params.seed as Array<{ mode: string; from: string }>),
+      })
+      const into = String(params.into).trim()
+      let target: VariableCollection | null = null
+      try {
+        target = await resolveCollection(into)
+      } catch {
+        target = null
+      }
+      if (target && collections.some((c) => c.id === target!.id)) throw new Error(`"${into}" is one of the sources — merge into a new collection`)
+      if (target && params.update !== true) throw new Error(`a collection "${into}" already exists — pass update: true to write into it`)
+
+      const report = {
+        into,
+        exists: Boolean(target),
+        modes: plan.modes,
+        variables: plan.rows.length,
+        cells: plan.rows.reduce((n, row) => n + Object.keys(row.cells).length, 0),
+        fromSources: plan.rows.reduce((n, row) => n + Object.values(row.cells).filter((c) => c.origin === 'source').length, 0),
+        filled: plan.filled,
+        seeded: plan.seeded,
+        holes: plan.holes,
+        conflicts: plan.conflicts,
+        scopeDiffs: plan.scopeDiffs,
+      }
+      if (plan.conflicts.length && !dryRun) throw new Error(`${plan.conflicts.length} name(s) carry different types across sources, e.g. "${plan.conflicts[0].name}" — rename one first; nothing was written`)
+      if (plan.holes.length && params.allowHoles !== true && !dryRun) {
+        throw new Error(`${plan.holes.length} cell(s) would have no value, e.g. "${plan.holes[0].name}" in ${plan.holes[0].mode} — add a fill, or allowHoles; nothing was written`)
+      }
+      if (dryRun) return { dryRun: true, ...report }
+
+      figma.commitUndo()
+      if (!target) target = figma.variables.createVariableCollection(into)
+      // A fresh collection's lone default mode becomes the first target mode instead of a "Mode 1" fossil.
+      const fresh = target.modes.length === 1 && !report.exists
+      const modeIds = new Map<string, string>()
+      for (const [i, name] of plan.modes.entries()) {
+        const have = target.modes.find((m) => m.name.toLowerCase() === name.toLowerCase())
+        if (have) modeIds.set(name, have.modeId)
+        else if (fresh && i === 0) {
+          target.renameMode(target.modes[0].modeId, name)
+          modeIds.set(name, target.modes[0].modeId)
+        } else modeIds.set(name, target.addMode(name))
+      }
+
+      const existing = new Map(all.filter((v) => v.variableCollectionId === target!.id).map((v) => [v.name, v]))
+      const created = new Map<string, Variable>()
+      for (const row of plan.rows) {
+        const variable = existing.get(row.name) ?? figma.variables.createVariable(row.name, target, row.type as VariableResolvedDataType)
+        created.set(row.name, variable)
+      }
+      // Source ids → merged variable, so an alias inside a source follows into the merged collection.
+      const remap = new Map<string, string>()
+      for (const row of plan.rows) for (const id of row.sourceIds) remap.set(id, created.get(row.name)!.id)
+      const nameOfId = new Map(all.map((v) => [v.id, v.name]))
+
+      let written = 0
+      const mismatches: string[] = []
+      for (const row of plan.rows) {
+        const variable = created.get(row.name)!
+        for (const [mode, cell] of Object.entries(row.cells)) {
+          let value = cell.value as VariableValue
+          if (isAlias(value) && remap.has(value.id)) value = { type: 'VARIABLE_ALIAS', id: remap.get(value.id)! }
+          variable.setValueForMode(modeIds.get(mode)!, value)
+          written += 1
+        }
+        if (row.meta.scopes) variable.scopes = [...row.meta.scopes] as VariableScope[]
+        if (row.meta.description) variable.description = row.meta.description
+        if (row.meta.hiddenFromPublishing !== undefined) variable.hiddenFromPublishing = row.meta.hiddenFromPublishing
+        for (const [platform, syntax] of Object.entries(row.meta.codeSyntax ?? {})) {
+          if (syntax) variable.setVariableCodeSyntax(platform as CodeSyntaxPlatform, syntax)
+        }
+      }
+
+      // Read back off a fresh lookup: a write Figma silently declined is the outcome to catch.
+      for (const row of plan.rows) {
+        const fresh = await figma.variables.getVariableByIdAsync(created.get(row.name)!.id)
+        for (const [mode, cell] of Object.entries(row.cells)) {
+          const got = fresh?.valuesByMode[modeIds.get(mode)!]
+          let want = cell.value as VariableValue
+          if (isAlias(want) && remap.has(want.id)) want = { type: 'VARIABLE_ALIAS', id: remap.get(want.id)! }
+          if (JSON.stringify(got) !== JSON.stringify(want)) mismatches.push(`${row.name} @ ${mode}`)
+        }
+      }
+
+      return {
+        ok: mismatches.length === 0,
+        ...report,
+        collection: { id: target.id, name: target.name, modes: target.modes.map((m) => m.name) },
+        created: plan.rows.filter((row) => !existing.has(row.name)).length,
+        updated: plan.rows.filter((row) => existing.has(row.name)).length,
+        written,
+        mismatches,
+        rebind: plan.rows.flatMap((row) => row.sourceIds.map((from) => ({ from, fromName: nameOfId.get(from), to: created.get(row.name)!.id }))),
+      }
+    },
+  },
   {
     name: 'collections.update',
     summary: 'Rename, hide, edit modes or remove local variable collections as one validated plan.',

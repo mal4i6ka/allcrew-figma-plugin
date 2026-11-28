@@ -411,3 +411,95 @@ test('variables.audit follows library aliases, reports all kinds and skips singl
   )
   assert.equal(isLibraryId(remoteId), true)
 })
+
+/* ------------------------------------------------------------ merging */
+
+const aliasTo = (id: string) => ({ type: 'VARIABLE_ALIAS', id })
+const setFigma = (mock: Record<string, unknown>) => {
+  ;(globalThis as { figma?: unknown }).figma = mock
+}
+
+function fakeVariablesFile() {
+  const vars = new Map<string, any>()
+  const cols: any[] = []
+  let n = 0
+  const collection = (id: string, name: string, modes: Array<[string, string]>) => {
+    const c: any = {
+      id, name, remote: false, defaultModeId: modes[0][0], modes: modes.map(([modeId, name]) => ({ modeId, name })),
+      renameMode(modeId: string, to: string) { this.modes.find((m: any) => m.modeId === modeId).name = to },
+      addMode(to: string) { const modeId = `${id}:m${this.modes.length}`; this.modes.push({ modeId, name: to }); return modeId },
+    }
+    cols.push(c)
+    return c
+  }
+  const variable = (id: string, name: string, col: any, type: string, valuesByMode: Record<string, unknown>) => {
+    const v: any = {
+      id, name, variableCollectionId: col.id, resolvedType: type, valuesByMode: { ...valuesByMode }, scopes: ['ALL_SCOPES'], description: '', hiddenFromPublishing: false, codeSyntax: {},
+      setValueForMode(modeId: string, value: unknown) { this.valuesByMode[modeId] = value },
+      setVariableCodeSyntax(platform: string, value: string) { this.codeSyntax[platform] = value },
+    }
+    vars.set(id, v)
+    return v
+  }
+  const o = collection('C:one', 'One', [['o:0', 'Light'], ['o:1', 'Dark']])
+  const b = collection('C:biz', 'Business', [['b:0', 'Light'], ['b:1', 'Dark']])
+  variable('V:o1', 'background/base', o, 'COLOR', { 'o:0': aliasTo('P:white'), 'o:1': aliasTo('P:black') })
+  variable('V:o2', 'background/raised', o, 'COLOR', { 'o:0': aliasTo('V:o1'), 'o:1': aliasTo('V:o1') }) // points inside One
+  variable('V:b1', 'background/base', b, 'COLOR', { 'b:0': aliasTo('P:white'), 'b:1': aliasTo('P:ink') })
+  setFigma({
+    commitUndo() {},
+    variables: {
+      async getLocalVariableCollectionsAsync() { return cols },
+      async getVariableCollectionByIdAsync(id: string) { return cols.find((c) => c.id === id) ?? null },
+      async getLocalVariablesAsync() { return [...vars.values()] },
+      async getVariableByIdAsync(id: string) { return vars.get(id) ?? null },
+      createVariableCollection(name: string) { return collection(`C:new${++n}`, name, [[`new${n}:0`, 'Mode 1']]) },
+      createVariable(name: string, col: any, type: string) { return variable(`V:new${++n}`, name, col, type, {}) },
+    },
+  })
+  return { vars, cols }
+}
+
+const MERGE = {
+  into: 'Product',
+  sources: [
+    { collection: 'One', modes: { Light: 'One Light', Dark: 'One Dark' } },
+    { collection: 'Business', modes: { Light: 'Business Light', Dark: 'Business Dark' } },
+  ],
+  fill: { 'Business Light': 'One Light', 'Business Dark': 'One Dark' },
+  seed: [{ mode: 'Platform Light', from: 'Business Light' }],
+}
+
+test('collections.merge writes one collection, re-aims inner aliases, leaves the sources alone and hands back the rebind map', async () => {
+  const { vars, cols } = fakeVariablesFile()
+  const dry = (await op('collections.merge').run({ ...MERGE, dryRun: true })) as any
+  assert.equal(dry.dryRun, true)
+  assert.equal(cols.length, 2, 'a dry run creates nothing')
+  assert.deepEqual(dry.filled.map((f: any) => `${f.name}@${f.mode}`), ['background/raised@Business Light', 'background/raised@Business Dark'])
+
+  const done = (await op('collections.merge').run(MERGE)) as any
+  assert.equal(done.ok, true, JSON.stringify(done.mismatches))
+  const product = cols.find((c) => c.name === 'Product')
+  assert.deepEqual(product.modes.map((m: any) => m.name), ['One Light', 'One Dark', 'Business Light', 'Business Dark', 'Platform Light'], 'no "Mode 1" fossil')
+  const merged = [...vars.values()].filter((v) => v.variableCollectionId === product.id)
+  assert.deepEqual(merged.map((v) => v.name).sort(), ['background/base', 'background/raised'])
+  const base = merged.find((v) => v.name === 'background/base')
+  const raised = merged.find((v) => v.name === 'background/raised')
+  const modeId = (name: string) => product.modes.find((m: any) => m.name === name).modeId
+  assert.deepEqual(base.valuesByMode[modeId('Business Dark')], aliasTo('P:ink'))
+  assert.deepEqual(raised.valuesByMode[modeId('One Dark')], aliasTo(base.id), 'an alias inside One now points at the merged variable')
+  assert.deepEqual(raised.valuesByMode[modeId('Platform Light')], aliasTo(base.id))
+  assert.deepEqual(vars.get('V:o2').valuesByMode, { 'o:0': aliasTo('V:o1'), 'o:1': aliasTo('V:o1') }, 'the source is untouched')
+  assert.deepEqual(done.rebind.find((r: any) => r.from === 'V:b1'), { from: 'V:b1', fromName: 'background/base', to: base.id })
+
+  await assert.rejects(op('collections.merge').run(MERGE), /already exists — pass update: true/)
+  const again = (await op('collections.merge').run({ ...MERGE, update: true })) as any
+  assert.equal(again.created, 0)
+  assert.equal(again.updated, 2)
+})
+
+test('collections.merge refuses holes unless told, and writes nothing when it does', async () => {
+  const { cols } = fakeVariablesFile()
+  await assert.rejects(op('collections.merge').run({ ...MERGE, fill: undefined }), /3 cell\(s\) would have no value/)
+  assert.equal(cols.length, 2)
+})

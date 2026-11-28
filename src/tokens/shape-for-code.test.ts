@@ -166,6 +166,7 @@ test('collection roles read hidden and breakpoint collections, in any spelling',
     hidden: ['Primitives'],
     breakpoints: ['Viewports'],
     products: ['One'],
+    themes: [],
   })
 })
 
@@ -207,7 +208,7 @@ test('a primitive that aliases a library stays a primitive when nothing is hidde
   assert.doesNotMatch(css, /colors-b-800/)
 })
 
-/** Two parallel products over one palette, the shape of DS 3.0: One and Business define the same
+/** Two parallel products over one palette, the shape of a two-product file: One and Business define the same
  * names with their own values, each in Light and Dark; Business has not caught up on everything. */
 function productsFile(): TokenGraph {
   const lightDark = (id: string) => ({
@@ -271,4 +272,160 @@ test('per-theme modules are named after their product', () => {
   for (const name of ['one-light.module.css', 'one-dark.module.css', 'business-light.module.css', 'business-dark.module.css']) {
     assert.ok(files.includes(name), `${name} in ${files.join(', ')}`)
   }
+})
+
+/* ------------------------------------------------------------ one theme collection */
+
+/** the two-product file after the merge (16.10): the old One and Business collections still exist beside
+ * `Product`, whose modes are product × theme, plus a one-variable `Shared` with Light/Dark. */
+function mergedProductsFile(): TokenGraph {
+  const base = productsFile()
+  const modes = ['One Light', 'One Dark', 'Business Light', 'Business Dark', 'Platform Light']
+  const product = { id: 'c-prod', name: 'Product', defaultModeId: 'pm0', modes: modes.map((name, i) => ({ modeId: `pm${i}`, name })) }
+  const shared = { id: 'c-shared', name: 'Shared', defaultModeId: 'sl', modes: [{ modeId: 'sl', name: 'Light' }, { modeId: 'sd', name: 'Dark' }] }
+  const row = (id: string, name: string, values: string[]) => ({
+    id, name, collectionId: 'c-prod', resolvedType: 'COLOR', valuesByMode: Object.fromEntries(values.map((v, i) => [`pm${i}`, alias(v)])),
+  })
+  return {
+    collections: [...base.collections, product, shared],
+    variables: [
+      ...base.variables,
+      row('p-bg', 'background/base', ['pal-white', 'pal-black', 'pal-white', 'pal-black', 'pal-white']),
+      row('p-act', 'action/primary', ['pal-orange', 'pal-orange', 'pal-blue', 'pal-white', 'pal-blue']),
+      { id: 's-focus', name: 'focus/ring', collectionId: 'c-shared', resolvedType: 'COLOR', valuesByMode: { sl: alias('pal-blue'), sd: alias('pal-white') } },
+    ],
+  } as TokenGraph
+}
+
+const productThemeSettings = { ...sergeysSettings, slugThemes: true, collectionRoles: 'Product: themes, One: hidden, Business: hidden, Colors: hidden' }
+
+test('a themes collection: one block per product × theme, the same plain names in each, nothing else as a theme', () => {
+  const pkg = buildPackage(mergedProductsFile(), productThemeSettings)
+  const css = pkg.files['tokens.css']
+  const selectors = [...css.matchAll(/\[data-theme-name="([^"]+)"\]/g)].map((m) => m[1])
+  assert.deepEqual(selectors, ['one-light', 'one-dark', 'business-light', 'business-dark', 'platform-light'])
+  // The old collections are hidden and claim names last: Product keeps the plain names.
+  assert.doesNotMatch(css, /-2:|-3:/)
+  assert.match(css, /\[data-theme-name="business-light"\] \{[\s\S]*?--action-primary: #000537;/)
+  assert.match(css, /:root,\n\[data-theme-name="one-light"\] \{[\s\S]*--action-primary: #fb5b0a;/)
+  // Primitives stay out, aliases are flattened, and Shared's own Light/Dark is not a theme.
+  assert.doesNotMatch(css, /--neutral-0|--orange-500|var\(--/)
+  assert.doesNotMatch(css, /data-theme-name="(Light|Dark)"/)
+  assert.match(css, /--focus-ring: #000537;/)
+  assert.ok(pkg.summary.notes?.some((note) => /Shared read at its default mode \(Light\)/.test(note)))
+  for (const name of ['one-light.module.css', 'business-dark.module.css', 'platform-light.module.css']) {
+    assert.ok(name in pkg.files, `${name} in ${Object.keys(pkg.files).join(', ')}`)
+  }
+})
+
+test('without slugThemes the selector keeps the mode name, so existing consumers do not break', () => {
+  const css = buildPackage(mergedProductsFile(), { ...productThemeSettings, slugThemes: false }).files['tokens.css']
+  assert.match(css, /\[data-theme-name="Business Dark"\]/)
+})
+
+test('a hidden collection no longer pushes a visible one to -2', () => {
+  // One and Business sort before Product alphabetically; hidden, they used to take the plain names
+  // and leave Product with --background-base-3 even though they were never emitted.
+  const css = buildPackage(mergedProductsFile(), { ...sergeysSettings, collectionRoles: 'Product: themes, One: hidden, Business: hidden, Colors: hidden' }).files['tokens.css']
+  assert.match(css, /--background-base: /)
+  assert.doesNotMatch(css, /--background-base-\d/)
+})
+
+test('collection roles read themes', () => {
+  assert.deepEqual(parseCollectionModes('Product: themes; Brand = theme').themes, ['Product', 'Brand'])
+})
+
+test('an OPACITY-scoped variable reaches CSS as a fraction, a name-only "opacity" is left as stored', () => {
+  const graph = consumerFile({
+    collections: [{ id: 'c-o', name: 'Effects', defaultModeId: 'mo', modes: [{ modeId: 'mo', name: 'Mode 1' }] }],
+    variables: [
+      { id: 'o1', name: 'button/opacity/disabled', collectionId: 'c-o', resolvedType: 'FLOAT', scopes: ['OPACITY'], valuesByMode: { mo: 30 } },
+      { id: 'o2', name: 'overlay/opacity', collectionId: 'c-o', resolvedType: 'FLOAT', valuesByMode: { mo: 0.5 } },
+    ],
+  })
+  const css = buildPackage(graph, sergeysSettings).files['tokens.css']
+  assert.match(css, /--button-opacity-disabled: 0\.3;/)
+  assert.match(css, /--overlay-opacity: 0\.5;/)
+})
+
+/** A developer's export over a primitive layer it hides: `button/fade` is unscoped (Figma's
+ * ALL_SCOPES), so the only proof that its 30 is 30% is the OPACITY scope of `opacity/30`, which
+ * the hidden substitution used to drop with the primitive. */
+function hiddenOpacityFile(): TokenGraph {
+  const themed = (id: string, name: string, target: string, scopes: string[]) => ({
+    id, name, collectionId: 'c-theme', resolvedType: 'FLOAT', scopes,
+    valuesByMode: { 'm-l': alias(target), 'm-d': alias(target) },
+  })
+  return {
+    collections: [
+      { id: 'c-prim', name: 'Primitives', defaultModeId: 'm-v', modes: [{ modeId: 'm-v', name: 'Value' }] },
+      {
+        id: 'c-theme',
+        name: 'Theme',
+        defaultModeId: 'm-l',
+        modes: [
+          { modeId: 'm-l', name: 'Light' },
+          { modeId: 'm-d', name: 'Dark' },
+        ],
+      },
+    ],
+    variables: [
+      { id: 'o30', name: 'opacity/30', collectionId: 'c-prim', resolvedType: 'FLOAT', scopes: ['OPACITY'], valuesByMode: { 'm-v': 30 } },
+      themed('fade', 'button/fade', 'o30', ['ALL_SCOPES']),
+      themed('disabled', 'button/opacity/disabled', 'o30', ['OPACITY']),
+      themed('card-fade', 'card/fade', 'fade', ['ALL_SCOPES']),
+    ],
+  } as TokenGraph
+}
+
+test('a number substituted out of a hidden layer keeps the unit its alias chain proves', () => {
+  const settings = [
+    { inlinePrimitives: true, flattenAliases: true },
+    { inlinePrimitives: true, flattenAliases: false },
+    { inlinePrimitives: false, flattenAliases: false },
+  ]
+  for (const options of settings) {
+    const css = buildPackage(hiddenOpacityFile(), { ...options, collectionRoles: 'Primitives: hidden' }).files['tokens.css']
+    const label = JSON.stringify(options)
+    // Unscoped consumer: only the hidden primitive's OPACITY scope says 30 is 30%.
+    assert.match(css, /--button-fade: 0\.3;/, label)
+    // Scoped consumer: its own scope was always enough, and still is.
+    assert.match(css, /--button-opacity-disabled: 0\.3;/, label)
+    assert.doesNotMatch(css, /30px|opacity-30/, label)
+  }
+  // Through a visible token as well: `card/fade` → `button/fade` → hidden `opacity/30`.
+  const flat = buildPackage(hiddenOpacityFile(), { inlinePrimitives: true, flattenAliases: true, collectionRoles: 'Primitives: hidden' })
+  assert.match(flat.files['tokens.css'], /--card-fade: 0\.3;/)
+  const kept = buildPackage(hiddenOpacityFile(), { inlinePrimitives: false, flattenAliases: false, collectionRoles: 'Primitives: hidden' })
+  assert.match(kept.files['tokens.css'], /--card-fade: var\(--button-fade\);/)
+})
+
+test('the evidence travels beside the token, never as a scope it does not have', () => {
+  const json = JSON.parse(
+    buildPackage(hiddenOpacityFile(), { inlinePrimitives: true, flattenAliases: true, collectionRoles: 'Primitives: hidden' }).files['tokens.json']
+  )
+  const fade = json.button.fade.$extensions.figma
+  // The designer left `button/fade` unscoped; tokens.json must not say otherwise.
+  assert.equal(fade.scopes, undefined)
+  assert.deepEqual(fade.unitWitness, { path: ['opacity', '30'], $type: 'number', scopes: ['OPACITY'] })
+  // A token whose own scope proves its kind is its own witness: nothing to record.
+  assert.equal(json.button.opacity.disabled.$extensions.figma.unitWitness, undefined)
+  assert.deepEqual(json.button.opacity.disabled.$extensions.figma.scopes, ['OPACITY'])
+})
+
+test('two variables that spell one custom property ship once — the value CSS can use, and a note', () => {
+  // the two-product file's Typography: a weight scale, and the font style names kept for text styles.
+  const graph = {
+    collections: [{ id: 't', name: 'Typography', defaultModeId: 't:1', modes: [{ modeId: 't:1', name: 'Mode 1' }] }],
+    variables: [
+      { id: 'w', name: 'font-weight/regular', collectionId: 't', resolvedType: 'FLOAT', scopes: ['FONT_WEIGHT'], valuesByMode: { 't:1': 400 } },
+      { id: 's', name: 'font/weight/regular', collectionId: 't', resolvedType: 'STRING', scopes: ['FONT_STYLE'], valuesByMode: { 't:1': 'regular' } },
+    ],
+  } as unknown as TokenGraph
+  // A one-mode file is all primitives, which inlining would leave out entirely.
+  const pkg = buildPackage(graph, { inlinePrimitives: false })
+  assert.deepEqual(pkg.files['tokens.css'].match(/--font-weight-regular: [^;]+;/g), ['--font-weight-regular: 400;'])
+  assert.ok(pkg.summary.notes?.some((note) => /--font-weight-regular is 2 variables in Figma — kept font-weight\/regular \(400\), left out font\/weight\/regular \("regular"\)/.test(note)), String(pkg.summary.notes))
+  // tokens.json still has both: it is the file's own record, for re-import.
+  assert.match(pkg.files['tokens.json'], /"regular": "regular"|"\$value": "regular"/)
 })

@@ -843,16 +843,123 @@
   .theme-merge-actions { display: flex; align-items: center; gap: 9px; margin-top: 7px; }
   .theme-merge-actions .btn { min-height: 28px; padding: 6px 10px; font-size: 10.5px; }
   .theme-merge-empty { color: var(--faint); font-size: 10.5px; margin: 2px 0 0; }
-  /* Collection roles — one row per collection of the file, a role picked from a list. */
-  .role-editor { padding: 10px 2px 6px; border-top: .5px solid var(--border); }
-  .role-list { display: flex; flex-direction: column; gap: 5px; margin-top: 9px; }
-  .role-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 1.1fr); gap: 8px; align-items: center; }
-  .role-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--brand); font-size: 11px; color: var(--text); }
-  .role-name small { color: var(--faint); margin-left: 6px; font-size: 10px; }
-  .role-row.gone .role-name { color: var(--faint); text-decoration: line-through; }
-  .role-row select { width: 100%; min-width: 0; padding: 6px 7px; border: .5px solid var(--border); border-radius: var(--r-sm); background: var(--surface); color: var(--text); font-family: var(--brand); font-size: 11px; }
-  .role-row select:focus { outline: none; border-color: var(--accent); }
-  .role-row select.set { border-color: var(--accent); }
+  /* Figma → code: the token mapping (src/tokens/mapping.ts is what it edits). Laid out like Figma's
+     own variables window — collections on the left, a collection's columns on the right — with
+     what each becomes in code written beside it. */
+  .mp { padding: 10px 2px 6px; border-top: 1px solid rgba(255,255,255,0.045); }
+  .mp input, .mp select { min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 4px 7px; font-family: var(--mono); font-size: 11px; transition: border-color .16s, background .16s; }
+  .mp input:focus, .mp select:focus { outline: none; border-color: var(--accent); background: var(--surface); }
+  .mp-status { margin: 8px 0 0; padding: 7px 9px; border-radius: var(--r-sm); font-size: 11px; display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+  .mp-status.ok { background: rgba(98,190,120,0.10); color: var(--ok); }
+  .mp-status.info { background: var(--accent-tint); color: var(--text); }
+  .mp-status.warn { background: rgba(226,185,61,0.12); color: var(--warn); }
+  .mp-status .btn.ghost { width: auto; flex: none; padding: 4px 10px; font-size: 11px; }
+  .mp-status-actions { display: flex; gap: 6px; flex: none; }
+  .mp-summary { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 8px; }
+  .mp-attr { font-family: var(--mono); font-size: 10.5px; padding: 2px 7px; border-radius: var(--r-sm); background: var(--accent-tint); color: var(--text); }
+  .mp-meta { color: var(--faint); font-size: 10.5px; }
+  .mp-panes { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 10px; }
+  @media (min-width: 760px) { .mp-panes { grid-template-columns: var(--mp-side, 230px) 8px minmax(0, 1fr); gap: 0; } }
+  .mp-split { display: none; }
+  @media (min-width: 760px) { .mp-split { display: block; cursor: col-resize; align-self: stretch; margin: 0 1px; border-radius: 3px; } }
+  .mp-split:hover, .mp-split.dragging, .mp-split:focus-visible { background: var(--accent-tint); outline: none; box-shadow: inset 2px 0 0 -0.5px var(--accent); }
+  .mp-side { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 4px 0; align-self: start; min-width: 0; }
+  .mp-coll { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 6px 10px; cursor: pointer; color: var(--text); font: inherit; }
+  .mp-coll:hover { background: var(--bg-2); }
+  .mp-coll.on { background: var(--bg-2); box-shadow: inset 2px 0 0 var(--accent); }
+  .mp-coll b { font-weight: 500; font-size: 12px; }
+  .mp-coll small { color: var(--faint); font-size: 10.5px; margin-left: 4px; }
+  .mp-coll i { display: block; font-style: normal; font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+  .mp-coll.off i { color: var(--faint); }
+  .mp-x { appearance: none; flex: none; width: 20px; height: 20px; padding: 0; background: transparent; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--faint); cursor: pointer; font-size: 11px; line-height: 1; }
+  .mp-x:hover { color: var(--accent-hi); border-color: rgba(251,91,10,0.4); }
+  .mp-attrs { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .mp-attrs-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .mp-attrs-head b { font-weight: 500; font-size: 12px; }
+  .mp-attr-card { border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+  .mp-attr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .mp-attr-row.mp-sub { padding-left: 2px; }
+  .mp-attr-name { width: 130px; font-weight: 500; }
+  .mp-value { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding-left: 10px; }
+  .mp-value > input[type=text] { width: 96px; }
+  .mp-value .mp-marker { width: 80px; }
+  .mp-chip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 3px 1px 7px; border: 1px solid var(--border-2); border-radius: 999px; font-family: var(--mono); font-size: 10.5px; color: var(--text); }
+  .mp-chip-x { appearance: none; border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 11px; padding: 0 2px; }
+  .mp-chip-x:hover { color: var(--accent-hi); }
+  .mp-add { appearance: none; align-self: flex-start; background: transparent; border: 1px dashed var(--border-2); border-radius: var(--r-sm); color: var(--muted); cursor: pointer; font: inherit; font-size: 10.5px; padding: 3px 9px; margin-left: 10px; }
+  .mp-attrs > .mp-add { margin-left: 0; }
+  .mp-attr-card > select { align-self: flex-start; margin-left: 10px; border-style: dashed; color: var(--muted); }
+  .mp-add:hover { color: var(--text); border-color: var(--accent); }
+  .mp-bind { display: block; margin-top: 2px; font-family: var(--mono); font-size: 9.5px; color: var(--accent-hi); white-space: nowrap; }
+  .mp-main { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; }
+  .mp-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .mp-head > b { font-weight: 500; font-size: 13px; margin-right: 2px; }
+  .mp-head label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; }
+  .mp-head input[type=text] { width: 90px; }
+  .mp-head input[type=checkbox] { margin: 0; }
+  .mp-hint { color: var(--faint); font-size: 10.5px; margin: 0 0 6px; }
+  .mp-scroll { overflow-x: auto; }
+  .mp-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .mp-table th, .mp-table td { text-align: left; vertical-align: middle; padding: 5px 6px 5px 0; border-top: 1px solid rgba(255,255,255,0.045); font-weight: 400; white-space: nowrap; }
+  .mp-table th { color: var(--muted); vertical-align: bottom; }
+  .mp-table th input { width: 70px; display: block; margin-top: 3px; }
+  .mp-table td { white-space: normal; overflow-wrap: anywhere; }
+  .mp-table td:first-child { min-width: 120px; }
+  .mp-code { display: block; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .mp-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--border-2); vertical-align: -1px; margin-right: 5px; }
+  .mp-tag { display: inline-block; margin-left: 4px; padding: 0 5px; border-radius: var(--r-sm); font-size: 9.5px; }
+  .mp-tag.override { background: rgba(226,185,61,0.14); color: var(--warn); }
+  .mp-tag.same { background: var(--bg-2); color: var(--faint); }
+  .mp-row-base td { color: var(--faint); }
+  .mp-more { color: var(--faint); font-size: 10.5px; margin: 6px 0 0; }
+  .mp-problem { color: var(--err); font-size: 10.5px; margin: 6px 0 0; }
+  .mp-note { color: var(--faint); font-size: 10.5px; margin: 6px 0 0; }
+  .mp-block { margin-top: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .mp-block-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+  .mp-block-head b, .mp-side-head b { font-weight: 600; font-size: 12px; }
+  .mp-group { border-top: 1px solid var(--border); padding-top: 7px; display: flex; flex-direction: column; gap: 6px; }
+  .mp-block-head + .mp-group { border-top: 0; padding-top: 0; }
+  .mp-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+  .mp-opt { appearance: none; display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border: 1px solid var(--border-2); border-radius: 999px; background: transparent; color: var(--text); font-family: var(--mono); font-size: 11px; cursor: pointer; }
+  .mp-opt:hover { border-color: var(--accent); }
+  .mp-opt.on { background: var(--accent-tint); border-color: var(--accent); }
+  .mp-opt.same { border-style: dashed; color: var(--muted); }
+  .mp-star { color: var(--accent-hi); font-size: 10px; }
+  .mp .mp-add-select { width: auto; max-width: 120px; border-style: dashed; color: var(--muted); font-size: 10.5px; padding: 2px 6px; }
+  .mp-picks { margin: 0; font-family: var(--mono); font-size: 10px; color: var(--faint); overflow-wrap: anywhere; }
+  .mp-editor { border: 1px solid var(--accent); border-radius: var(--r-sm); padding: 8px; display: flex; flex-direction: column; gap: 6px; background: var(--bg-2); }
+  .mp-editor input[type=text] { width: 96px; }
+  .mp-sel { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .mp-checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 10px; }
+  .mp-check { display: block; font-size: 11px; color: var(--text); cursor: pointer; padding: 2px 0 2px 18px; text-indent: -18px; min-width: 0; }
+  .mp-check input { margin: 0 4px 0 0; vertical-align: -2px; text-indent: 0; }
+  .mp-more-sets { appearance: none; background: none; border: 0; padding: 2px 0; color: var(--muted); font: inherit; font-size: 10.5px; cursor: pointer; text-align: left; }
+  .mp-more-sets:hover { color: var(--text); }
+  .mp-check small { color: var(--faint); font-size: 10px; }
+  .mp-check.taken { color: var(--muted); }
+  .mp-html { margin: 0; font-size: 10.5px; overflow-wrap: anywhere; }
+  .mp-html code { font-family: var(--mono); font-size: 10.5px; color: var(--text); background: var(--bg-2); padding: 1px 5px; border-radius: var(--r-sm); }
+  .mp-files { display: flex; flex-direction: column; }
+  .mp-file { appearance: none; display: grid; grid-template-columns: minmax(0, auto) 1fr auto; align-items: baseline; gap: 8px; width: 100%; text-align: left; background: none; border: 0; border-top: 1px solid rgba(255,255,255,0.045); padding: 5px 4px; color: var(--text); font: inherit; cursor: pointer; }
+  .mp-file:first-child { border-top: 0; }
+  .mp-file:hover, .mp-file.on { background: var(--bg-2); }
+  .mp-file.part { padding-left: 16px; }
+  .mp-file code { font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .mp-file .mp-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mp-file small { color: var(--faint); font-size: 10px; white-space: nowrap; }
+  .mp-pre { margin: 2px 0 6px; max-height: 260px; overflow: auto; background: var(--bg-2); border-radius: var(--r-sm); padding: 8px; font-family: var(--mono); font-size: 10px; line-height: 1.45; color: var(--text); white-space: pre; }
+  .mp-side-head { display: flex; align-items: baseline; gap: 6px; padding: 4px 10px 6px; }
+  .mp-set { display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 6px 10px; border-top: 1px solid rgba(255,255,255,0.045); }
+  .mp-set.on { background: var(--bg-2); box-shadow: inset 2px 0 0 var(--accent); }
+  .mp-set.off .mp-set-name b { color: var(--muted); }
+  .mp-set-name { appearance: none; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--text); font: inherit; }
+  .mp-set-name b { font-weight: 500; font-size: 12px; }
+  .mp-set-name small { color: var(--faint); font-size: 10.5px; margin-left: 4px; }
+  .mp-set-name i { display: block; font-style: normal; font-size: 10px; color: var(--faint); }
+  .mp-set-theme { font-size: 10.5px; color: var(--accent-hi); }
+  .mp .mp-status-select { width: auto; max-width: 130px; align-self: flex-start; font-size: 10.5px; padding: 1px 4px; }
+  .mp-status-select.role-palette { color: var(--muted); }
+  .mp-status-select.role-skip { color: var(--faint); }
   .preset-row { display: flex; gap: 8px; align-items: stretch; padding: 11px 2px 6px; }
   #set-preset { flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border); color: var(--text); border-radius: var(--r-sm); padding: 8px 10px; font-family: var(--mono); font-size: 11px; }
   #set-preset:focus { outline: none; border-color: var(--accent); }
@@ -2501,36 +2608,17 @@
           <span class="set-text"><b>Flatten all aliases</b><i>Also resolve semantic <code>var(--&hellip;)</code> refs &middot; no references left</i></span>
           <span class="switch"><input type="checkbox" id="set-flatten" /><span class="track"></span></span>
         </label>
-        <div class="set-row">
-          <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 8H20M4 16H20M8 3V21M16 3V21" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
-          <span class="set-text"><b>Theme attribute</b><i>Empty = auto &middot; selector that switches themes</i></span>
-          <input id="set-theme-attr" class="set-input" type="text" placeholder="auto" spellcheck="false" aria-label="Theme attribute" />
-        </div>
-        <div class="theme-merge-editor hidden" id="theme-merge-editor">
+        <div class="mp" id="mapping-editor">
           <div class="theme-merge-intro">
-            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h6v6H4zM14 12h6v6h-6zM10 9h4M12 9v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="set-text"><b>Theme collections</b><i>Free-plan workaround: combine single-mode collections into one exported structure. Repeat the structure name for more themes; the first row is the default theme.</i></span>
+            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 5h6v6H4zM14 5h6v6h-6zM4 15h6v6H4zM14 15h6v6h-6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+            <span class="set-text"><b>Sets &amp; themes</b><i>How this file&rsquo;s variables become code, the way Tokens Studio sets it up &middot; saved in the file, so everyone who exports it gets the same package</i></span>
           </div>
-          <div class="theme-merge-table">
-            <div class="theme-merge-head"><span>Structure</span><span>Collection</span><span>Theme</span><span></span></div>
-            <div id="theme-merge-rows"></div>
-          </div>
-          <div class="theme-merge-actions">
-            <button class="btn ghost" id="theme-merge-add" type="button">Add theme row</button>
-            <p class="theme-merge-empty" id="theme-merge-empty">No collection merges configured.</p>
-          </div>
-        </div>
-        <div class="role-editor">
-          <div class="theme-merge-intro">
-            <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>
-            <span class="set-text"><b>Collections in the export</b><i>What each collection of this file becomes in code &middot; <b>Hide</b> keeps a layer such as primitives out while its values still reach the tokens that use them &middot; <b>Separate file</b> exports a collection on its own (<code>one.css</code>, <code>business.css</code>) — collections sent apart keep the same token names, and each file says which tokens the others have that it lacks</i></span>
-          </div>
-          <div class="role-list" id="role-list"></div>
-          <p class="theme-merge-empty hidden" id="role-empty">Open a file with variables to set what each collection becomes.</p>
+          <datalist id="mp-attr-names"><option value="data-theme"><option value="data-product"><option value="data-brand"><option value="data-mode"><option value="data-contrast"><option value="data-density"></datalist>
+          <div id="mapping-body"><p class="mp-note">Reading the file&hellip;</p></div>
         </div>
         <label class="set-row" for="set-emit-modules">
           <svg class="ic" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2 2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          <span class="set-text"><b>Per-theme <code>.module.css</code></b><i>One file per theme, alongside <code>tokens.css</code></i></span>
+          <span class="set-text"><b>Split into <code>.module.css</code></b><i>The parts of <code>tokens.css</code> as files: common, each theme, each product</i></span>
           <span class="switch"><input type="checkbox" id="set-emit-modules" /><span class="track"></span></span>
         </label>
         <label class="set-row" data-needs-modules for="set-css-global">
@@ -3484,8 +3572,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var OPTIONS = null
       var PRESETS = []
       var USER_PRESETS = []
-      var THEME_COLLECTION_CANDIDATES = []
-      var THEME_COLLECTIONS_LOADING = false
+      // The variable collections offered by the theme-collections table, filled in by the
+      // VARIABLE_COLLECTIONS reply. The loading flag keeps the request to one in flight while
+      // Settings is being opened and closed repeatedly.
 
       function allPresets() {
         return PRESETS.concat(USER_PRESETS)
@@ -3516,10 +3605,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         document.getElementById('view-module').classList.toggle('hidden', settings || target.slice(0, 7) !== 'module:')
         document.getElementById('view-settings').classList.toggle('hidden', !settings)
         syncDsToolScreen()
-        if (settings && !THEME_COLLECTIONS_LOADING) {
-          THEME_COLLECTIONS_LOADING = true
-          parent.postMessage({ pluginMessage: { type: 'LIST_VARIABLE_COLLECTIONS' } }, '*')
-        }
+        // The structure editor draws the file's collections, groups and modes: ask the sandbox
+        // each time Settings opens, so a collection added since is there.
+        if (settings) requestMapping()
         var footer = document.querySelector('footer')
         var compactDsFooter = !settings && target === 'ds-tools'
         var handleOnlyFooter =
@@ -3981,214 +4069,566 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         }
       }
 
-      // ── Collection roles list ─────────────────────────────────────────────────────────────
-      // One row per collection of the file with a role picked from a list, instead of a
-      // free-text `Name: role` field nobody could fill without reading the source. Still stored
-      // as that string (OPTIONS.tokens.collectionRoles), so saved settings and the agent's
-      // plugin.call keep working. The two export roles are parsed by parseCollectionModes in
-      // src/tokens/engine.ts; the DESIGN.md ones by parseCollectionRoles (design-md/model.ts).
-      var ROLE_COLLECTIONS = []
-      var ROLE_CHOICES = [
-        { value: '', label: 'Export' },
-        { value: 'hidden', label: 'Hide from code' },
-        { value: 'breakpoints', label: 'Breakpoints → --bp-*' },
-        { value: 'product', label: 'Separate file → name.css' },
+      // ── Figma → code: the token mapping ───────────────────────────────────────────────────
+      // At the top, the attributes code switches on — any names, each value bound to something
+      // in the file: collections, columns, or a marker in the token names. Below, the file the
+      // way Figma's variables window shows it: collections on one side, a collection's columns on
+      // the other, with what each becomes in code written beside it. Every request is answered by
+      // the sandbox's TOKENS_MAPPING (src/tokens/mapping.ts on the export's own code path); the
+      // panel draws that and computes nothing, and an edit is saved into the file at once
+      // (TOKENS_MAPPING_SET), so a person and an agent always look at the same mapping.
+      var MAP = null
+      var MAP_SELECTED = null
+      var MAP_TIMER = null
+      var MAP_TYPE_TIMER = null
+      var MAP_SAVING = false
+      var MAP_ERROR = null
+      // Answers carry the number of the request they answer: one overtaken by a newer request is
+      // dropped, so a slow early answer can never paint over the collection picked since.
+      var MAP_REQUEST = 0
+      var MAP_SIDE_WIDTH = 230
+      try { MAP_SIDE_WIDTH = Number(localStorage.getItem('allcrew.mapping.side')) || MAP_SIDE_WIDTH } catch (e) { /* no storage in this frame */ }
+      var MAP_OPTION = null
+      var MAP_FILE = null
+      var MAP_MORE_SETS = false
+      // A set's status, as Tokens Studio names it: enabled, source, disabled — plus breakpoints.
+      var MAP_ROLES = [
+        ['export', 'Export'],
+        ['palette', 'Values only'],
+        ['skip', 'Off'],
+        ['breakpoints', 'Breakpoints (--bp-*)'],
       ]
-      var ROLE_DOC_CHOICES = [
-        ['spacing', 'Spacing'], ['radius', 'Radius'], ['size', 'Size'], ['border-width', 'Border width'],
-        ['font-family', 'Font family'], ['font-size', 'Font size'], ['font-weight', 'Font weight'],
-        ['line-height', 'Line height'], ['letter-spacing', 'Letter spacing'], ['paragraph', 'Paragraph spacing'],
-        ['surface', 'Surface color'], ['text', 'Text color'], ['border', 'Border color'], ['icon', 'Icon color'],
-        ['opacity', 'Opacity'], ['z-index', 'Z-index'], ['duration', 'Motion duration'], ['easing', 'Motion easing'],
+      var MAP_ROLE_MARK = { export: '\u25cf', palette: '\u25d0', skip: '\u25cb', breakpoints: '\u2194' }
+      var MAP_ROLE_HINTS = {
+        export: 'Shipped: its tokens are in tokens.css',
+        palette: 'Not shipped as tokens of its own: its values are written into the tokens that use them (Tokens Studio’s “source”)',
+        skip: 'Left out of the export',
+        breakpoints: 'Shipped as --bp-* widths',
+      }
+      var MAP_SOURCES = [
+        ['collections', 'whole sets'],
+        ['columns', 'modes'],
+        ['names', 'a marker in names'],
       ]
 
-      function parseRoleSetting(raw) {
-        var out = []
-        String(raw || '').split(/[,;\n]+/).forEach(function (pair) {
-          var at = pair.indexOf(pair.indexOf(':') !== -1 ? ':' : '=')
-          if (at === -1) return
-          var name = pair.slice(0, at).trim()
-          var role = pair.slice(at + 1).trim().toLowerCase()
-          if (role === 'hide') role = 'hidden'
-          if (role === 'breakpoint' || role === 'bp') role = 'breakpoints'
-          if (name && role) out.push({ name: name, role: role })
+      function sEl(tag, props, children) {
+        var node = document.createElement(tag)
+        Object.keys(props || {}).forEach(function (key) {
+          if (key === 'on') Object.keys(props.on).forEach(function (ev) { node.addEventListener(ev, props.on[ev]) })
+          else if (key === 'attrs') Object.keys(props.attrs).forEach(function (a) { node.setAttribute(a, props.attrs[a]) })
+          else node[key] = props[key]
         })
-        return out
+        ;(children || []).forEach(function (child) { if (child) node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child) })
+        return node
+      }
+      function sSelect(options, value, onChange, label) {
+        var select = sEl('select', { attrs: { 'aria-label': label || '' }, on: { change: function () { onChange(select.value) } } })
+        options.forEach(function (o) { select.appendChild(sEl('option', { value: o[0], textContent: o[1] })) })
+        select.value = value
+        return select
+      }
+      function sSlug(label) { return String(label).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }
+      function sBreak(text) { return String(text).replace(/\//g, '/​') }
+
+      function requestMapping(extra) {
+        if (!OPTIONS) return
+        MAP_REQUEST += 1
+        var msg = { type: 'TOKENS_MAPPING', collection: MAP_SELECTED || undefined, file: MAP_FILE || undefined, request: MAP_REQUEST }
+        // A suggestion not yet saved stays the one shown while its collections are browsed.
+        if (mapPreviewing() && MAP.mapping && !(extra && (extra.suggest || extra.mapping))) msg.mapping = MAP.mapping
+        Object.keys(extra || {}).forEach(function (k) { msg[k] = extra[k] })
+        parent.postMessage({ pluginMessage: msg }, '*')
+      }
+      function scheduleMappingRefresh() {
+        var settings = document.getElementById('view-settings')
+        if (!settings || settings.classList.contains('hidden')) return
+        if (MAP_TIMER) clearTimeout(MAP_TIMER)
+        MAP_TIMER = setTimeout(function () { MAP_TIMER = null; requestMapping() }, 250)
+      }
+      function mapDraft() { return JSON.parse(JSON.stringify(MAP.mapping)) }
+      // A suggestion (or any preview) is not the file's mapping: editing it stays a preview, so
+      // trying the suggestion can never overwrite the setup a person made. Only "Use for this
+      // file" saves it.
+      function mapPreviewing() { return !!(MAP && (MAP.source === 'suggested' || MAP.source === 'draft')) }
+      function saveMapping(mapping, force) {
+        if (!MAP || !MAP.access || !MAP.access.editable) return
+        if (MAP_TYPE_TIMER) { clearTimeout(MAP_TYPE_TIMER); MAP_TYPE_TIMER = null }
+        if (mapPreviewing() && !force) {
+          MAP.mapping = mapping
+          renderMapping()
+          requestMapping({ mapping: mapping })
+          return
+        }
+        MAP.mapping = mapping
+        MAP_SAVING = true
+        MAP_ERROR = null
+        renderMapping()
+        MAP_REQUEST += 1
+        parent.postMessage({ pluginMessage: { type: 'TOKENS_MAPPING_SET', mapping: mapping, collection: MAP_SELECTED || undefined, file: MAP_FILE || undefined, request: MAP_REQUEST } }, '*')
+      }
+      // Typing saves once it stops, so the field keeps its focus while it is being written in.
+      function saveMappingSoon(mapping) {
+        MAP.mapping = mapping
+        if (MAP_TYPE_TIMER) clearTimeout(MAP_TYPE_TIMER)
+        MAP_TYPE_TIMER = setTimeout(function () { MAP_TYPE_TIMER = null; saveMapping(MAP.mapping) }, 700)
       }
 
-      function renderRoleList() {
-        var host = document.getElementById('role-list')
-        if (!host || !OPTIONS) return
-        var saved = parseRoleSetting(OPTIONS.tokens.collectionRoles)
-        var roleOf = {}
-        saved.forEach(function (entry) { roleOf[entry.name.toLowerCase()] = entry.role })
-        // A saved role for a collection this file does not have stays listed (struck through),
-        // so switching files never silently drops what was set for another one.
-        var rows = ROLE_COLLECTIONS.map(function (c) { return { name: c.name, modes: c.modes, gone: false } })
-        saved.forEach(function (entry) {
-          if (!rows.some(function (row) { return row.name.toLowerCase() === entry.name.toLowerCase() })) {
-            rows.push({ name: entry.name, modes: 0, gone: true })
-          }
+      function mapCollection(name) { return (MAP.view.collections || []).filter(function (c) { return c.name === name })[0] }
+      function mapUsed(mapping) {
+        var used = {}
+        mapping.attributes.forEach(function (a) {
+          a.values.forEach(function (v) { (v.collections || []).forEach(function (n) { used[n] = true }) })
+          ;(a.shared || []).concat(a.collections || []).forEach(function (n) { used[n] = true })
         })
-        document.getElementById('role-empty').classList.toggle('hidden', rows.length > 0)
-        host.innerHTML = ''
-        rows.forEach(function (row) {
-          var el = document.createElement('div')
-          el.className = 'role-row' + (row.gone ? ' gone' : '')
-          var name = document.createElement('span')
-          name.className = 'role-name'
-          name.title = row.gone ? row.name + ' — not in this file' : row.name
-          name.textContent = row.name
-          if (row.modes > 1) {
-            var modes = document.createElement('small')
-            modes.textContent = row.modes + ' modes'
-            name.appendChild(modes)
-          }
-          var select = document.createElement('select')
-          select.setAttribute('aria-label', 'What ' + row.name + ' becomes in the export')
-          ROLE_CHOICES.forEach(function (choice) {
-            var option = document.createElement('option')
-            option.value = choice.value
-            option.textContent = choice.value === '' && /^breakpoints$/i.test(row.name.trim()) ? 'Breakpoints → --bp-* (auto)' : choice.label
-            select.appendChild(option)
-          })
-          var docs = document.createElement('optgroup')
-          docs.label = 'Export, described in DESIGN.md as'
-          ROLE_DOC_CHOICES.forEach(function (choice) {
-            var option = document.createElement('option')
-            option.value = choice[0]
-            option.textContent = choice[1]
-            docs.appendChild(option)
-          })
-          select.appendChild(docs)
-          var current = roleOf[row.name.toLowerCase()] || ''
-          if (current && !select.querySelector('option[value="' + current + '"]')) {
-            var unknown = document.createElement('option')
-            unknown.value = current
-            unknown.textContent = current
-            select.appendChild(unknown)
-          }
-          select.value = current
-          select.classList.toggle('set', current !== '')
-          select.addEventListener('change', function () {
-            var next = parseRoleSetting(OPTIONS.tokens.collectionRoles).filter(function (entry) {
-              return entry.name.toLowerCase() !== row.name.toLowerCase()
-            })
-            if (select.value) next.push({ name: row.name, role: select.value })
-            OPTIONS.tokens.collectionRoles = next.map(function (entry) { return entry.name + ': ' + entry.role }).join(', ')
-            select.classList.toggle('set', select.value !== '')
-            afterSettingsChange()
-          })
-          el.appendChild(name)
-          el.appendChild(select)
-          host.appendChild(el)
-        })
+        return used
+      }
+      // The columns a columns attribute can pick from: its own collection's, else those of the
+      // collections the other attribute takes values from (One and Business: Light, Dark).
+      function mapColumnChoices(mapping, attribute) {
+        var names = (attribute.collections && attribute.collections.length) ? attribute.collections : Object.keys(mapUsed(mapping))
+        var seen = []
+        names.forEach(function (n) { var c = mapCollection(n); (c ? c.modes : []).forEach(function (m) { if (seen.indexOf(m) === -1) seen.push(m) }) })
+        return seen
+      }
+      function mapColumnsOnly(mapping) { return mapping.attributes.length > 0 && mapping.attributes.every(function (a) { return a.from === 'columns' }) }
+
+      function renderMapping() {
+        var body = document.getElementById('mapping-body')
+        if (!body || !OPTIONS) return
+        body.innerHTML = ''
+        if (!MAP || !MAP.mapping) {
+          body.appendChild(sEl('p', { className: MAP && MAP.error ? 'mp-problem' : 'mp-note', textContent: MAP && MAP.error ? MAP.error : 'Reading the file…' }))
+          return
+        }
+        var view = MAP.view
+        var mapping = MAP.mapping
+        var locked = !(MAP.access && MAP.access.editable)
+        body.appendChild(renderMapStatus(locked))
+        if (MAP.access && MAP.access.agentStructure && MAP.source !== 'pinned') body.appendChild(sEl('div', { className: 'mp-status warn', textContent: 'An agent saved an export structure in this file. Saving a mapping here replaces it.' }))
+        ;(MAP.problems || []).forEach(function (p) { body.appendChild(sEl('p', { className: 'mp-problem', textContent: p })) })
+        ;(view.unbound || []).forEach(function (c) { body.appendChild(sEl('p', { className: 'mp-problem', textContent: c + ' is in no option — a set whose modes are the options ships every mode, so each needs one.' })) })
+        body.appendChild(renderMapThemes(mapping, view))
+        body.appendChild(renderMapOutput(MAP.summary))
+        ;((MAP.summary && MAP.summary.notes) || []).forEach(function (n) { body.appendChild(sEl('p', { className: 'mp-note', textContent: n })) })
+        var panes = sEl('div', { className: 'mp-panes', attrs: { style: '--mp-side:' + MAP_SIDE_WIDTH + 'px' } })
+        panes.appendChild(renderMapSide(view, mapping))
+        panes.appendChild(renderMapSplitter(panes))
+        panes.appendChild(renderMapMain(view, mapping))
+        body.appendChild(panes)
+        if (locked) body.querySelectorAll('input, select, .mp-x, .mp-add, .mp-status .btn').forEach(function (n) { n.disabled = true })
       }
 
-      // ── Theme collections table ──────────────────────────────────────────────────────────
-      // A file on the free Figma plan can only give each collection one mode, so a light/dark
-      // pair arrives as two separate collections. The table below lets the user declare that
-      // "Colors Light" and "Colors Dark" are really two modes of one exported structure; the
-      // sandbox folds them together (src/tokens/split-theme.ts) before the tokens are emitted.
-      function themeMergeGroups() {
-        if (!OPTIONS.themeMerges) OPTIONS.themeMerges = { groups: [] }
-        if (!Array.isArray(OPTIONS.themeMerges.groups)) OPTIONS.themeMerges.groups = []
-        return OPTIONS.themeMerges.groups
+      // No "suggest" button: a file with nothing saved opens on the suggestion by itself, and a
+      // file with a saved mapping is edited, not re-suggested — a button there only offered a way
+      // to wipe what a person declared (Platform, which no collection holds yet).
+      function renderMapStatus(locked) {
+        if (MAP_ERROR) return sEl('div', { className: 'mp-status warn' }, [sEl('span', { textContent: MAP_ERROR })])
+        if (locked) return sEl('div', { className: 'mp-status warn', textContent: 'Read-only in Dev Mode: exports use what is saved in this file. A Full seat in Design mode can change it.' })
+        if (MAP_SAVING) return sEl('div', { className: 'mp-status info', textContent: 'Saving to this file…' })
+        if (MAP.source === 'pinned') return sEl('div', { className: 'mp-status ok' }, [sEl('span', { textContent: 'Saved in this file for everyone who exports it' })])
+        if (MAP.source === 'settings') return sEl('div', { className: 'mp-status info' }, [sEl('span', { textContent: 'Read from this file’s earlier settings — the export uses exactly this. The first change saves it as the file’s mapping.' })])
+        var use = sEl('button', { type: 'button', className: 'btn ghost', textContent: 'Use for this file', on: { click: function () { saveMapping(mapDraft(), true) } } })
+        var back = sEl('button', { type: 'button', className: 'btn ghost', textContent: 'Back to the saved one', on: { click: function () { MAP.source = 'pinned'; requestMapping() } } })
+        var pinned = !!(MAP.access && MAP.access.pinned)
+        return sEl('div', { className: 'mp-status info' }, [
+          sEl('span', { textContent: (MAP.source === 'suggested' ? 'Suggested from how the file is set up' : 'A preview') + ' — not saved, the export doesn’t use it.' + (pinned ? ' “Use for this file” replaces the saved mapping.' : '') }),
+          sEl('span', { className: 'mp-status-actions' }, [use, pinned ? back : null]),
+        ])
       }
 
-      function persistThemeMergeTable() {
-        var groups = []
-        var byName = {}
-        Array.prototype.forEach.call(document.querySelectorAll('#theme-merge-rows .theme-merge-row'), function (row, rowIndex) {
-          var structure = row.querySelector('[data-field="structure"]').value.trim()
-          var collection = row.querySelector('[data-field="collection"]').value.trim()
-          var theme = row.querySelector('[data-field="theme"]').value.trim()
-          var key = structure ? structure.toLowerCase() : '__incomplete_' + rowIndex
-          if (!byName[key]) {
-            byName[key] = { name: structure, modes: [] }
-            groups.push(byName[key])
-          }
-          byName[key].modes.push({ collection: collection, name: theme })
-        })
-        OPTIONS.themeMerges = { groups: groups }
-        afterSettingsChange()
+      // ── themes: a group is an attribute in code, an option a value of it ──
+      // Tokens Studio's model: themes in groups, each theme picking token sets. Here a set is a
+      // collection, or one of its modes; what an option picks is saved as the mapping's binding
+      // (collections, columns or a name marker), so the screen and the export read one thing.
+      function mapOptionKey(ai, vi) { return ai + ':' + vi }
+      function mapPicks(attribute, value) {
+        if (value.sameAs) return '= ' + value.sameAs
+        if (attribute.from === 'names') return value.base && !value.marker ? 'unmarked names' : '“' + (value.marker || value.value) + '” in names'
+        var picked = attribute.from === 'columns' ? value.columns : value.collections
+        return picked && picked.length ? picked.join(' + ') : 'nothing yet'
       }
 
-      function renderThemeMergeTable() {
-        var host = document.getElementById('theme-merge-rows')
-        if (!host || !OPTIONS) return
-        host.innerHTML = ''
-        var groups = themeMergeGroups()
-        groups.forEach(function (group, groupIndex) {
-          ;(group.modes || []).forEach(function (mode, modeIndex) {
-            var row = document.createElement('div')
-            row.className = 'theme-merge-row'
-            row.dataset.group = groupIndex
-            row.dataset.mode = modeIndex
+      function renderMapThemes(mapping, view) {
+        var box = sEl('div', { className: 'mp-block' })
+        box.appendChild(sEl('div', { className: 'mp-block-head' }, [
+          sEl('b', { textContent: 'Themes' }),
+          sEl('span', { className: 'mp-meta', textContent: 'A group is an attribute in code, each option a value of it. Click an option to choose its sets.' }),
+        ]))
+        mapping.attributes.forEach(function (attribute, index) { box.appendChild(renderMapGroup(mapping, view, attribute, index)) })
+        if (mapping.attributes.length < 2) {
+          box.appendChild(sEl('button', { type: 'button', className: 'mp-add', textContent: '+ theme group', on: { click: function () {
+            var m = mapDraft()
+            var hasTheme = m.attributes.some(function (a) { return a.name === 'data-theme' })
+            m.attributes.push({ name: hasTheme ? 'data-product' : 'data-theme', from: hasTheme ? 'collections' : 'columns', values: [] })
+            MAP_OPTION = null
+            saveMapping(m)
+          } } }))
+        } else {
+          box.appendChild(sEl('p', { className: 'mp-meta', textContent: 'Two groups at most: the export combines two attributes.' }))
+        }
+        return box
+      }
 
-            var structure = document.createElement('input')
-            structure.type = 'text'
-            structure.value = group.name || ''
-            structure.placeholder = 'Theme'
-            structure.dataset.field = 'structure'
-            structure.setAttribute('aria-label', 'Exported theme structure')
-
-            var collection = document.createElement('select')
-            collection.dataset.field = 'collection'
-            collection.setAttribute('aria-label', 'Source variable collection')
-            var placeholder = document.createElement('option')
-            placeholder.value = ''
-            placeholder.textContent = 'Choose collection'
-            collection.appendChild(placeholder)
-            var candidates = THEME_COLLECTION_CANDIDATES.slice()
-            if (mode.collection && !candidates.some(function (candidate) { return candidate.name === mode.collection })) {
-              candidates.push({ name: mode.collection, mode: mode.name || 'Mode 1' })
-            }
-            candidates.forEach(function (candidate) {
-              var option = document.createElement('option')
-              option.value = candidate.name
-              option.textContent = candidate.name
-              collection.appendChild(option)
-            })
-            collection.value = mode.collection || ''
-
-            var theme = document.createElement('input')
-            theme.type = 'text'
-            theme.value = mode.name || ''
-            theme.placeholder = 'Light'
-            theme.dataset.field = 'theme'
-            theme.setAttribute('aria-label', 'Exported theme name')
-
-            var remove = document.createElement('button')
-            remove.type = 'button'
-            remove.className = 'theme-merge-remove'
-            remove.setAttribute('aria-label', 'Remove theme row')
-            remove.textContent = '×'
-            remove.addEventListener('click', function () {
-              var current = themeMergeGroups()
-              current[groupIndex].modes.splice(modeIndex, 1)
-              if (current[groupIndex].modes.length === 0) current.splice(groupIndex, 1)
-              renderThemeMergeTable()
-              afterSettingsChange()
-            })
-
-            structure.addEventListener('change', persistThemeMergeTable)
-            collection.addEventListener('change', function () {
-              if (!theme.value || /^Theme \d+$/.test(theme.value)) {
-                var picked = THEME_COLLECTION_CANDIDATES.find(function (candidate) { return candidate.name === collection.value })
-                if (picked && picked.mode && !/^(Mode 1|Mode|Value|Default)$/i.test(picked.mode)) theme.value = picked.mode
-              }
-              persistThemeMergeTable()
-            })
-            theme.addEventListener('change', persistThemeMergeTable)
-            row.appendChild(structure)
-            row.appendChild(collection)
-            row.appendChild(theme)
-            row.appendChild(remove)
-            host.appendChild(row)
+      function renderMapGroup(mapping, view, attribute, index) {
+        var card = sEl('div', { className: 'mp-group' })
+        var edit = function (change, soon) { var m = mapDraft(); change(m.attributes[index], m); (soon ? saveMappingSoon : saveMapping)(m) }
+        var name = sEl('input', { type: 'text', value: attribute.name, className: 'mp-attr-name', attrs: { 'aria-label': 'Attribute name in code', list: 'mp-attr-names' }, on: { input: function () { var v = name.value.trim().replace(/[^A-Za-z0-9_-]/g, ''); if (v) edit(function (a) { a.name = v }, true) } } })
+        var from = sSelect(MAP_SOURCES, attribute.from, function (v) {
+          edit(function (a) {
+            // The option names stay; what each picked belongs to the old kind and goes.
+            a.from = v
+            a.values = a.values.map(function (x) { return x.sameAs ? { value: x.value, sameAs: x.sameAs } : x.base ? { value: x.value, base: true } : { value: x.value } })
+            delete a.shared
+            delete a.collections
           })
+        }, attribute.name + ' options pick')
+        var nested = sEl('input', { type: 'checkbox', checked: !!attribute.nested, on: { change: function () { var on = nested.checked; edit(function (a, m) { m.attributes.forEach(function (x) { delete x.nested }); if (on) a.nested = true }) } } })
+        var remove = sEl('button', { type: 'button', className: 'mp-x', textContent: '×', attrs: { 'aria-label': 'Remove the group ' + attribute.name }, on: { click: function () { var m = mapDraft(); m.attributes.splice(index, 1); MAP_OPTION = null; saveMapping(m) } } })
+        card.appendChild(sEl('div', { className: 'mp-attr-row' }, [
+          name,
+          sEl('span', { className: 'mp-meta', textContent: 'options pick' }),
+          from,
+          sEl('label', { className: 'mp-meta', attrs: { title: 'Off: every attribute sits on one element (<html>), plain selectors. On: this one can be set again inside the page — a dark card in a light page — at the cost of longer selectors.' } }, [nested, ' can nest']),
+          remove,
+        ]))
+
+        if (attribute.from === 'columns' && (mapColumnsOnly(mapping) || (attribute.collections && attribute.collections.length))) {
+          var multi = (view.collections || []).filter(function (c) { return c.modes.length > 1 })
+          card.appendChild(sEl('div', { className: 'mp-attr-row mp-sub' }, [
+            sEl('span', { className: 'mp-meta', textContent: 'modes of' }),
+            sSelect([['', 'pick a set']].concat(multi.map(function (c) { return [c.name, c.name + ' (' + c.modes.length + ' modes)'] })), (attribute.collections || [])[0] || '', function (v) {
+              edit(function (a, m) {
+                if (v) a.collections = [v]; else delete a.collections
+                // Both groups read one set's modes: keep them on the same one.
+                m.attributes.forEach(function (x) { if (x !== a && x.from === 'columns' && v) x.collections = [v] })
+              })
+            }, attribute.name + ' modes come from'),
+          ]))
+        }
+
+        var chips = sEl('div', { className: 'mp-opts' })
+        attribute.values.forEach(function (value, vi) {
+          var key = mapOptionKey(index, vi)
+          chips.appendChild(sEl('button', {
+            type: 'button',
+            className: 'mp-opt' + (MAP_OPTION === key ? ' on' : '') + (value.sameAs ? ' same' : ''),
+            attrs: { title: value.value + (value.sameAs ? ' ' : ' ← ') + mapPicks(attribute, value) + (value.base ? ' · the default' : ''), 'aria-pressed': MAP_OPTION === key ? 'true' : 'false' },
+            on: { click: function () { MAP_OPTION = MAP_OPTION === key ? null : key; renderMapping() } },
+          }, [value.base ? sEl('span', { className: 'mp-star', textContent: '★' }) : null, value.value]))
         })
-        document.getElementById('theme-merge-empty').classList.toggle('hidden', host.children.length > 0)
+        chips.appendChild(renderMapAddValue(mapping, attribute, index))
+        card.appendChild(chips)
+        if (attribute.values.length) {
+          card.appendChild(sEl('p', { className: 'mp-picks', textContent: attribute.values.map(function (v) { return v.value + (v.sameAs ? ' ' : ' ← ') + mapPicks(attribute, v) }).join('   ·   ') }))
+        }
+
+        if (attribute.from === 'collections') {
+          var used = mapUsed(mapping)
+          var row = sEl('div', { className: 'mp-attr-row mp-sub' }, [sEl('span', { className: 'mp-meta', textContent: 'every option also gets' })])
+          ;(attribute.shared || []).forEach(function (n) {
+            row.appendChild(sEl('span', { className: 'mp-chip' }, [n, sEl('button', { type: 'button', className: 'mp-chip-x', textContent: '×', attrs: { 'aria-label': 'Remove ' + n }, on: { click: function () { edit(function (a) { a.shared = a.shared.filter(function (x) { return x !== n }); if (!a.shared.length) delete a.shared }) } } })]))
+          })
+          var free = (view.collections || []).filter(function (c) { return !used[c.name] }).map(function (c) { return [c.name, c.name] })
+          if (free.length) row.appendChild(sSelect([['', '+ set']].concat(free), '', function (v) { if (v) edit(function (a) { a.shared = (a.shared || []).concat([v]) }) }, 'Add a set every option gets'))
+          card.appendChild(row)
+        }
+
+        attribute.values.forEach(function (value, vi) {
+          if (MAP_OPTION === mapOptionKey(index, vi)) card.appendChild(renderMapOptionEditor(mapping, view, attribute, index, value, vi))
+        })
+        return card
+      }
+
+      // What an option can pick, as found in the file: for this group, the items its options do
+      // not take yet — sets, modes, or the segments token names are made of.
+      function mapFileItems(mapping, attribute) {
+        var taken = function (key) { return attribute.values.reduce(function (all, v) { return all.concat(key === 'marker' ? [v.marker || v.value] : v[key] || []) }, []) }
+        if (attribute.from === 'columns') {
+          var columns = taken('columns')
+          return mapColumnChoices(mapping, attribute).filter(function (c) { return columns.indexOf(c) === -1 })
+        }
+        if (attribute.from === 'names') {
+          var markers = taken('marker')
+          return (MAP.view.markers || []).map(function (m) { return m.segment }).filter(function (m) { return markers.indexOf(m) === -1 })
+        }
+        var used = mapUsed(mapping)
+        // Beside another group of whole sets (one set per cell), a set is shared between the two
+        // groups' options; otherwise a set belongs to one option.
+        var crossed = mapping.attributes.some(function (a) { return a !== attribute && a.from === 'collections' })
+        var mine = taken('collections')
+        return (MAP.view.collections || []).map(function (c) { return c.name }).filter(function (n) { return mine.indexOf(n) === -1 && (crossed || !used[n]) })
+      }
+      function mapMarkerLabel(segment) {
+        var m = (MAP.view.markers || []).filter(function (x) { return x.segment === segment })[0]
+        return m ? segment + ' (' + m.tokens + ')' : segment
+      }
+
+      // "+ option": picking a set, a mode or a name segment makes an option already picking it,
+      // named after it in code (renamable — the name is the person's). An option with nothing in
+      // the file yet (Platform before it has a set) starts as the same as the default.
+      function renderMapAddValue(mapping, attribute, index) {
+        var items = mapFileItems(mapping, attribute)
+        var noun = attribute.from === 'columns' ? 'mode' : attribute.from === 'names' ? 'marker in token names' : 'set'
+        var options = [['', '+ option']].concat(items.map(function (i) { return ['item:' + i, (attribute.from === 'names' ? mapMarkerLabel(i) : i)] }))
+        options.push(['new', 'an option with nothing of its own yet…'])
+        var select = sSelect(options, '', function (picked) {
+          if (!picked) return
+          var m = mapDraft()
+          var a = m.attributes[index]
+          var free = function (wanted) {
+            var name = sSlug(wanted) || 'option'
+            var n = 2
+            var taken = a.values.map(function (x) { return x.value })
+            while (taken.indexOf(name) !== -1) name = (sSlug(wanted) || 'option') + '-' + n++
+            return name
+          }
+          if (picked === 'new') {
+            var base = a.values.filter(function (x) { return x.base && !x.sameAs })[0] || a.values.filter(function (x) { return !x.sameAs })[0]
+            a.values.push(base ? { value: free('new'), sameAs: base.value } : { value: free('new') })
+          } else {
+            var item = picked.slice(5)
+            var value = { value: free(item) }
+            if (attribute.from === 'columns') value.columns = [item]
+            else if (attribute.from === 'names') { if (sSlug(item) !== value.value) value.marker = item }
+            else value.collections = [item]
+            a.values.push(value)
+          }
+          if (!a.values.some(function (x) { return x.base })) a.values[0].base = true
+          MAP_OPTION = mapOptionKey(index, a.values.length - 1)
+          saveMapping(m)
+        }, 'Add a ' + attribute.name + ' option from a ' + noun)
+        select.className = 'mp-add-select'
+        return select
+      }
+
+      // One option, opened: its name in code, whether it is the default, and what it picks —
+      // its own sets (a checklist, Tokens Studio's theme editor) or the same as another option.
+      function renderMapOptionEditor(mapping, view, attribute, index, value, vi) {
+        var edit = function (change, soon) { var m = mapDraft(); change(m.attributes[index].values[vi], m.attributes[index], m); (soon ? saveMappingSoon : saveMapping)(m) }
+        var panel = sEl('div', { className: 'mp-editor' })
+        var input = sEl('input', { type: 'text', value: value.value, attrs: { 'aria-label': attribute.name + ' option name in code' }, on: { input: function () {
+          var now = sSlug(input.value)
+          if (!now) return
+          edit(function (v, a) { var was = v.value; v.value = now; a.values.forEach(function (x) { if (x.sameAs === was) x.sameAs = now }) }, true)
+        } } })
+        var others = attribute.values.filter(function (x, i) { return i !== vi && !x.sameAs }).map(function (x) { return x.value })
+        var takes = sSelect([['own', attribute.from === 'names' ? 'its own marker' : attribute.from === 'columns' ? 'its own modes' : 'its own sets']].concat(others.map(function (o) { return ['same:' + o, 'the same as ' + o] })), value.sameAs ? 'same:' + value.sameAs : 'own', function (v) {
+          edit(function (x, a) {
+            if (v.indexOf('same:') === 0) {
+              x.sameAs = v.slice(5); delete x.collections; delete x.columns; delete x.marker
+              if (x.base) { delete x.base; var first = a.values.filter(function (y) { return !y.sameAs })[0]; if (first) first.base = true }
+            } else delete x.sameAs
+          })
+        }, attribute.name + ' = ' + value.value + ' takes')
+        var star = sEl('input', { type: 'checkbox', checked: !!value.base, on: { change: function () { edit(function (x, a) { a.values.forEach(function (y) { delete y.base }); x.base = true }) } } })
+        if (value.base || value.sameAs) star.disabled = true
+        var remove = sEl('button', { type: 'button', className: 'mp-x', textContent: '×', attrs: { 'aria-label': 'Remove ' + value.value }, on: { click: function () {
+          MAP_OPTION = null
+          edit(function (x, a) {
+            a.values.splice(vi, 1)
+            a.values.forEach(function (y) { if (y.sameAs === value.value) delete y.sameAs })
+            if (a.values.length && !a.values.some(function (y) { return y.base })) { var first = a.values.filter(function (y) { return !y.sameAs })[0]; if (first) first.base = true }
+          })
+        } } })
+        panel.appendChild(sEl('div', { className: 'mp-attr-row' }, [
+          sEl('code', { className: 'mp-sel', textContent: '[' + attribute.name + '="' }), input, sEl('code', { className: 'mp-sel', textContent: '"]' }),
+          sEl('span', { className: 'mp-meta', textContent: 'takes' }), takes,
+          sEl('label', { className: 'mp-meta', attrs: { title: 'Applies when nothing is set, on :root; every other option takes a token it lacks from it' } }, [star, ' default']),
+          remove,
+        ]))
+        if (value.sameAs) {
+          panel.appendChild(sEl('p', { className: 'mp-meta', textContent: 'Shows ' + value.sameAs + ' until it has sets of its own — the CSS lists both under one rule.' }))
+          return panel
+        }
+        var list = sEl('div', { className: 'mp-checks' })
+        if (attribute.from === 'names') {
+          var current = value.marker || value.value
+          var segments = (view.markers || []).map(function (m) { return m.segment })
+          if (segments.indexOf(current) === -1) segments.unshift(current)
+          segments.slice(0, 24).forEach(function (seg) {
+            var radio = sEl('input', { type: 'radio', name: 'mp-marker-' + index + '-' + vi, checked: seg === current, on: { change: function () { edit(function (x) { if (sSlug(seg) !== x.value) x.marker = seg; else delete x.marker }) } } })
+            list.appendChild(sEl('label', { className: 'mp-check' }, [radio, ' ' + mapMarkerLabel(seg)]))
+          })
+          panel.appendChild(sEl('p', { className: 'mp-meta', textContent: 'Tokens with this segment in their name (dark/background/base) are this option' + (value.base ? '; tokens with no marker are the default' : '') + '.' }))
+          panel.appendChild(list)
+          return panel
+        }
+        var key = attribute.from === 'columns' ? 'columns' : 'collections'
+        var mine = value[key] || []
+        var items
+        if (key === 'columns') {
+          items = mapColumnChoices(mapping, attribute)
+          mine.forEach(function (c) { if (items.indexOf(c) === -1) items.push(c) })
+        } else {
+          var used = mapUsed(mapping)
+          var crossed = mapping.attributes.some(function (a, ai) { return ai !== index && a.from === 'collections' })
+          items = (view.collections || []).map(function (c) { return c.name }).filter(function (n) {
+            if ((attribute.shared || []).indexOf(n) !== -1) return false
+            return mine.indexOf(n) !== -1 || crossed || !used[n] || attribute.values.some(function (x, i) { return i !== vi && (x.collections || []).indexOf(n) !== -1 })
+          })
+        }
+        // Sets that look like this group's — the same modes as the ones its options already
+        // pick — come first; the rest (a palette, breakpoints, a legacy scale) fold away.
+        var others = []
+        if (key === 'collections') {
+          var modesOf = function (n) { var c = mapCollection(n); return c ? c.modes.slice().sort().join('|') : '' }
+          var shapes = attribute.values.reduce(function (all, x) { return all.concat((x.collections || []).map(modesOf)) }, [])
+          if (shapes.length) {
+            others = items.filter(function (n) { return mine.indexOf(n) === -1 && shapes.indexOf(modesOf(n)) === -1 })
+            items = items.filter(function (n) { return others.indexOf(n) === -1 })
+            if (MAP_MORE_SETS) { items = items.concat(others) }
+          }
+        }
+        items.forEach(function (item) {
+          var owner = attribute.values.filter(function (x, i) { return i !== vi && (x[key] || []).indexOf(item) !== -1 })[0]
+          var info = key === 'collections' ? mapCollection(item) : null
+          var box = sEl('input', { type: 'checkbox', checked: mine.indexOf(item) !== -1, on: { change: function () {
+            var on = box.checked
+            edit(function (x) { x[key] = on ? (x[key] || []).concat([item]) : (x[key] || []).filter(function (y) { return y !== item }) })
+          } } })
+          list.appendChild(sEl('label', { className: 'mp-check' + (owner ? ' taken' : '') }, [
+            box, ' ' + item,
+            info ? sEl('small', { textContent: ' ' + info.tokens + (info.modes.length > 1 ? ' · ' + info.modes.join(', ') : '') }) : null,
+            owner ? sEl('small', { textContent: ' · also in ' + owner.value }) : null,
+          ]))
+        })
+        if (others.length) {
+          list.appendChild(sEl('button', { type: 'button', className: 'mp-more-sets', textContent: MAP_MORE_SETS ? 'fewer sets' : '+ ' + others.length + ' other set' + (others.length === 1 ? '' : 's') + ' (' + others.join(', ') + ')', on: { click: function () { MAP_MORE_SETS = !MAP_MORE_SETS; renderMapping() } } }))
+        }
+        if (!items.length && !others.length) list.appendChild(sEl('p', { className: 'mp-meta', textContent: key === 'columns' ? 'No modes to pick: choose the set whose modes these are above.' : 'Every set is already picked by another group.' }))
+        panel.appendChild(sEl('p', { className: 'mp-meta', textContent: key === 'columns' ? 'The modes this option is, in every set that has them:' : value.base ? 'The sets this option is made of — the other options start from it:' : 'The sets this option is made of — on top of the default, so they hold only what differs:' }))
+        panel.appendChild(list)
+        return panel
+      }
+
+      // ── what ships ──
+      function renderMapOutput(summary) {
+        var box = sEl('div', { className: 'mp-block' })
+        box.appendChild(sEl('div', { className: 'mp-block-head' }, [
+          sEl('b', { textContent: 'Output' }),
+          sEl('span', { className: 'mp-meta', textContent: summary ? summary.tokens + ' tokens' : '' }),
+        ]))
+        if (!summary) return box
+        if (summary.attributes && summary.attributes.length) {
+          var line = sEl('p', { className: 'mp-html' }, [sEl('span', { className: 'mp-meta', textContent: 'Switch on <html>: ' })])
+          summary.attributes.forEach(function (a, n) {
+            if (n) line.appendChild(sEl('span', { className: 'mp-meta', textContent: '  ' }))
+            line.appendChild(sEl('code', {}, [a.attribute + '=' + a.values.map(function (v) { return v === a.default ? v + '*' : v }).join(' | ')]))
+          })
+          line.appendChild(sEl('span', { className: 'mp-meta', textContent: '   * with nothing set' }))
+          box.appendChild(line)
+        }
+        var modules = !!(OPTIONS && OPTIONS.tokens && OPTIONS.tokens.emitModuleFiles)
+        var list = sEl('div', { className: 'mp-files' })
+        ;(summary.files || []).forEach(function (f, n) {
+          var label = n === 0 || modules ? f.name : f.name.replace(/\.module\.css$/, '') + ' (part of tokens.css)'
+          list.appendChild(sEl('button', {
+            type: 'button',
+            className: 'mp-file' + (MAP_FILE === f.name ? ' on' : '') + (n > 0 ? ' part' : ''),
+            attrs: { 'aria-expanded': MAP_FILE === f.name ? 'true' : 'false' },
+            on: { click: function () { MAP_FILE = MAP_FILE === f.name ? null : f.name; renderMapping(); if (MAP_FILE) requestMapping() } },
+          }, [sEl('code', { textContent: label }), sEl('span', { className: 'mp-meta', textContent: f.title }), sEl('small', { textContent: f.tokens + ' · ' + (f.bytes / 1024).toFixed(1) + ' KB' })]))
+          if (MAP_FILE === f.name) {
+            var text = summary.preview && summary.preview.name === f.name ? summary.preview.text : null
+            list.appendChild(text === null ? sEl('p', { className: 'mp-note', textContent: 'Opening ' + f.name + '…' }) : sEl('pre', { className: 'mp-pre', textContent: text }))
+          }
+        })
+        box.appendChild(list)
+        return box
+      }
+
+      // ── the sets, and the selected one's tokens ──
+      function renderMapSide(view, mapping) {
+        var side = sEl('div', { className: 'mp-side' })
+        side.appendChild(sEl('div', { className: 'mp-side-head' }, [sEl('b', { textContent: 'Sets' }), sEl('span', { className: 'mp-meta', textContent: String(view.collections.length) })]))
+        view.collections.forEach(function (c) {
+          var row = sEl('div', { className: 'mp-set' + (c.name === MAP_SELECTED ? ' on' : '') + (c.role === 'skip' ? ' off' : '') })
+          row.appendChild(sEl('button', {
+            type: 'button',
+            className: 'mp-set-name',
+            attrs: { title: 'Show the tokens of ' + c.name },
+            on: { click: function () { MAP_SELECTED = c.name; renderMapping(); requestMapping() } },
+          }, [sEl('b', { textContent: c.name }), sEl('small', { textContent: String(c.tokens) }), c.modes.length > 1 ? sEl('i', { textContent: c.modes.join(' · ') }) : null]))
+          if (c.role === 'attribute') {
+            row.appendChild(sEl('span', { className: 'mp-set-theme', attrs: { title: 'Exported through the themes' }, textContent: c.line }))
+          } else {
+            var status = sSelect(MAP_ROLES.map(function (r) { return [r[0], MAP_ROLE_MARK[r[0]] + ' ' + r[1]] }), c.role, function (role) {
+              var m = mapDraft()
+              m.collections = m.collections || {}
+              if (role === 'export') delete m.collections[c.name]; else m.collections[c.name] = role
+              if (!Object.keys(m.collections).length) delete m.collections
+              saveMapping(m)
+            }, c.name + ' status')
+            status.className = 'mp-status-select role-' + c.role
+            status.title = MAP_ROLE_HINTS[c.role] || ''
+            row.appendChild(status)
+          }
+          side.appendChild(row)
+        })
+        return side
+      }
+
+      // The divider between the two panes: drag it to give the table more room or less.
+      function renderMapSplitter(panes) {
+        var handle = sEl('div', { className: 'mp-split', attrs: { role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Resize the collection list', tabindex: '0' } })
+        var set = function (width) {
+          var max = Math.max(160, panes.getBoundingClientRect().width * 0.6)
+          MAP_SIDE_WIDTH = Math.round(Math.min(max, Math.max(150, width)))
+          panes.style.setProperty('--mp-side', MAP_SIDE_WIDTH + 'px')
+        }
+        var keep = function () { try { localStorage.setItem('allcrew.mapping.side', String(MAP_SIDE_WIDTH)) } catch (e) { /* no storage */ } }
+        handle.addEventListener('mousedown', function (event) {
+          event.preventDefault()
+          var left = panes.getBoundingClientRect().left
+          handle.classList.add('dragging')
+          var move = function (e) { set(e.clientX - left) }
+          var up = function () { handle.classList.remove('dragging'); document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); keep() }
+          document.addEventListener('mousemove', move)
+          document.addEventListener('mouseup', up)
+        })
+        handle.addEventListener('keydown', function (event) {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+          event.preventDefault()
+          set(MAP_SIDE_WIDTH + (event.key === 'ArrowLeft' ? -16 : 16))
+          keep()
+        })
+        return handle
+      }
+
+      function renderMapMain(view, mapping) {
+        var main = sEl('div', { className: 'mp-main' })
+        var table = view.table
+        if (!MAP_SELECTED || !table || table.collection !== MAP_SELECTED) {
+          main.appendChild(sEl('p', { className: 'mp-note', textContent: MAP_SELECTED ? 'Reading ' + MAP_SELECTED + '…' : 'Pick a set to see its tokens as Figma shows them, with their names in code.' }))
+          return main
+        }
+        var name = table.collection
+        var info = mapCollection(name) || { role: 'export', line: '' }
+        var head = sEl('div', { className: 'mp-head' }, [sEl('b', { textContent: name }), sEl('span', { className: 'mp-meta', textContent: '→ ' + (info.role === 'attribute' ? info.line : (MAP_ROLE_MARK[info.role] || '') + ' ' + info.line) })])
+        main.appendChild(head)
+        if (table.base) main.appendChild(sEl('p', { className: 'mp-hint', textContent: 'On top of ' + table.base + ': only what differs needs to be here, the rest comes from ' + table.base + '.' }))
+
+        var grid = sEl('table', { className: 'mp-table' })
+        var header = sEl('tr', {}, [sEl('th', { textContent: 'Name · in code' })])
+        table.columns.forEach(function (col) {
+          var th = sEl('th', {}, [col.mode])
+          col.bindings.forEach(function (b) { th.appendChild(sEl('span', { className: 'mp-bind', textContent: b.attribute + '=' + b.value })) })
+          header.appendChild(th)
+        })
+        grid.appendChild(header)
+        table.rows.forEach(function (row) {
+          var tag = row.status === 'override' ? 'override' : row.status === 'same' ? 'same as ' + table.base : row.status === 'base' ? 'from ' + table.base : ''
+          var tr = sEl('tr', { className: row.status === 'base' ? 'mp-row-base' : '' }, [
+            sEl('td', {}, [sBreak(row.name), tag ? sEl('span', { className: 'mp-tag ' + row.status, textContent: tag }) : null, sEl('span', { className: 'mp-code', textContent: row.code })]),
+          ])
+          row.cells.forEach(function (cell) {
+            tr.appendChild(sEl('td', {}, [cell.color ? sEl('span', { className: 'mp-sw', attrs: { style: 'background:' + cell.color } }) : null, sBreak(cell.text)]))
+          })
+          grid.appendChild(tr)
+        })
+        main.appendChild(sEl('div', { className: 'mp-scroll' }, [grid]))
+        if (table.more) main.appendChild(sEl('p', { className: 'mp-more', textContent: '+' + table.more + ' more' }))
+        return main
       }
 
       function syncSettingsControls() {
@@ -4205,9 +4645,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         setControl('set-django-scaffold', 'checked', OPTIONS.targetOptions.djangoScaffold !== false)
         setControl('set-inline', 'checked', OPTIONS.tokens.inlinePrimitives)
         setControl('set-flatten', 'checked', OPTIONS.tokens.flattenAliases)
-        setControl('set-theme-attr', 'value', OPTIONS.tokens.themeAttribute)
-        renderThemeMergeTable()
-        renderRoleList()
+        renderMapping()
         setControl('set-emit-json', 'checked', OPTIONS.tokens.emitJson)
         setControl('set-emit-scss', 'checked', OPTIONS.tokens.emitScss)
         setControl('set-emit-modules', 'checked', OPTIONS.tokens.emitModuleFiles)
@@ -4384,6 +4822,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       function afterSettingsChange() {
         syncDependentRows()
         persistExportOptions()
+        scheduleMappingRefresh()
       }
 
       // Each Settings control writes straight into OPTIONS. Text inputs debounce 350 ms
@@ -4414,7 +4853,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-django-scaffold', function (el) { OPTIONS.targetOptions.djangoScaffold = el.checked })
       bindSetting('set-inline', function (el) { OPTIONS.tokens.inlinePrimitives = el.checked })
       bindSetting('set-flatten', function (el) { OPTIONS.tokens.flattenAliases = el.checked })
-      bindSetting('set-theme-attr', function (el) { OPTIONS.tokens.themeAttribute = el.value.trim() })
       bindSetting('set-emit-json', function (el) { OPTIONS.tokens.emitJson = el.checked })
       bindSetting('set-emit-scss', function (el) { OPTIONS.tokens.emitScss = el.checked })
       bindSetting('set-emit-modules', function (el) { OPTIONS.tokens.emitModuleFiles = el.checked })
@@ -4425,16 +4863,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       bindSetting('set-typo-scale-only', function (el) { OPTIONS.tokens.typoScaleOnly = el.checked })
       bindSetting('set-typo-shorthand', function (el) { OPTIONS.tokens.typoShorthand = el.checked })
       bindSetting('set-typo-tshirt', function (el) { OPTIONS.tokens.typoNaming = el.checked ? 'tshirt' : 'value' })
-      document.getElementById('theme-merge-add').addEventListener('click', function () {
-        var groups = themeMergeGroups()
-        var group = groups[groups.length - 1]
-        if (!group) {
-          group = { name: 'Theme', modes: [] }
-          groups.push(group)
-        }
-        group.modes.push({ collection: '', name: '' })
-        renderThemeMergeTable()
-      })
       bindSetting('set-lint-depth', function (el) {
         var depth = parseInt(el.value, 10)
         OPTIONS.lint = { maxNestingDepth: isFinite(depth) ? Math.min(32, Math.max(1, depth)) : 8 }
@@ -5314,7 +5742,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var has = Object.keys(DT_FILES).length > 0
         document.getElementById('dt-zip').disabled = !has
         if (has) { dtRenderSummary(); dtRenderTabs(); dtRenderPreview() }
-        renderThemeMergeTable()
+        // Collection choices are loaded independently when Settings opens, but a fresh export
+        // may have renamed one — re-render so the selects show the current names.
         dtRefreshGenCard()
         dtRefreshBpCard()
       }
@@ -8661,15 +9090,34 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           var updateStatus = document.getElementById('update-status')
           updateStatus.textContent = 'Could not open update link: ' + msg.message
           updateStatus.className = 'update-status err'
-        } else if (msg.type === 'VARIABLE_COLLECTIONS') {
-          THEME_COLLECTIONS_LOADING = false
-          THEME_COLLECTION_CANDIDATES = (msg.collections || []).slice().sort(function (a, b) {
-            return a.name.localeCompare(b.name)
-          })
-          ROLE_COLLECTIONS = (msg.all || []).slice()
-          renderRoleList()
-          document.getElementById('theme-merge-editor').classList.toggle('hidden', !msg.singleModeOnly)
-          renderThemeMergeTable()
+        } else if (msg.type === 'TOKENS_MAPPING_RESULT') {
+          // An agent's call is answered to the panel too (plugin.call), numbered by nobody: it
+          // must not replace what this screen asked for. A save it made changed the file, so the
+          // screen asks again for its own view.
+          if (typeof msg.request !== 'number') { if (msg.saved) requestMapping(); return }
+          // An answer to a request since replaced is dropped: the newer one is on its way.
+          if (msg.request < MAP_REQUEST) return
+          MAP_SAVING = false
+          if (msg.error) {
+            // A save that could not happen: say why and keep the edit on screen, so the next
+            // change (binding the value that was missing) completes it rather than starting over.
+            MAP_ERROR = msg.error
+            if (!MAP || !MAP.mapping) MAP = msg
+            renderMapping()
+            return
+          }
+          if (msg.saved) {
+            MAP_ERROR = null
+            // The export reads the file's mapping as its token settings: keep the panel's copy in step.
+            if (msg.tokens && OPTIONS) OPTIONS.tokens = msg.tokens
+          }
+          MAP = msg
+          if (!MAP_SELECTED && msg.view && msg.view.collections.length) {
+            var firstUsed = msg.view.collections.filter(function (c) { return c.role === 'attribute' })[0]
+            MAP_SELECTED = (firstUsed || msg.view.collections[0]).name
+            requestMapping()
+          }
+          renderMapping()
         } else if (msg.type === 'USER_PRESETS') {
           USER_PRESETS = msg.userPresets || []
           renderPresetOptions()

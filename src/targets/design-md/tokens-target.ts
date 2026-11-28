@@ -6,7 +6,7 @@
  * and an agent prompt. Pure: everything comes from the token tree + normalized options.
  */
 
-import type { NormalizedOptions, TokenTree } from '../../tokens/engine.ts'
+import { themeGridOf, type NormalizedOptions, type ThemeGrid, type TokenTree } from '../../tokens/engine.ts'
 import { buildTokenModel, type TokenRole } from './model.ts'
 import {
   agentPromptSection,
@@ -32,6 +32,9 @@ export interface TokensDesignMdInput {
   themes: readonly string[]
   defaultTheme: string
   themeAttribute: string
+  /** The attribute grid tokens.css was written for (`buildPackage`'s `emitted.grid`), when theme
+   * axes applied — so the Themes section names the attributes the stylesheet uses. */
+  themeGrid?: ThemeGrid
   /** Paths actually present in the package — the file table only lists what shipped. */
   files: readonly string[]
   options: NormalizedOptions
@@ -65,8 +68,8 @@ const FILE_DOCS: ReadonlyArray<{ match: (path: string) => boolean; what: string;
   },
   {
     match: (path) => path.endsWith('.module.css'),
-    what: 'The same declarations, one file per theme (CSS Modules).',
-    use: 'Import a single theme at build time, or all of them for runtime switching.',
+    what: 'The same declarations split into CSS Modules: one per theme, or — with theme attributes — the layers of `tokens.css` (`base`, each theme, each product).',
+    use: 'Import all of them in the order of `tokens.css`; leave out only a theme or product the build never shows.',
   },
   {
     match: (path) => path === 'README.md',
@@ -230,7 +233,7 @@ export function buildTokensDesignMd(input: TokensDesignMdInput): string {
     ['Token reference', tokenReferenceSection(model)],
     ['Component behaviour contracts', componentDocsSection(input.componentDocs ?? [], model.entries)],
     ['Typography', typography],
-    ['Themes', themesSection(model, input.themeAttribute)],
+    ['Themes', themesSection(model, input.themeAttribute, input.themeGrid ?? themeGridOf(input.themes, input.options.themeAxes, input.defaultTheme))],
     ['Breakpoints', breakpoints],
     [
       'Strict guardrails (generated from a Figma audit)',
