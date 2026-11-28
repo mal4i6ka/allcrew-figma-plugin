@@ -161,6 +161,7 @@ import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
+import { animatedShaderProperties } from './agent/paints.ts'
 import { readPaintsForWrite } from './canvas/paint-reader.ts'
 import { decorationWords } from './canvas/decoration.ts'
 import { connectorWords, editorProblem, pageIdOf, tableWords, transitionWords } from './canvas/board.ts'
@@ -2127,7 +2128,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
-    ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
+    // `animated` lists the settings that are keyframed: Figma leaves those out of `properties`.
+    ...(describeShaderPaints(bag.fills).length > 0
+      ? { shader: describeShaderPaints(bag.fills, (bag.manualKeyframeTracks as { fills?: unknown } | undefined)?.fills) }
+      : {}),
     // On an INSTANCE, empty is a decision. Everywhere else a layer without a stroke is the
     // ordinary case and saying so on every read would be noise; on an instance it is the
     // designer having taken the component's line off, and a read that stays silent about it
@@ -5504,7 +5508,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const paint of paints) {
                 if ((paint as Paint)?.type !== 'SHADER') continue
                 const paintShader = paint as ShaderPaint
-                note(paintShader.id, 'fill', node, paintShader.properties, paintShader.propertyMetadata)
+                // An animated setting is no longer among `properties` on a read (typings 1.143.0):
+                // its id is taken from the node's tracks, or the catalogue would lose it.
+                note(
+                  paintShader.id,
+                  'fill',
+                  node,
+                  { ...paintShader.properties, ...animatedShaderProperties(node, field, paints.indexOf(paint)) },
+                  paintShader.propertyMetadata
+                )
               }
             }
             const effects = (node as unknown as { effects?: readonly Effect[] }).effects
@@ -5512,7 +5524,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const effect of effects) {
                 if (effect?.type !== 'SHADER') continue
                 const effectShader = effect as ShaderEffect
-                note(effectShader.id, 'effect', node, effectShader.properties, effectShader.propertyMetadata)
+                note(
+                  effectShader.id,
+                  'effect',
+                  node,
+                  { ...effectShader.properties, ...animatedShaderProperties(node, 'effects', effects.indexOf(effect)) },
+                  effectShader.propertyMetadata
+                )
               }
             }
           }

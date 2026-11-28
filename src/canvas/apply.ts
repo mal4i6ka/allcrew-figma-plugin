@@ -1736,17 +1736,27 @@ function animationStyleWord(key: string | undefined): string | null {
  * exactly as Figma holds them: what comes out of a read goes straight back into `properties` on
  * a write.
  */
-export function describeShaderPaints(value: unknown): Array<{ id: string; properties?: Record<string, unknown> }> {
+export function describeShaderPaints(
+  value: unknown,
+  /** The node's `manualKeyframeTracks.fills` — where an animated setting lives once Figma has
+   * left it out of `properties` (typings 1.143.0). */
+  tracks?: unknown
+): Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> {
   if (!Array.isArray(value)) return []
-  const shaders: Array<{ id: string; properties?: Record<string, unknown> }> = []
-  for (const paint of value) {
+  const shaders: Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> = []
+  for (const [index, paint] of value.entries()) {
     if ((paint as { type?: string })?.type !== 'SHADER') continue
     const shader = paint as ShaderPaint
+    const moving = (tracks as Record<number, { properties?: Record<string, unknown> } | undefined> | undefined)?.[index]?.properties
+    const animated = moving && typeof moving === 'object' ? Object.keys(moving) : []
     shaders.push({
       id: shader.id,
       ...(shader.properties && Object.keys(shader.properties).length > 0
         ? { properties: shader.properties as Record<string, unknown> }
         : {}),
+      // Named so a reader does not take a missing setting for a default one. A write that leaves
+      // these out of `properties` keeps their keyframes.
+      ...(animated.length > 0 ? { animated } : {}),
     })
   }
   return shaders
