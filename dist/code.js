@@ -25668,6 +25668,8 @@ ${renderSections(sections)}
     "x",
     "y",
     "relativeTransform",
+    // Exposing is about the component the instance is nested IN, which it is not until placed.
+    "isExposedInstance",
     "gridRowSpan",
     "gridColumnSpan",
     "gridChildVerticalAlign",
@@ -46291,7 +46293,8 @@ ${scripts}`, "");
            * call is this one, so this is where it learns there is something to read before it acts. */
           guidelines: guidelinesSummary(readGuidelinesManifest(figma.root)),
           /* What the file pins for its exports — null means each person's own panel settings. */
-          pinned: { docs: readFileDocsConfig(figma.root) }
+          /* What the file pins for its exports — null/false means each person's own panel settings. */
+          pinned: { tokens: readFileTokenConfig() !== null, docs: readFileDocsConfig(figma.root) }
         };
       }
     },

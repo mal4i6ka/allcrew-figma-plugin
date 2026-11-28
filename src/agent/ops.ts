@@ -51,6 +51,7 @@ import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
 import { DATA_OPS } from './data-ops.ts'
 import { DOCS_OPS } from './docs-ops.ts'
+import { readFileTokenConfig } from '../tokens/file-config.ts'
 import { guidelinesSummary, readFileDocsConfig, readGuidelinesManifest, type SharedDataHost } from '../docs/file-docs.ts'
 import { LISTEN_OPS } from './listen-ops.ts'
 import { REACH_OPS } from './reach-ops.ts'
@@ -917,7 +918,8 @@ export const READ_OPS: readonly OpDef[] = [
          * call is this one, so this is where it learns there is something to read before it acts. */
         guidelines: guidelinesSummary(readGuidelinesManifest(figma.root as unknown as SharedDataHost)),
         /* What the file pins for its exports — null means each person's own panel settings. */
-        pinned: { docs: readFileDocsConfig(figma.root as unknown as SharedDataHost) },
+        /* What the file pins for its exports — null/false means each person's own panel settings. */
+        pinned: { tokens: readFileTokenConfig() !== null, docs: readFileDocsConfig(figma.root as unknown as SharedDataHost) },
       }
     },
   },

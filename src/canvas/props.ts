@@ -1472,6 +1472,8 @@ const PLACED = [
   'x',
   'y',
   'relativeTransform',
+  // Exposing is about the component the instance is nested IN, which it is not until placed.
+  'isExposedInstance',
   'gridRowSpan',
   'gridColumnSpan',
   'gridChildVerticalAlign',
