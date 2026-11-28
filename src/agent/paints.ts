@@ -14,6 +14,7 @@
  */
 
 import { authoredColourText } from '../tokens/color.ts'
+import { shaderSettingNames } from '../canvas/keyframes.ts'
 
 /** One paint in a stack, described so it can be acted on: what it renders, whether it is
  * bound, and its index — the same index `node.bind` and `lint.colors` use. */
@@ -167,6 +168,52 @@ export interface ShaderPropertySummary {
 export interface ShaderTrackLike {
   readonly baseValue?: { readonly value?: unknown } | null
   readonly keyframes?: readonly unknown[]
+  /** The setting's name, when something other than the paint still knows it. */
+  readonly name?: string
+}
+
+/** Setting names borrowed from other layers, by `<paint id>|<setting id>` — they do not change. */
+const borrowedNames = new Map<string, string>()
+
+/**
+ * A name for an animated setting from another layer on the page that carries the same shader
+ * unanimated — its paint still has the definitions this one lost. Bounded: it is a courtesy to a
+ * read, not something a read should wait for.
+ */
+function borrowedSettingName(paintId: string, settingId: string): string | undefined {
+  const key = `${paintId}|${settingId}`
+  if (borrowedNames.has(key)) return borrowedNames.get(key)
+  let found: string | undefined
+  try {
+    let budget = 4000
+    const visit = (node: unknown): boolean => {
+      if (budget-- <= 0) return true
+      const bag = node as Record<string, unknown>
+      for (const stack of ['fills', 'strokes', 'effects']) {
+        const entries = bag[stack]
+        if (!Array.isArray(entries)) continue
+        for (const entry of entries) {
+          const shader = entry as { type?: string; id?: string; propertyMetadata?: Record<string, { name?: string } | undefined> }
+          if (shader?.type !== 'SHADER' || shader.id !== paintId) continue
+          const name = shader.propertyMetadata?.[settingId]?.name
+          if (name) {
+            found = name
+            return true
+          }
+        }
+      }
+      const children = bag.children
+      if (Array.isArray(children)) for (const child of children) if (visit(child)) return true
+      return false
+    }
+    if (typeof figma !== 'undefined') for (const top of figma.currentPage.children) if (visit(top)) break
+  } catch {
+    /* an unreadable page costs the name, not the read */
+  }
+  // Only a find is remembered: a miss is true of the page as it is now, and the next layer the
+  // designer drops may be the one that names it.
+  if (found) borrowedNames.set(key, found)
+  return found
 }
 
 /**
@@ -187,7 +234,18 @@ export function animatedShaderProperties(
     const properties = (slot as { properties?: unknown } | undefined)?.properties
     if (!properties || typeof properties !== 'object') return undefined
     const found = properties as Record<string, ShaderTrackLike>
-    return Object.keys(found).length > 0 ? found : undefined
+    if (Object.keys(found).length === 0) return undefined
+    // Figma stops naming a setting on the layer once it is animated (seen live). Two places may
+    // still know: the names this plugin kept when it wrote the track, and another layer on the
+    // page wearing the same shader unanimated.
+    const kept = shaderSettingNames(node)
+    const paintId = ((node as Record<string, unknown>)[collection] as Array<{ id?: unknown }> | undefined)?.[index]?.id
+    const out: Record<string, ShaderTrackLike> = {}
+    for (const [settingId, track] of Object.entries(found)) {
+      const name = kept[settingId] ?? (typeof paintId === 'string' ? borrowedSettingName(paintId, settingId) : undefined)
+      out[settingId] = name ? { baseValue: track?.baseValue, keyframes: track?.keyframes, name } : track
+    }
+    return out
   } catch {
     return undefined
   }
@@ -295,9 +353,11 @@ export async function describeShader(
   const byIds = sameShaderInCatalogue([...Object.keys(properties), ...Object.keys(animated ?? {})], definitions)
   const named = (defId: string) => {
     const definition = metadata[defId] ?? declared[defId] ?? byIds?.[defId]
+    const keptName = definition ? undefined : animated?.[defId]?.name
     return {
       id: defId,
       ...(definition ? { name: definition.name, type: definition.type } : {}),
+      ...(keptName ? { name: keptName } : {}),
       ...(definition?.defaultValue === undefined ? {} : { default: definition.defaultValue }),
       ...(definition?.description ? { description: definition.description } : {}),
     }
