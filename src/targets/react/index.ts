@@ -434,7 +434,7 @@ async function emitMotion(
     for (const node of walk(root)) {
       const snapshot = motionByNodeId.get(node.id)
       if (!snapshot || snapshot.tracks.length === 0) continue
-      parts.push(emitNodeAnimationCss({ selector: `.${className(node.id)}`, tracks: snapshot.tracks }))
+      parts.push(emitNodeAnimationCss({ selector: `.${className(node.id)}`, tracks: snapshot.tracks, transform3d: snapshot.transform3d }))
     }
   }
 

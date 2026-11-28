@@ -257,3 +257,22 @@ test('the pass annotates the tree in place and counts what it could not reach', 
   // answer, which is worse than a named gap.
   assert.equal(root.children[1].appearance, undefined)
 })
+
+test('what a preserve-3D container does not draw is named and kept out of its paint', async () => {
+  // Read live: such a frame keeps opacity 0.5 and its clip, and Figma renders neither.
+  const got = await appearanceOf(
+    { opacity: 0.5, blendMode: 'MULTIPLY', clipsContent: true, scene3d: { perspective: -1, preserve3d: true, visible: true } },
+    resolve
+  )
+  assert.equal(got?.opacity, undefined)
+  assert.equal(got?.blendMode, undefined)
+  assert.deepEqual(got?.notRendered, ['opacity', 'blendMode', 'clip'])
+
+  // A flat scene paints all of it as usual.
+  const flat = await appearanceOf({ opacity: 0.5, clipsContent: true, scene3d: { perspective: 800, preserve3d: false } }, resolve)
+  assert.deepEqual(flat?.opacity, { value: 0.5 })
+  assert.equal(flat?.notRendered, undefined)
+  // And a preserve-3D container with nothing dead on it says nothing.
+  const clean = await appearanceOf({ opacity: 1, scene3d: { perspective: -1, preserve3d: true } }, resolve)
+  assert.equal(clean?.notRendered, undefined)
+})

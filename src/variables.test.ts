@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readAliasTargets, readAllVariables, readLibraryVariables, resolveVariableValue } from './variables.ts'
+import { LIBRARY_IMPORT_CONCURRENCY, readAliasTargets, readAllVariables, readLibraryVariables, resolveVariableValue } from './variables.ts'
 
 /**
  * The sweep is network-bound by construction — one round trip per variable — so what is worth
@@ -106,7 +106,43 @@ test('progress knows the size of the whole sweep before the first import', async
 
   await readLibraryVariables({ onProgress: (done, total) => seen.push([done, total]) })
 
-  assert.deepEqual(seen, [[0, 5], [1, 5], [2, 5], [3, 5], [4, 5], [5, 5]])
+  // One report per batch of imports, per collection: 3 of Colour, then 2 of Size.
+  assert.deepEqual(seen, [[0, 5], [3, 5], [5, 5]])
+})
+
+test('library variables are imported a few at a time, and come back in the order they were listed', async () => {
+  // One after another, 412 variables took 129 s against the real team-library service; each
+  // import is its own round trip and none depends on another.
+  let running = 0
+  let most = 0
+  const collection = palette('Colour', 'c1', 20)
+  setFigma([collection])
+  const figmaDouble = (globalThis as { figma: { variables: { importVariableByKeyAsync: (key: string) => Promise<unknown> } } }).figma
+  const real = figmaDouble.variables.importVariableByKeyAsync
+  figmaDouble.variables.importVariableByKeyAsync = async (key: string) => {
+    running += 1
+    most = Math.max(most, running)
+    // The later a key, the sooner it answers — order must not depend on who finishes first.
+    await new Promise((resolve) => setTimeout(resolve, 20 - Number(key.split('-')[1])))
+    running -= 1
+    return real(key)
+  }
+  const progress: number[] = []
+
+  const snapshot = await readLibraryVariables({ onProgress: (done) => progress.push(done) })
+
+  assert.equal(most, LIBRARY_IMPORT_CONCURRENCY)
+  assert.deepEqual(snapshot.variables.map((entry) => entry.key), collection.variables.map((one) => one.key))
+  assert.deepEqual(progress, [0, 8, 16, 20])
+})
+
+test('an offset that falls inside a batch resumes at exactly that variable', async () => {
+  setFigma([palette('Colour', 'c1', 12), palette('Size', 's1', 4)])
+  const rest = await readLibraryVariables({ offset: 10 })
+  assert.deepEqual(rest.variables.map((entry) => entry.key), ['c1-10', 'c1-11', 's1-0', 's1-1', 's1-2', 's1-3'])
+  // Past one whole collection and into the next.
+  const tail = await readLibraryVariables({ offset: 14 })
+  assert.deepEqual(tail.variables.map((entry) => entry.key), ['s1-2', 's1-3'])
 })
 
 test('a library service that refuses answers empty rather than throwing', async () => {

@@ -14,6 +14,7 @@
  */
 
 import { authoredColourText } from '../tokens/color.ts'
+import { shaderSettingNames } from '../canvas/keyframes.ts'
 
 /** One paint in a stack, described so it can be acted on: what it renders, whether it is
  * bound, and its index — the same index `node.bind` and `lint.colors` use. */
@@ -150,8 +151,104 @@ export interface ShaderPropertySummary {
   description?: string
   /** The value as Figma holds it. Variable aliases inside it — a gradient stop bound to a
    * token, a colour bound to one — are replaced by `{ token, id }`, because an id alone
-   * cannot be read and a name alone cannot be written back. */
+   * cannot be read and a name alone cannot be written back. For an animated setting this is
+   * the track's base value — what the layer holds outside the timeline; while it plays, the
+   * setting starts from its first keyframe. */
   value: unknown
+  /** The setting moves on the timeline. Figma leaves such a setting OUT of `properties` on a read
+   * (typings 1.143.0) — its keyframes live in the node's `manualKeyframeTracks` — so without this
+   * it would simply be missing, and read as "left at the default". A write may leave it out too:
+   * an animated setting that is not named keeps its keyframes. */
+  animated?: true
+  /** How many keyframes the track has, when `animated`. */
+  keyframes?: number
+}
+
+/** One animated shader setting's track, as far as a description needs it. */
+export interface ShaderTrackLike {
+  readonly baseValue?: { readonly value?: unknown } | null
+  readonly keyframes?: readonly unknown[]
+  /** The setting's name, when something other than the paint still knows it. */
+  readonly name?: string
+}
+
+/** Setting names borrowed from other layers, by `<paint id>|<setting id>` — they do not change. */
+const borrowedNames = new Map<string, string>()
+
+/**
+ * A name for an animated setting from another layer on the page that carries the same shader
+ * unanimated — its paint still has the definitions this one lost. Bounded: it is a courtesy to a
+ * read, not something a read should wait for.
+ */
+function borrowedSettingName(paintId: string, settingId: string): string | undefined {
+  const key = `${paintId}|${settingId}`
+  if (borrowedNames.has(key)) return borrowedNames.get(key)
+  let found: string | undefined
+  try {
+    let budget = 4000
+    const visit = (node: unknown): boolean => {
+      if (budget-- <= 0) return true
+      const bag = node as Record<string, unknown>
+      for (const stack of ['fills', 'strokes', 'effects']) {
+        const entries = bag[stack]
+        if (!Array.isArray(entries)) continue
+        for (const entry of entries) {
+          const shader = entry as { type?: string; id?: string; propertyMetadata?: Record<string, { name?: string } | undefined> }
+          if (shader?.type !== 'SHADER' || shader.id !== paintId) continue
+          const name = shader.propertyMetadata?.[settingId]?.name
+          if (name) {
+            found = name
+            return true
+          }
+        }
+      }
+      const children = bag.children
+      if (Array.isArray(children)) for (const child of children) if (visit(child)) return true
+      return false
+    }
+    if (typeof figma !== 'undefined') for (const top of figma.currentPage.children) if (visit(top)) break
+  } catch {
+    /* an unreadable page costs the name, not the read */
+  }
+  // Only a find is remembered: a miss is true of the page as it is now, and the next layer the
+  // designer drops may be the one that names it.
+  if (found) borrowedNames.set(key, found)
+  return found
+}
+
+/**
+ * The keyframe tracks of the shader in one slot of a node's fills, strokes or effects, keyed by
+ * property-definition id — `manualKeyframeTracks.<collection>[index].properties`.
+ *
+ * Read defensively: Motion is a beta, the property is absent on older runtimes and on the plain
+ * objects a style's paints are, and a failed read here must cost the description nothing.
+ */
+export function animatedShaderProperties(
+  node: unknown,
+  collection: 'fills' | 'strokes' | 'effects',
+  index: number
+): Record<string, ShaderTrackLike> | undefined {
+  try {
+    const tracks = (node as { manualKeyframeTracks?: Record<string, unknown> } | null)?.manualKeyframeTracks
+    const slot = (tracks?.[collection] as Record<number, unknown> | undefined)?.[index]
+    const properties = (slot as { properties?: unknown } | undefined)?.properties
+    if (!properties || typeof properties !== 'object') return undefined
+    const found = properties as Record<string, ShaderTrackLike>
+    if (Object.keys(found).length === 0) return undefined
+    // Figma stops naming a setting on the layer once it is animated (seen live). Two places may
+    // still know: the names this plugin kept when it wrote the track, and another layer on the
+    // page wearing the same shader unanimated.
+    const kept = shaderSettingNames(node)
+    const paintId = ((node as Record<string, unknown>)[collection] as Array<{ id?: unknown }> | undefined)?.[index]?.id
+    const out: Record<string, ShaderTrackLike> = {}
+    for (const [settingId, track] of Object.entries(found)) {
+      const name = kept[settingId] ?? (typeof paintId === 'string' ? borrowedSettingName(paintId, settingId) : undefined)
+      out[settingId] = name ? { baseValue: track?.baseValue, keyframes: track?.keyframes, name } : track
+    }
+    return out
+  } catch {
+    return undefined
+  }
 }
 
 /** `#RRGGBB`, uppercase — the spelling every reader in this channel uses for a colour. */
@@ -232,7 +329,9 @@ async function nameAliasesWithin(value: unknown): Promise<unknown> {
  */
 export async function describeShader(
   shader: { id?: unknown; properties?: unknown; propertyMetadata?: unknown },
-  definitions?: Map<string, Shader>
+  definitions?: Map<string, Shader>,
+  /** The slot's animated settings (`animatedShaderProperties`) — the ones `properties` omits. */
+  animated?: Record<string, ShaderTrackLike>
 ): Promise<ShaderSummary> {
   const id = typeof shader?.id === 'string' ? shader.id : ''
   const known = definitions?.get(id)
@@ -246,22 +345,58 @@ export async function describeShader(
     ...(known ? { name: known.name, kind: known.type } : {}),
   }
 
-  const properties = shader?.properties
-  if (properties && typeof properties === 'object') {
-    const described: ShaderPropertySummary[] = []
-    for (const [defId, value] of Object.entries(properties as Record<string, unknown>)) {
-      const definition = metadata[defId] ?? declared[defId]
-      described.push({
-        id: defId,
-        ...(definition ? { name: definition.name, type: definition.type } : {}),
-        ...(definition?.defaultValue === undefined ? {} : { default: definition.defaultValue }),
-        ...(definition?.description ? { description: definition.description } : {}),
-        value: await nameAliasesWithin(value),
-      })
+  const properties = shader?.properties && typeof shader.properties === 'object' ? (shader.properties as Record<string, unknown>) : {}
+  const described: ShaderPropertySummary[] = []
+  // An animated setting is dropped from `propertyMetadata` as well as from `properties` (seen
+  // live), and the paint's id is not the catalogue's — two id spaces. The setting ids ARE shared,
+  // so the catalogue entry that defines every setting this paint has is the same shader.
+  const byIds = sameShaderInCatalogue([...Object.keys(properties), ...Object.keys(animated ?? {})], definitions)
+  const named = (defId: string) => {
+    const definition = metadata[defId] ?? declared[defId] ?? byIds?.[defId]
+    const keptName = definition ? undefined : animated?.[defId]?.name
+    return {
+      id: defId,
+      ...(definition ? { name: definition.name, type: definition.type } : {}),
+      ...(keptName ? { name: keptName } : {}),
+      ...(definition?.defaultValue === undefined ? {} : { default: definition.defaultValue }),
+      ...(definition?.description ? { description: definition.description } : {}),
     }
-    if (described.length > 0) out.properties = described
   }
+  const moving = (track: ShaderTrackLike | undefined) =>
+    track ? { animated: true as const, keyframes: Array.isArray(track.keyframes) ? track.keyframes.length : 0 } : {}
+
+  for (const [defId, value] of Object.entries(properties)) {
+    // A runtime that still lists an animated setting among the static ones: say that it moves.
+    described.push({ ...named(defId), value: await nameAliasesWithin(value), ...moving(animated?.[defId]) })
+  }
+  // The settings Figma left out because they are animated. Their value is the track's base —
+  // what the setting holds before the first keyframe — not the author's default.
+  for (const [defId, track] of Object.entries(animated ?? {})) {
+    if (defId in properties) continue
+    described.push({ ...named(defId), value: await nameAliasesWithin(track?.baseValue?.value), ...moving(track) })
+  }
+  if (described.length > 0) out.properties = described
   return out
+}
+
+/**
+ * The catalogue's definitions for a shader known only by its setting ids.
+ *
+ * Answers only when exactly one catalogue shader defines every one of the ids: a setting id is a
+ * pair of hashes, so a full match is the same shader, and anything less is not worth a name that
+ * might be another shader's.
+ */
+export function sameShaderInCatalogue(
+  settingIds: readonly string[],
+  definitions?: Map<string, Shader>
+): Record<string, ShaderPropertyDefinition | undefined> | undefined {
+  if (!definitions || settingIds.length === 0) return undefined
+  const matches: Array<Record<string, ShaderPropertyDefinition | undefined>> = []
+  for (const shader of definitions.values()) {
+    const declared = (shader.propertyDefinitions ?? {}) as Record<string, ShaderPropertyDefinition | undefined>
+    if (settingIds.every((id) => declared[id] !== undefined)) matches.push(declared)
+  }
+  return matches.length === 1 ? matches[0] : undefined
 }
 
 /**
@@ -313,7 +448,9 @@ export async function describePaint(
   paint: any,
   index: number,
   shaders?: Map<string, Shader>,
-  resolve?: ResolveVariableName
+  resolve?: ResolveVariableName,
+  /** For a SHADER paint: the slot's animated settings, which the paint itself no longer lists. */
+  shaderTracks?: Record<string, ShaderTrackLike>
 ): Promise<PaintSummary> {
   const out: PaintSummary = { type: String(paint?.type ?? 'UNKNOWN'), index }
   if (paint?.visible === false) out.visible = false
@@ -392,7 +529,7 @@ export async function describePaint(
   }
 
   if (paint?.type === 'SHADER') {
-    out.shader = await describeShader(paint, shaders)
+    out.shader = await describeShader(paint, shaders, shaderTracks)
     out.bound = null
     return out
   }

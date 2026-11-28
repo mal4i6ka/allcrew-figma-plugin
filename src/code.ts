@@ -162,6 +162,7 @@ import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
+import { animatedShaderProperties, sameShaderInCatalogue } from './agent/paints.ts'
 import { readPaintsForWrite } from './canvas/paint-reader.ts'
 import { decorationWords } from './canvas/decoration.ts'
 import { connectorWords, editorProblem, pageIdOf, tableWords, transitionWords } from './canvas/board.ts'
@@ -698,6 +699,9 @@ function defaultRoots(): readonly SceneNode[] {
  * `var(--content-base, #101010)` — and losing them is worth a sentence in the report, not the
  * whole render.
  */
+/** How long the React export waits for library variables before it ships with the ones it has. */
+const LIBRARY_VARIABLES_BUDGET_MS = 30_000
+
 async function variableNamesForExport(): Promise<{
   names: Map<string, string>
   /** The same variables as a stylesheet, so the emitted `var(--token, …)` has a table to read. */
@@ -708,8 +712,26 @@ async function variableNamesForExport(): Promise<{
   const asCss = (snapshot: VariableSnapshot): string =>
     emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css
   try {
-    const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups })
-    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] }
+    // Bounded: every library variable is its own round trip to Figma's team-library service, and a
+    // file with a large design system enabled (412 variables in five collections, measured
+    // upstream) outran the channel before a single file came back. What is not read in time is
+    // named as a gap; the tokens the scope itself binds are resolved separately by the caller.
+    const snapshot = await readAllVariables({
+      collectionMerges: exportOptions.themeMerges.groups,
+      budgetMs: LIBRARY_VARIABLES_BUDGET_MS,
+    })
+    return {
+      names: new Map(snapshot.variables.map((one) => [one.id, one.name])),
+      css: asCss(snapshot),
+      gaps:
+        snapshot.stoppedOn === 'budgetMs'
+          ? [
+              `the enabled libraries hold more variables than could be read in ${LIBRARY_VARIABLES_BUDGET_MS / 1000} s ` +
+                `(${snapshot.nextOffset ?? 0} were) — tokens.css lists only those, and the tokens this screen binds; ` +
+                'run the token export for the whole table',
+            ]
+          : [],
+    }
   } catch (error) {
     const local = foldSplitThemeCollections(
       await readLocalVariables(),
@@ -2210,7 +2232,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
-    ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
+    // `animated` lists the settings that are keyframed: Figma leaves those out of `properties`.
+    ...(describeShaderPaints(bag.fills).length > 0
+      ? { shader: describeShaderPaints(bag.fills, (bag.manualKeyframeTracks as { fills?: unknown } | undefined)?.fills) }
+      : {}),
     // On an INSTANCE, empty is a decision. Everywhere else a layer without a stroke is the
     // ordinary case and saying so on every read would be noise; on an instance it is the
     // designer having taken the component's line off, and a read that stays silent about it
@@ -3707,7 +3732,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           refuse('EMIT_REACT', 'nothing in that scope to render')
           break
         }
-        const variableNamesById = tokens.names
+        // The names of what this scope binds, resolved by id like the Django emitter does — so a
+        // library read that ran out of time costs the tokens table, never a `var(--token)` on screen.
+        const variableNamesById = new Map([...(await variableNamesForScope(sceneNodesById.values())), ...tokens.names])
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
         // The library the screen leans on, emitted first: its components are the real ones, with
         // every variant and every state, and the screen then imports them rather than building a
@@ -4341,8 +4368,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_SET': {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
-      // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
+      // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
       // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; "none" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
       // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands
@@ -5627,7 +5655,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const paint of paints) {
                 if ((paint as Paint)?.type !== 'SHADER') continue
                 const paintShader = paint as ShaderPaint
-                note(paintShader.id, 'fill', node, paintShader.properties, paintShader.propertyMetadata)
+                // An animated setting is no longer among `properties` on a read (typings 1.143.0):
+                // its id is taken from the node's tracks, or the catalogue would lose it.
+                note(
+                  paintShader.id,
+                  'fill',
+                  node,
+                  { ...paintShader.properties, ...animatedShaderProperties(node, field, paints.indexOf(paint)) },
+                  paintShader.propertyMetadata
+                )
               }
             }
             const effects = (node as unknown as { effects?: readonly Effect[] }).effects
@@ -5635,7 +5671,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const effect of effects) {
                 if (effect?.type !== 'SHADER') continue
                 const effectShader = effect as ShaderEffect
-                note(effectShader.id, 'effect', node, effectShader.properties, effectShader.propertyMetadata)
+                note(
+                  effectShader.id,
+                  'effect',
+                  node,
+                  { ...effectShader.properties, ...animatedShaderProperties(node, 'effects', effects.indexOf(effect)) },
+                  effectShader.propertyMetadata
+                )
               }
             }
           }
@@ -5660,7 +5702,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             // `importShaderById` would fetch the definitions, and that is a write.
             properties: [...entry.keys]
               .map((defId) => {
-                const definition = entry.meta[defId]
+                // An animated setting is missing from the applied shader's metadata as well as
+                // from its properties (seen live); the catalogue entry that defines every setting
+                // of this shader still names it.
+                const definition =
+                  entry.meta[defId] ??
+                  sameShaderInCatalogue([...entry.keys], new Map(offered.map((shader) => [shader.id, shader])))?.[defId]
                 if (!definition) return defId
                 const fallback =
                   definition.defaultValue === undefined

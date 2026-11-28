@@ -463,6 +463,26 @@ export interface NodeProps {
   height?: number
   /** Degrees, -180 to 180. */
   rotation?: number
+  /**
+   * Depth and tilt, always in Figma's order translateZ → rotateX → rotateY → rotateZ: `{ translateZ: 40, rotateY: 30 }`,
+   * pixels and degrees. A number left out keeps what the layer has, or 0. `backfaceVisible: false` hides the layer
+   * when it faces away; `visible: false` switches the transform off and keeps its numbers. `"none"` or `null` removes
+   * it, and with it the layer's 3D keyframe tracks. An imported (FREEFORM) transform can be read and replaced, never
+   * written. Beta in Figma's API.
+   */
+  transform3d?: Transform3dProps | null
+  /**
+   * The point a 3D transform turns around, measured from the layer's top-left: `{ x: 0, y: "50%" }` is a door hinge.
+   * A number is pixels, `"50%"` a share of the width or height; an axis left out is the centre, `"50%"`.
+   */
+  transformOrigin?: { x?: number | string; y?: number | string }
+  /**
+   * FRAME, COMPONENT and INSTANCE only: the 3D space the children stand in — `{ perspective: 800, preserve3d: true }`.
+   * `perspective` is a distance in pixels and -1 switches it off. `preserve3d` lets children overlap by depth instead
+   * of layer order, and stops this container's own opacity, blend mode, effects and clipping from rendering.
+   * `"none"` or `null` clears it. Beta in Figma's API.
+   */
+  scene3d?: Scene3dProps | null
   /** Whether a frame hides what sticks out of it. */
   clipsContent?: boolean
 
@@ -585,7 +605,9 @@ export interface NodeProps {
   /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. A `time` of
    * `"playhead"` is wherever the designer has the Motion timeline parked. `field` is a property
    * (`x`, `gap`…), a paint's colour (`fill`, `stroke[1]`) or an effect's setting (`effect.radius`,
-   * `effect[1].color`). `at: null` takes that track off; `[]` or `null` takes them all off. */
+   * `effect[1].color`). A shader's setting moves the same way, with `shader: { setting: "scale" }` in place of
+   * `field`. `at: null` takes that track off; `[]` or `null` takes them all off. While the timeline plays, a
+   * track starts from its first keyframe, not from `from`. */
   keyframes?: KeyframeTrack[] | null
   /** How long this node's timeline runs, in seconds. */
   timeline?: number
@@ -656,6 +678,23 @@ export interface NodeProps {
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
 
+/** The writable half of a `FIXED_ORDER` 3D transform; see `NodeProps.transform3d`. */
+export interface Transform3dProps {
+  translateZ?: number
+  rotateX?: number
+  rotateY?: number
+  rotateZ?: number
+  backfaceVisible?: boolean
+  visible?: boolean
+}
+
+/** See `NodeProps.scene3d`. */
+export interface Scene3dProps {
+  perspective?: number
+  preserve3d?: boolean
+  visible?: boolean
+}
+
 /**
  * One styled stretch inside a text layer.
  *
@@ -671,10 +710,28 @@ export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
  * `STACK_SPACING` — while everything else in this vocabulary is spelled the way the property is:
  * `x`, `gap`. The words here are ours, and the map to Figma's is one place, below.
  */
+/** One planned track on a shader setting; `track` is absent when the track is being removed. */
+export interface ShaderTrackPlan {
+  collection: 'fills' | 'strokes' | 'effects'
+  /** The shader's place in the stack; absent means the first shader found there. */
+  index?: number
+  /** The setting by the author's name, or by its property-definition id. */
+  setting: string
+  track?: unknown
+}
+
 export interface KeyframeTrack {
   /** What moves: opacity, x, y, rotation, scale, width, height, cornerRadius, gap, padding… — or
-   * `fill`, `stroke[n]`, `effect[n].radius|x|y|spread|color|opacity|…` for a paint or an effect. */
-  field: string
+   * `fill`, `stroke[n]`, `effect[n].radius|x|y|spread|color|opacity|…` for a paint or an effect.
+   * Left out when `shader` names a shader setting instead. */
+  field?: string
+  /**
+   * A setting of a shader on this layer, instead of `field`: `{ setting: "scale" }` — by the
+   * author's name or by id. `in` is `fill` (the default), `stroke` or `effect`; `index` is the
+   * shader's place in that stack, and without it the first shader there is meant. A value is a
+   * number, `{ x, y }`, `true`/`false`, or a colour as `"#RRGGBB"`.
+   */
+  shader?: { setting: string; in?: 'fill' | 'stroke' | 'effect'; index?: number }
   /** The value before the first keyframe. Without it the node's own value stands. */
   from?: number | { x: number; y: number } | string
   /** The keyframes themselves, in seconds along the timeline. `null` takes the track off. */
@@ -816,7 +873,13 @@ export type PropStep =
   | { step: 'properties'; properties: Record<string, string | boolean> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
   | { step: 'strokeProfile'; profile: unknown }
-  | { step: 'keyframes'; tracks: Array<{ name: string; field: unknown; track: unknown | null }>; clear?: boolean }
+  | {
+      step: 'keyframes'
+      tracks: Array<{ name: string; field: unknown; track: unknown | null }>
+      clear?: boolean
+      /** Tracks on a shader's settings — addressed by stack, place and setting, resolved on the node. */
+      shaderTracks?: ShaderTrackPlan[]
+    }
   | { step: 'timeline'; seconds: number }
   | { step: 'gridCell'; row: number; column: number }
   | { step: 'textStart'; segment: number; position: number }
@@ -3057,6 +3120,102 @@ const KEYFRAME_FIELDS: Readonly<Record<string, string>> = {
 /** A pair moves as a vector; everything else is one number. */
 const VECTOR_FIELDS = ['TRANSLATION_XY', 'SCALE_XY']
 
+/** The `at` list of one track as Figma's keyframes — the same for a layer's property and a shader's setting. */
+function planFrames(
+  frames: unknown[],
+  at: string,
+  valueOf: (value: unknown, at: string) => unknown | null,
+  problems: string[]
+): unknown[] {
+  const keyframes: unknown[] = []
+  for (const [k, frame] of frames.entries()) {
+    const spot = `${at}.at[${k}]`
+    const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
+    // "playhead" is wherever the designer has parked the timeline (Update 132) — the way a
+    // keyframe is placed by hand, and the one time a caller cannot know without asking.
+    let time = asked?.time
+    if (time === 'playhead') {
+      time = playheadPosition()
+      if (time === undefined) {
+        problems.push(`${spot}.time is "playhead", but no Motion timeline is open — there is no playhead to read`)
+        continue
+      }
+    }
+    if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) {
+      problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`)
+      continue
+    }
+    const value = valueOf(asked.value, `${spot}.value`)
+    if (value === null) continue
+    const easing = asked.easing === undefined && asked.bezier === undefined
+      ? null
+      : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
+    keyframes.push({
+      timelinePosition: time,
+      value,
+      ...(easing ? { easing } : {}),
+    })
+  }
+  return keyframes
+}
+
+const SHADER_STACKS = { fill: 'fills', fills: 'fills', stroke: 'strokes', strokes: 'strokes', effect: 'effects', effects: 'effects' } as const
+
+/** A shader setting's value, typed by its shape — the plan cannot know what the setting is. */
+function shaderValue(value: unknown, at: string, problems: string[]): unknown | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return { type: 'FLOAT', value }
+  if (typeof value === 'boolean') return { type: 'BOOL', value }
+  if (typeof value === 'string') {
+    const colour = keyframeColour(value, colourFrom)
+    if (colour) return { type: 'COLOR', value: colour }
+  }
+  const held = value as { x?: unknown; y?: unknown; r?: unknown; g?: unknown; b?: unknown; a?: unknown } | null
+  if (held && typeof held === 'object') {
+    if (typeof held.x === 'number' && typeof held.y === 'number') return { type: 'VECTOR', value: { x: held.x, y: held.y } }
+    if (typeof held.r === 'number' && typeof held.g === 'number' && typeof held.b === 'number') {
+      return { type: 'COLOR', value: { r: held.r, g: held.g, b: held.b, a: typeof held.a === 'number' ? held.a : 1 } }
+    }
+  }
+  problems.push(`${at} must be a number, { x, y }, true/false or a colour like "#0063B4" — what a shader setting can hold`)
+  return null
+}
+
+/** `{ shader: { setting, in?, index? }, at }` — a track on a shader's setting, resolved on the node. */
+function planShaderTrack(one: { shader?: unknown; from?: unknown; at?: unknown }, at: string, problems: string[]): ShaderTrackPlan | null {
+  const spec = one.shader as { setting?: unknown; in?: unknown; index?: unknown } | null
+  if (!spec || typeof spec !== 'object' || typeof spec.setting !== 'string' || spec.setting.trim() === '') {
+    problems.push(`${at}.shader must be { setting, in?, index? } — setting is the shader setting's name or id`)
+    return null
+  }
+  for (const key of Object.keys(spec)) {
+    if (!['setting', 'in', 'index'].includes(key)) {
+      problems.push(`${at}.shader.${key} is not accepted — the keys are setting, in, index`)
+      return null
+    }
+  }
+  const stack = spec.in === undefined ? 'fills' : SHADER_STACKS[String(spec.in).trim().toLowerCase() as keyof typeof SHADER_STACKS]
+  if (!stack) {
+    problems.push(`${at}.shader.in must be fill, stroke or effect`)
+    return null
+  }
+  if (spec.index !== undefined && (typeof spec.index !== 'number' || !Number.isInteger(spec.index) || spec.index < 0)) {
+    problems.push(`${at}.shader.index must be the shader's place in its stack, 0 being the bottom`)
+    return null
+  }
+  const target = { collection: stack, ...(spec.index === undefined ? {} : { index: spec.index as number }), setting: spec.setting.trim() }
+  // `at: null` takes the track off, as it does for a property.
+  if (one.at === null) return target
+  if (!Array.isArray(one.at) || one.at.length === 0) {
+    problems.push(`${at}.at must be a non-empty array of { time, value } — or null to take the track off`)
+    return null
+  }
+  const valueOf = (value: unknown, where: string) => shaderValue(value, where, problems)
+  const keyframes = planFrames(one.at as unknown[], at, valueOf, problems)
+  if (keyframes.length === 0) return null
+  const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
+  return { ...target, track: { keyframes, ...(base ? { baseValue: base } : {}) } }
+}
+
 function planKeyframes(raw: unknown, where: string, problems: string[]): PropStep | null {
   // `null` and `[]` take every manual track off, the way they do for links and effects.
   if (raw === null || (Array.isArray(raw) && raw.length === 0)) return { step: 'keyframes', tracks: [], clear: true }
@@ -3066,16 +3225,22 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
   }
 
   const tracks: Array<{ name: string; field: unknown; track: unknown | null }> = []
+  const shaderTracks: ShaderTrackPlan[] = []
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
-    const one = entry as { field?: unknown; from?: unknown; at?: unknown }
+    const one = entry as { field?: unknown; shader?: unknown; from?: unknown; at?: unknown }
+    if (one?.shader !== undefined) {
+      const planned = planShaderTrack(one, at, problems)
+      if (planned) shaderTracks.push(planned)
+      continue
+    }
     const word = typeof one?.field === 'string' ? one.field.trim() : ''
     const property = KEYFRAME_FIELDS[word]
     const indexed = property ? null : parseIndexedField(word)
     if (!property && !indexed) {
       problems.push(
         `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(', ')} — or fill, stroke[n], ` +
-          `effect[n].<${EFFECT_KEYFRAME_WORDS.join('|')}>`
+          `effect[n].<${EFFECT_KEYFRAME_WORDS.join('|')}> — or give shader: { setting } to move a shader's setting`
       )
       continue
     }
@@ -3122,42 +3287,16 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
       return { type: 'FLOAT', value }
     }
 
-    const keyframes: unknown[] = []
-    for (const [k, frame] of (one.at as unknown[]).entries()) {
-      const spot = `${at}.at[${k}]`
-      const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
-      // "playhead" is wherever the designer has parked the timeline (Update 132) — the way a
-      // keyframe is placed by hand, and the one time a caller cannot know without asking.
-      let time = asked?.time
-      if (time === 'playhead') {
-        time = playheadPosition()
-        if (time === undefined) {
-          problems.push(`${spot}.time is "playhead", but no Motion timeline is open — there is no playhead to read`)
-          continue
-        }
-      }
-      if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) {
-        problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`)
-        continue
-      }
-      const value = valueOf(asked.value, `${spot}.value`)
-      if (value === null) continue
-      const easing = asked.easing === undefined && asked.bezier === undefined
-        ? null
-        : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
-      keyframes.push({
-        timelinePosition: time,
-        value,
-        ...(easing ? { easing } : {}),
-      })
-    }
+    const keyframes = planFrames(one.at as unknown[], at, valueOf, problems)
     if (keyframes.length === 0) continue
 
     const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
     tracks.push({ name, field, track: { keyframes, ...(base ? { baseValue: base } : {}) } })
   }
 
-  return tracks.length > 0 ? { step: 'keyframes', tracks } : null
+  return tracks.length > 0 || shaderTracks.length > 0
+    ? { step: 'keyframes', tracks, ...(shaderTracks.length > 0 ? { shaderTracks } : {}) }
+    : null
 }
 
 /** The Motion timeline's playhead in seconds, or `undefined` with no timeline open — and in the

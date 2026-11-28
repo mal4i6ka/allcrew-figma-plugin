@@ -24,6 +24,7 @@ import { styledRuns } from '../canvas/text-runs.ts'
 import { readEffects } from '../canvas/effect-reader.ts'
 import {
   describePaint,
+  animatedShaderProperties,
   describeShader,
   imagePlacement,
   type PaintStopSummary,
@@ -642,12 +643,16 @@ async function describePaints(
   const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : undefined
   if (Array.isArray(node.fills)) {
     out.fills = []
-    for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index, shaders))
+    for (const [index, paint] of node.fills.entries()) {
+      out.fills.push(await describePaint(paint, index, shaders, undefined, animatedShaderProperties(node, 'fills', index)))
+    }
     out.fillStyle = await paintStyleName(node, 'fillStyleId')
   }
   if (Array.isArray(node.strokes)) {
     out.strokes = []
-    for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index, shaders))
+    for (const [index, paint] of node.strokes.entries()) {
+      out.strokes.push(await describePaint(paint, index, shaders, undefined, animatedShaderProperties(node, 'strokes', index)))
+    }
     out.strokeStyle = await paintStyleName(node, 'strokeStyleId')
   }
   const regions = regionFills(node)

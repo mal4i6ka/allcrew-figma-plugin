@@ -7,7 +7,7 @@
  * try/catch so a Motion read failure degrades to `null` instead of breaking extraction.
  */
 
-import { MOTION_PROPERTY_ALLOWLIST, type MotionSnapshot, type MotionTrack } from './types.ts'
+import { MOTION_PROPERTY_ALLOWLIST, type MotionSnapshot, type MotionStaticTransform3d, type MotionTrack } from './types.ts'
 
 function hasMotionApi(node: SceneNode): boolean {
   return (
@@ -19,7 +19,7 @@ function hasMotionApi(node: SceneNode): boolean {
 }
 
 /** Warns and skips indexed fills/strokes/effects tracks Figma reports as `SHADER` — shader
- * sub-properties aren't part of the 30-property scalar allowlist this adapter snapshots. */
+ * sub-properties aren't part of the 35-property scalar allowlist this adapter snapshots. */
 function warnOnShaderTracks(indexedTracks: Partial<Record<number, unknown>> | undefined, paintsOrEffects: unknown): void {
   if (!indexedTracks || !Array.isArray(paintsOrEffects)) return
   for (const indexKey of Object.keys(indexedTracks)) {
@@ -27,6 +27,30 @@ function warnOnShaderTracks(indexedTracks: Partial<Record<number, unknown>> | un
     if (type === 'SHADER') {
       console.warn('[motion] skipping shader/unknown track:', type)
     }
+  }
+}
+
+/**
+ * The node's static 3D transform, for the composite `transform` a 3D track is emitted into.
+ * Only `FIXED_ORDER` carries numbers: `NONE` has none, and `FREEFORM` (an imported transform)
+ * reads back without them — nothing is invented for either.
+ */
+function readStaticTransform3d(node: SceneNode): MotionStaticTransform3d | undefined {
+  if (!('transform3d' in node)) return undefined
+  const held = (node as { transform3d?: Transform3d }).transform3d
+  if (!held || held.type !== 'FIXED_ORDER') return undefined
+  const rotation = (node as { rotation?: unknown }).rotation
+  const origin = (node as { transformOrigin?: TransformOrigin }).transformOrigin
+  const turned = typeof rotation === 'number' && Math.abs(rotation) > 0.001
+  return {
+    translateZ: held.translateZ,
+    rotateX: held.rotateX,
+    rotateY: held.rotateY,
+    rotateZ: held.rotateZ,
+    // Only a layer turned in 2D needs these: without the turn, the static rule's own
+    // `transform-origin` keeps standing under the animated transform.
+    ...(turned ? { rotation: rotation as number } : {}),
+    ...(turned && origin ? { origin: { x: origin.x, y: origin.y } } : {}),
   }
 }
 
@@ -58,10 +82,12 @@ export function readMotionData(node: SceneNode): MotionSnapshot | null {
     warnOnShaderTracks(manualTracks?.strokes, 'strokes' in node ? node.strokes : undefined)
     warnOnShaderTracks(manualTracks?.effects, 'effects' in node ? node.effects : undefined)
 
+    const transform3d = readStaticTransform3d(node)
     return {
       animationStyles: node.animationStyles ?? [],
       timelines: node.timelines ?? [],
       tracks,
+      ...(transform3d ? { transform3d } : {}),
     }
   } catch (error) {
     console.warn('[motion] failed to read motion data, skipping node:', node.id, error)

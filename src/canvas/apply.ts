@@ -27,6 +27,7 @@ import {
   solidColourOf,
 } from './props.ts'
 import { addressIn } from './overrides.ts'
+import { SHADER_SETTING_NAMES_KEY, shaderSettingNames } from './keyframes.ts'
 import { styleFor } from './styles.ts'
 import { decorationWords, planDecoration } from './decoration.ts'
 import { connectorWords, pageIdOf, tableWords, transitionWords, type SlideTransitionValue } from './board.ts'
@@ -53,6 +54,8 @@ export interface AppliedProp {
   after?: unknown
   /** Present when this one property could not be applied — the rest still were. */
   error?: string
+  /** Present when the write landed and will not show — an opacity on a preserve-3D container. */
+  note?: string
 }
 
 export interface ApplyReport {
@@ -130,7 +133,8 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
       // the report is what decides, not only whether something was thrown.
       const result = await applyStep(node, step, dry)
       if (result.error) failed++
-      applied.push(result)
+      const unseen = result.error ? null : notRenderedNote(node, result.property, dry ? step : null)
+      applied.push(unseen ? { ...result, note: unseen } : result)
     } catch (error) {
       failed++
       applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
@@ -138,6 +142,93 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
   }
   return { applied, failed }
 }
+
+function rememberShaderSettingName(node: SceneNode, id: string, name: string): void {
+  try {
+    node.setPluginData(SHADER_SETTING_NAMES_KEY, JSON.stringify({ ...shaderSettingNames(node), [id]: name }))
+  } catch {
+    /* a node that keeps no plugin data still has its track; only the name is not remembered */
+  }
+}
+
+/**
+ * Which shader, and which of its settings, a planned track means.
+ *
+ * The stack and the place may be left out: the first shader in the stack is then the one. The
+ * setting is matched by the author's name against the definitions the applied shader carries, and
+ * — for a setting that is already animated, which Figma no longer names — against the names kept
+ * from the last time. An id is taken as it is.
+ */
+function resolveShaderSetting(
+  node: SceneNode,
+  plan: { collection: 'fills' | 'strokes' | 'effects'; index?: number; setting: string }
+): { collection: 'fills' | 'strokes' | 'effects'; index: number; id: string; name?: string } {
+  const what = plan.collection === 'fills' ? 'fill' : plan.collection === 'strokes' ? 'stroke' : 'effect'
+  const stack = (node as unknown as Record<string, unknown>)[plan.collection]
+  if (!Array.isArray(stack)) throw new Error(`a ${node.type} has no ${plan.collection}`)
+  const isShader = (entry: unknown) => (entry as { type?: string } | null)?.type === 'SHADER'
+  const index = plan.index ?? stack.findIndex(isShader)
+  if (index < 0) throw new Error(`this layer has no shader ${what} — put one on it first (fill: { shader })`)
+  const shader = stack[index] as { type?: string; propertyMetadata?: Record<string, { name?: string } | undefined> } | undefined
+  if (!isShader(shader)) throw new Error(`${plan.collection}[${index}] is not a shader — it is ${shader ? String(shader.type) : 'not there'}`)
+
+  const names: Record<string, string> = { ...shaderSettingNames(node) }
+  for (const [id, definition] of Object.entries(shader?.propertyMetadata ?? {})) if (definition?.name) names[id] = definition.name
+  const wanted = plan.setting.trim()
+  if (/^\d+:\d+$/.test(wanted)) return { collection: plan.collection, index, id: wanted, ...(names[wanted] ? { name: names[wanted] } : {}) }
+  const match = Object.entries(names).find(([, name]) => name.toLowerCase() === wanted.toLowerCase())
+  if (!match) {
+    const offered = Object.values(names)
+    throw new Error(
+      `this shader has no setting called "${wanted}" — ` +
+        (offered.length > 0 ? `it has: ${offered.join(', ')}` : 'and it names none of its settings here; give the setting id instead')
+    )
+  }
+  return { collection: plan.collection, index, id: match[0], name: match[1] }
+}
+
+/** The properties a preserve-3D container keeps and does not draw, by the name a report gives them. */
+const UNSEEN_UNDER_PRESERVE_3D: readonly string[] = ['opacity', 'blendMode', 'effects', 'effectStyle', 'clipsContent', 'scene3d']
+
+/**
+ * What a preserve-3D container is set to and Figma does not draw: its opacity, blend mode,
+ * effects and clip. Figma takes the write and keeps the value (seen live upstream), so the report
+ * would otherwise read as a change that happened on the canvas.
+ */
+export function unseenUnderPreserve3d(node: unknown, planned?: { preserve3d?: boolean } | null): string[] {
+  const bag = (node ?? {}) as Record<string, unknown>
+  const preserve = planned?.preserve3d ?? (bag.scene3d as { preserve3d?: boolean } | null | undefined)?.preserve3d
+  if (preserve !== true) return []
+  const unseen: string[] = []
+  if (typeof bag.opacity === 'number' && bag.opacity < 1) unseen.push('opacity')
+  if (typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL') unseen.push('blend mode')
+  if (Array.isArray(bag.effects) && bag.effects.some((effect) => (effect as { visible?: boolean })?.visible !== false)) unseen.push('effects')
+  if (bag.clipsContent === true) unseen.push('clip')
+  return unseen
+}
+
+function notRenderedNote(node: SceneNode, property: string, dryStep: PropStep | null): string | null {
+  if (!UNSEEN_UNDER_PRESERVE_3D.includes(property)) return null
+  // A dry run has not switched preserve-3D on yet; the step it is previewing says whether it would.
+  const planned =
+    dryStep?.step === 'space3d' && dryStep.property === 'scene3d' && dryStep.value.kind === 'scene' && dryStep.value.fields.preserve3d !== undefined
+      ? { preserve3d: dryStep.value.fields.preserve3d }
+      : null
+  const unseen = unseenUnderPreserve3d(node, planned)
+  if (unseen.length === 0) return null
+  return `Figma does not draw ${unseen.join(', ')} on a preserve-3D container — the value is kept, the canvas does not change; put ${unseen.length === 1 ? 'it' : 'them'} on a parent frame that does not preserve 3D`
+}
+
+/** The node types Figma gives a `scene3d` (typings 1.143.0, beta). */
+const SCENE_3D_HOLDERS: readonly string[] = ['FRAME', 'COMPONENT', 'INSTANCE']
+
+/** Figma's names for the four tracks that animate a layer's own 3D transform. */
+const TRANSFORM_3D_TRACKS: readonly string[] = [
+  'TRANSFORM_3D_TRANSLATION_Z',
+  'TRANSFORM_3D_ROTATION_X',
+  'TRANSFORM_3D_ROTATION_Y',
+  'TRANSFORM_3D_ROTATION_Z',
+]
 
 const propertyOf = (step: PropStep): string => {
   switch (step.step) {
@@ -194,6 +285,11 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     }
 
     case 'space3d': {
+      // The scene exists on exactly these three; a group or a shape has depth of its own but no
+      // scene to put children in.
+      if (step.property === 'scene3d' && !SCENE_3D_HOLDERS.includes(node.type)) {
+        throw new Error(`a ${node.type} has no 3D scene — only a FRAME, COMPONENT or INSTANCE does`)
+      }
       // Beta in Figma: a build or a node type without it says so by name, not with a TypeError.
       if (!(step.property in bag)) {
         throw new Error(`a ${node.type} has no ${step.property} — 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`)
@@ -1007,11 +1103,42 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           // take the opacity track down with it.
           if (one.track === null) remove(one.name, one.field)
           else {
+            if (TRANSFORM_3D_TRACKS.includes(one.name)) {
+              // A flat layer is fine: Figma gives it a FIXED_ORDER transform of zeros itself when the
+              // track lands (seen live). Only the two cases Figma cannot animate are refused, by name.
+              if (!('transform3d' in bag)) throw new Error(`a ${node.type} has no 3D transform to animate`)
+              if ((bag.transform3d as { type?: string } | undefined)?.type === 'FREEFORM') {
+                throw new Error('this layer has an imported (FREEFORM) 3D transform, which cannot be animated — set transform3d to replace it first')
+              }
+            }
+            if (one.name === 'SCENE_3D_PERSPECTIVE' && (!SCENE_3D_HOLDERS.includes(node.type) || !('scene3d' in bag))) {
+              throw new Error(`a ${node.type} has no perspective to animate — only a FRAME, COMPONENT or INSTANCE holds a 3D scene`)
+            }
             if (!dry) motion.applyManualKeyframeTrack(one.field, one.track)
             applied.push(one.name)
           }
         } catch (error) {
           failures.push(`${one.name}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      for (const one of step.shaderTracks ?? []) {
+        try {
+          const target = resolveShaderSetting(node, one)
+          const field = { type: 'INDEXED_ITEM', collection: target.collection, index: target.index, propertyId: target.id }
+          const label = `${target.collection}[${target.index}].${target.name ?? target.id}`
+          if (one.track === undefined) {
+            remove(label, field)
+            continue
+          }
+          if (!dry) {
+            motion.applyManualKeyframeTrack(field, one.track)
+            // Figma stops naming a setting on the layer once it is animated (seen live upstream),
+            // so the name is kept here, where a later read of this layer can find it.
+            if (target.name) rememberShaderSettingName(node, target.id, target.name)
+          }
+          applied.push(label)
+        } catch (error) {
+          failures.push(`shader ${one.setting}: ${String((error as Error)?.message || error)}`)
         }
       }
       return {
@@ -1709,17 +1836,27 @@ function animationStyleWord(key: string | undefined): string | null {
  * exactly as Figma holds them: what comes out of a read goes straight back into `properties` on
  * a write.
  */
-export function describeShaderPaints(value: unknown): Array<{ id: string; properties?: Record<string, unknown> }> {
+export function describeShaderPaints(
+  value: unknown,
+  /** The node's `manualKeyframeTracks.fills` — where an animated setting lives once Figma has
+   * left it out of `properties` (typings 1.143.0). */
+  tracks?: unknown
+): Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> {
   if (!Array.isArray(value)) return []
-  const shaders: Array<{ id: string; properties?: Record<string, unknown> }> = []
-  for (const paint of value) {
+  const shaders: Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> = []
+  for (const [index, paint] of value.entries()) {
     if ((paint as { type?: string })?.type !== 'SHADER') continue
     const shader = paint as ShaderPaint
+    const moving = (tracks as Record<number, { properties?: Record<string, unknown> } | undefined> | undefined)?.[index]?.properties
+    const animated = moving && typeof moving === 'object' ? Object.keys(moving) : []
     shaders.push({
       id: shader.id,
       ...(shader.properties && Object.keys(shader.properties).length > 0
         ? { properties: shader.properties as Record<string, unknown> }
         : {}),
+      // Named so a reader does not take a missing setting for a default one. A write that leaves
+      // these out of `properties` keeps their keyframes.
+      ...(animated.length > 0 ? { animated } : {}),
     })
   }
   return shaders

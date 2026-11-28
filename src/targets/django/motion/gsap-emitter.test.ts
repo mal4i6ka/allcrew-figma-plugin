@@ -32,7 +32,10 @@ test('opacity fade with LINEAR easing uses fromTo and a terminal 100% keyframe',
           makeTrack({
             field: 'OPACITY',
             baseValue: { type: 'FLOAT', value: 0 },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } },
+            ],
           }),
         ],
       }),
@@ -243,6 +246,7 @@ test('VECTOR field (TRANSLATION_XY) splits into x and y in the same keyframe', (
             field: 'TRANSLATION_XY',
             baseValue: { type: 'VECTOR', value: { x: 0, y: 0 } },
             keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'VECTOR', value: { x: 0, y: 0 } } },
               { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'VECTOR', value: { x: 10, y: 20 } } },
             ],
           }),
@@ -265,7 +269,10 @@ test('PATH_TRIM_START and PATH_TRIM_END merge into a single DrawSVGPlugin tween'
           makeTrack({
             field: 'PATH_TRIM_START',
             baseValue: { type: 'FLOAT', value: 0 },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } },
+            ],
           }),
           makeTrack({
             field: 'PATH_TRIM_END',
@@ -295,7 +302,10 @@ test('TEXT_DATA track uses TextPlugin with text: {value}', () => {
           makeTrack({
             field: 'OPACITY',
             baseValue: { type: 'TEXT_DATA', value: 'Hello' },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'World' } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'Hello' } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'World' } },
+            ],
           }),
         ],
       }),
@@ -349,4 +359,143 @@ test('overall script structure matches the DOMContentLoaded + IntersectionObserv
   assert.match(result.js, /paused: true/)
   assert.match(result.js, /prefers-reduced-motion/)
   assert.match(result.js, /data-timeline="hero"/)
+})
+
+/* ------------------------------------------------- 3D transforms (typings 1.143.0, beta) */
+
+const turn3d = (field: MotionTrack['field'], from: number, to: number): MotionTrack =>
+  makeTrack({
+    field,
+    baseValue: { type: 'FLOAT', value: from },
+    keyframes: [
+      { id: 'kf-0', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: from } },
+      { id: 'kf-1', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: to } },
+    ],
+  })
+
+test('a 3D track tweens a custom property with its unit, not GSAP’s own rotationY', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [makeNode({ selector: '.card', tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180), turn3d('TRANSFORM_3D_TRANSLATION_Z', 0, 40)] })],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.card"\), \{"--motion-rotate-y":"0deg"\}/)
+  assert.match(result.js, /"100%":\{"--motion-rotate-y":"180deg","ease":"none"\}/)
+  assert.match(result.js, /\{"--motion-translate-z":"0px"\}/)
+  assert.doesNotMatch(result.js, /rotationY|"z":/)
+})
+
+test('the composite transform is written on the element in Figma’s order, with the static axes filled in', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [
+      makeNode({
+        selector: '.card',
+        tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)],
+        transform3d: { translateZ: 40, rotateX: 10, rotateY: 0, rotateZ: 0 },
+      }),
+    ],
+  })
+  assert.match(
+    result.js,
+    /q\("\.card"\)\.forEach\(function \(el\) \{ el\.style\.transform = "translateZ\(40px\) rotateX\(10deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\)"; \}\);/
+  )
+  // Before the tween that drives it.
+  assert.ok(result.js.indexOf('el.style.transform') < result.js.indexOf('--motion-rotate-y":"0deg"'))
+})
+
+test('3D tracks are left out, with a warning, when GSAP owns the same element’s transform', () => {
+  const warnings: string[] = []
+  const original = console.warn
+  console.warn = (...args: unknown[]) => void warnings.push(args.join(' '))
+  try {
+    const result = emitGsapTimeline({
+      timelineId: 'mixed',
+      duration: 1,
+      nodes: [makeNode({ nodeId: '7:7', selector: '.card', tracks: [turn3d('TRANSLATION_X', 0, 100), turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)] })],
+    })
+    assert.match(result.js, /\{"x":0\}/)
+    assert.doesNotMatch(result.js, /--motion-rotate-y|el\.style\.transform/)
+  } finally {
+    console.warn = original
+  }
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /node "7:7" animates both 2D transform tracks and 3D transform tracks.*TRANSFORM_3D_ROTATION_Y/)
+})
+
+test('a perspective track is a plain tween on the container', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'scene',
+    duration: 1,
+    nodes: [makeNode({ selector: '.scene', tracks: [turn3d('SCENE_3D_PERSPECTIVE', 800, 400)] })],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.scene"\), \{"perspective":800\}/)
+  assert.doesNotMatch(result.js, /el\.style\.transform/)
+})
+
+test('the inline composite transform keeps a layer’s 2D turn as well', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [makeNode({ selector: '.card', tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)], transform3d: { translateZ: 0, rotateX: 0, rotateY: 0, rotateZ: 0, rotation: 20 } })],
+  })
+  assert.match(result.js, /el\.style\.transform = "rotate\(-20deg\) translate\(50%, 50%\) translateZ\(0px\) rotateX\(0deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\) translate\(-50%, -50%\)"/)
+})
+
+/* ------------------------------------------------ where a track starts (Figma's own render) */
+
+// Rendered by Figma on 19.11.2026: a track whose first keyframe is at 1.5 s shows that keyframe's
+// value from 0 s, and a keyframe at 0 s that differs from the layer's base value is what shows at
+// 0 s. The layer's base value is never on screen while the timeline runs.
+
+test('a tween starts from the keyframe at 0, not from the layer’s base value', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'slide',
+    duration: 3,
+    nodes: [
+      makeNode({
+        selector: '.box',
+        tracks: [
+          makeTrack({
+            field: 'TRANSLATION_X',
+            baseValue: { type: 'FLOAT', value: 0 },
+            timelineDuration: 3,
+            keyframes: [
+              { id: 'a', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 300 } },
+              { id: 'b', timelinePosition: 3, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+            ],
+          }),
+        ],
+      }),
+    ],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.box"\), \{"x":300\}/)
+  assert.match(result.js, /"100%":\{"x":0,"ease":"none"\}/)
+})
+
+test('a first keyframe later than 0 is held from the start, then the movement begins', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'slide',
+    duration: 3,
+    nodes: [
+      makeNode({
+        selector: '.box',
+        tracks: [
+          makeTrack({
+            field: 'TRANSLATION_X',
+            baseValue: { type: 'FLOAT', value: 0 },
+            timelineDuration: 3,
+            keyframes: [
+              { id: 'a', timelinePosition: 1.5, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 300 } },
+              { id: 'b', timelinePosition: 3, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+            ],
+          }),
+        ],
+      }),
+    ],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.box"\), \{"x":300\}/)
+  assert.match(result.js, /"50%":\{"x":300,"ease":"none"\}/)
+  assert.match(result.js, /"100%":\{"x":0,"ease":"none"\}/)
 })

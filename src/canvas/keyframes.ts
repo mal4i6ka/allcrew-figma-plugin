@@ -59,8 +59,22 @@ const plainValue = (held: unknown): unknown => {
   return one.value
 }
 
-/** One stored track, in the shape `keyframes` takes — or null when nothing in it is readable. */
-function readTrack(word: string, binding: unknown): unknown | null {
+/** Plugin data key: `{ [settingId]: name }` for shader settings this plugin has animated. */
+export const SHADER_SETTING_NAMES_KEY = 'shaderSettingNames'
+
+/** The names this plugin kept for a layer's animated shader settings; empty when there are none. */
+export function shaderSettingNames(node: unknown): Record<string, string> {
+  try {
+    const raw = (node as { getPluginData?: (key: string) => string }).getPluginData?.(SHADER_SETTING_NAMES_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/** One stored track as `{ from?, at }` — or null when nothing in it is readable. */
+function readFrames(binding: unknown): { from?: unknown; at: unknown[] } | null {
   const held = binding as { baseValue?: unknown; keyframes?: unknown[] } | undefined
   const frames = Array.isArray(held?.keyframes) ? held.keyframes : []
 
@@ -79,7 +93,29 @@ function readTrack(word: string, binding: unknown): unknown | null {
   if (at.length === 0) return null
 
   const from = plainValue(held?.baseValue)
-  return { field: word, ...(from === undefined ? {} : { from }), at }
+  return { ...(from === undefined ? {} : { from }), at }
+}
+
+/** One stored track, in the shape `keyframes` takes — or null when nothing in it is readable. */
+function readTrack(word: string, binding: unknown): unknown | null {
+  const frames = readFrames(binding)
+  return frames ? { field: word, ...frames } : null
+}
+
+/**
+ * A shader's animated settings: `fills[1].properties[<setting id>]`. Figma leaves an animated
+ * setting out of the paint itself, so this is the only place it can be read from. The setting is
+ * given by id — which a write takes — because the tracks carry no names.
+ */
+function readShaderTracks(collection: 'fills' | 'strokes' | 'effects', index: string, slot: unknown, out: unknown[]): boolean {
+  const settings = (slot as { properties?: unknown } | undefined)?.properties
+  if (!settings || typeof settings !== 'object') return false
+  const word = collection === 'fills' ? 'fill' : collection === 'strokes' ? 'stroke' : 'effect'
+  for (const [setting, binding] of Object.entries(settings as Record<string, unknown>)) {
+    const frames = readFrames(binding)
+    if (frames) out.push({ shader: { setting, in: word, index: Number(index) }, ...frames })
+  }
+  return true
 }
 
 export function readKeyframes(tracks: unknown): { keyframes?: unknown[] } {
@@ -88,11 +124,11 @@ export function readKeyframes(tracks: unknown): { keyframes?: unknown[] } {
 
   for (const [name, binding] of Object.entries(tracks as Record<string, unknown>)) {
     if (binding === undefined || binding === null) continue
-    // Paints and effects are keyed by index under their collection rather than named. A paint
-    // track whose colour is a component property (`{ properties }`) has no word yet and is left
-    // out rather than half-read.
+    // Paints and effects are keyed by index under their collection rather than named. A slot
+    // holding `{ properties }` is a shader's settings, read as `shader: { setting, in, index }`.
     if (name === 'fills' || name === 'strokes') {
       for (const [index, paint] of Object.entries(binding as Record<string, unknown>)) {
+        if (readShaderTracks(name, index, paint, out)) continue
         const word = indexedWord(name, Number(index))
         const track = word ? readTrack(word, paint) : null
         if (track) out.push(track)
@@ -101,6 +137,7 @@ export function readKeyframes(tracks: unknown): { keyframes?: unknown[] } {
     }
     if (name === 'effects') {
       for (const [index, fields] of Object.entries(binding as Record<string, Record<string, unknown>>)) {
+        if (readShaderTracks('effects', index, fields, out)) continue
         for (const [field, effect] of Object.entries(fields ?? {})) {
           const word = indexedWord('effects', Number(index), field)
           const track = word ? readTrack(word, effect) : null

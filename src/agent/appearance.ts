@@ -92,6 +92,10 @@ export interface IrAppearance {
   transform3d?: Record<string, unknown>
   transformOrigin?: { x: string | number; y: string | number }
   scene3d?: Record<string, unknown>
+  /** On a preserve-3D container: what the layer is set to but Figma does not draw there —
+   * `opacity`, `blendMode`, `effects` (each left out of this appearance) and `clip` (the layout's
+   * own, which should not be applied either). Absent when there is nothing of the kind. */
+  notRendered?: string[]
   /** This layer masks its siblings. `type` is ALPHA, VECTOR, LUMINANCE or a future one. */
   mask?: { type: string }
   /** Token names on the numbers the layout already carries. The layout itself is in the tree as
@@ -362,6 +366,19 @@ export async function appearanceOf(
   if (rotation !== undefined && round(rotation) !== 0) out.rotation = round(rotation)
   const space = describe3d(source)
   if (space) Object.assign(out, space)
+  // A preserve-3D container keeps its opacity, blend mode and effects but Figma draws none of
+  // them (and the layout's clip likewise — seen live). A generator that runs after the window has
+  // closed has only this to go by, so what is not painted is moved out of the paint and named.
+  if (out.scene3d?.preserve3d === true) {
+    const dead: string[] = []
+    for (const key of ['opacity', 'blendMode', 'effects'] as const) {
+      if (out[key] === undefined) continue
+      delete out[key]
+      dead.push(key)
+    }
+    if ((source as { clipsContent?: unknown }).clipsContent === true) dead.push('clip')
+    if (dead.length > 0) out.notRendered = dead
+  }
   if (source.isMask === true) out.mask = { type: typeof source.maskType === 'string' ? source.maskType : 'ALPHA' }
 
   if (Object.keys(layout).length > 0) out.layoutTokens = layout

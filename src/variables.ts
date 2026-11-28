@@ -230,6 +230,10 @@ export interface LibraryReadProgress {
   readonly stoppedOn?: 'budgetMs'
 }
 
+/** How many library variables are imported at once. Enough to turn minutes into seconds, few
+ * enough that one slow answer does not hold a crowd, and that a budget is still checked often. */
+export const LIBRARY_IMPORT_CONCURRENCY = 8
+
 export async function readLibraryVariables(options: LibraryReadOptions = {}): Promise<VariableSnapshot & LibraryReadProgress> {
   const collections: CollectionEntry[] = []
   const variables: VariableEntry[] = []
@@ -269,17 +273,23 @@ export async function readLibraryVariables(options: LibraryReadOptions = {}): Pr
     if (ranOut) break
     try {
       const importedVariables: Variable[] = []
-      for (const libraryVariable of libraryVariables) {
-        // Counted before the skip so `nextOffset` means the same thing on every page: how many
-        // variables of this sweep are behind us, not how many this call imported.
-        seen += 1
-        if (seen <= skip) continue
+      // Skipped ones first: counted so `nextOffset` means the same thing on every page — how many
+      // variables of this sweep are behind us, not how many this call imported.
+      const behind = Math.min(Math.max(0, skip - seen), libraryVariables.length)
+      seen += behind
+      // A few at a time. Each import is its own round trip to the team-library service and they
+      // do not depend on each other; one after another, 412 variables took 129 s (measured live).
+      // Order is kept — `Promise.all` answers in the order asked — so the offset still pages.
+      for (let at = behind; at < libraryVariables.length; at += LIBRARY_IMPORT_CONCURRENCY) {
         if (Date.now() > deadline) {
           ranOut = true
-          seen -= 1
           break
         }
-        importedVariables.push(await figma.variables.importVariableByKeyAsync(libraryVariable.key))
+        const batch = libraryVariables.slice(at, at + LIBRARY_IMPORT_CONCURRENCY)
+        importedVariables.push(
+          ...(await Promise.all(batch.map((libraryVariable) => figma.variables.importVariableByKeyAsync(libraryVariable.key))))
+        )
+        seen += batch.length
         options.onProgress?.(seen, total)
       }
 

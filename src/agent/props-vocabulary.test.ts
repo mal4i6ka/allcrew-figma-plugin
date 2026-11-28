@@ -54,10 +54,23 @@ test('the real vocabulary comes out whole, and every entry says what it is for',
   assert.ok(props.length > 40, `expected the whole vocabulary, got ${props.length}`)
   const silent = props.filter((entry) => !entry.note).map((entry) => entry.name)
   assert.deepEqual(silent, [], 'every property needs a sentence above it')
-  for (const name of ['fill', 'brush', 'shader' in {} ? 'shader' : 'grid', 'links', 'bind', 'animation', 'runs', 'network']) {
+  for (const name of ['fill', 'brush', 'shader' in {} ? 'shader' : 'grid', 'links', 'bind', 'animation', 'runs', 'network', 'transform3d', 'transformOrigin', 'scene3d']) {
     assert.ok(
       props.some((entry) => entry.name === name),
       `${name} must be in the vocabulary`
     )
   }
+})
+
+test('the 3D properties say the things a caller cannot guess', () => {
+  // The order is fixed, FREEFORM is read-only, and a scene belongs to three node types — none of
+  // which the type annotation can say, and all of which a wrong guess turns into a refusal.
+  const props = extractProps(readFileSync(new URL('../canvas/props.ts', import.meta.url), 'utf8'))
+  const note = (name: string) => props.find((entry) => entry.name === name)?.note ?? ''
+  assert.match(note('transform3d'), /translateZ → rotateX → rotateY → rotateZ/)
+  assert.match(note('transform3d'), /FREEFORM/)
+  assert.match(note('transformOrigin'), /"50%"/)
+  assert.match(note('scene3d'), /FRAME, COMPONENT and INSTANCE only/)
+  assert.match(note('scene3d'), /opacity, blend mode, effects and clipping/)
+  assert.equal(props.find((entry) => entry.name === 'transform3d')?.type, 'Transform3dProps | null')
 })

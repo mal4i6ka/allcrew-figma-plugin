@@ -109,3 +109,55 @@ test('readMotionData skips shader-type indexed effect tracks and warns', () => {
     console.warn = originalWarn
   }
 })
+
+/* ------------------------------------------------- 3D transforms (typings 1.143.0, beta) */
+
+test('readMotionData keeps the five 3D tracks and the static transform they are composed with', () => {
+  const float = (value: number) => ({ type: 'FLOAT', value })
+  const track = (value: number) => ({ id: 't', baseValue: float(0), keyframes: [makeMotionKeyframe({ timelinePosition: 1, value: float(value) })] })
+  const node = makeMotionNode({
+    transform3d: { type: 'FIXED_ORDER', translateZ: 40, rotateX: 0, rotateY: 30, rotateZ: 0, backfaceVisible: false },
+    manualKeyframeTracks: {
+      TRANSFORM_3D_TRANSLATION_Z: track(80),
+      TRANSFORM_3D_ROTATION_X: track(10),
+      TRANSFORM_3D_ROTATION_Y: track(180),
+      TRANSFORM_3D_ROTATION_Z: track(90),
+      SCENE_3D_PERSPECTIVE: track(400),
+    },
+  })
+
+  const snapshot = readMotionData(node)
+  assert.deepEqual(
+    snapshot?.tracks.map((one) => one.field),
+    ['TRANSFORM_3D_TRANSLATION_Z', 'TRANSFORM_3D_ROTATION_X', 'TRANSFORM_3D_ROTATION_Y', 'TRANSFORM_3D_ROTATION_Z', 'SCENE_3D_PERSPECTIVE']
+  )
+  // The four numbers only — backface and visibility are the static export's business.
+  assert.deepEqual(snapshot?.transform3d, { translateZ: 40, rotateX: 0, rotateY: 30, rotateZ: 0 })
+})
+
+test('readMotionData invents no numbers for a transform that has none', () => {
+  assert.equal(readMotionData(makeMotionNode({ transform3d: { type: 'NONE' } }))?.transform3d, undefined)
+  assert.equal(readMotionData(makeMotionNode({ transform3d: { type: 'FREEFORM', backfaceVisible: true } }))?.transform3d, undefined)
+  // An older Figma, where the property is not there at all.
+  assert.ok(!('transform3d' in (readMotionData(makeMotionNode({})) ?? {})))
+})
+
+test('readMotionData carries the 2D turn and the pivot only for a layer that has a turn', () => {
+  const fixedOrder = { type: 'FIXED_ORDER', translateZ: 0, rotateX: 0, rotateY: 0, rotateZ: 0 }
+  const origin = { x: { unit: 'PIXELS', value: 0 }, y: { unit: 'PERCENT', value: 50 } }
+  assert.deepEqual(readMotionData(makeMotionNode({ transform3d: fixedOrder, rotation: 20, transformOrigin: origin }))?.transform3d, {
+    translateZ: 0,
+    rotateX: 0,
+    rotateY: 0,
+    rotateZ: 0,
+    rotation: 20,
+    origin,
+  })
+  // No turn: the static rule's own transform-origin stands, so neither is carried.
+  assert.deepEqual(readMotionData(makeMotionNode({ transform3d: fixedOrder, rotation: 0, transformOrigin: origin }))?.transform3d, {
+    translateZ: 0,
+    rotateX: 0,
+    rotateY: 0,
+    rotateZ: 0,
+  })
+})

@@ -118,7 +118,18 @@ export function summarizeEmitterNotes(notes: readonly EmitterNote[]): ExportRepo
   const byKind: Record<string, Record<string, Set<string>>> = {}
   for (const note of notes) {
     const detail =
-      note.type === 'squircle-approx' ? `smoothing-${note.smoothing}` : note.type === 'unsupported-effect' ? note.effect : note.fill
+      note.type === 'squircle-approx'
+        ? `smoothing-${note.smoothing}`
+        : note.type === 'unsupported-effect'
+          ? note.effect
+          : note.type === 'unsupported-fill'
+            ? note.fill
+            : note.type === 'preserve3d-not-rendered'
+              ? note.property
+              : // The two 3D notes that are the whole story on their own.
+                note.type === 'transform3d-freeform'
+                ? 'exported-flat'
+                : 'composed-2d-outside'
     const details = byKind[note.type] ?? {}
     const ids = details[detail] ?? new Set<string>()
     ids.add(note.node)
