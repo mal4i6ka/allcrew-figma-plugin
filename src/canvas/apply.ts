@@ -1617,7 +1617,8 @@ export async function describePaints(value: unknown): Promise<string | null> {
       .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
       .join('')
       .toUpperCase()}`
-    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex)
+    // To three places: paint opacity is a 32-bit float, so 0.1 reads back as 0.10000000149011612.
+    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${Math.round(flat.opacity * 1000) / 1000}` : hex)
   }
   return parts.join(' + ')
 }

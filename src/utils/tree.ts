@@ -217,5 +217,7 @@ function hasChildren(node: BaseNode): node is BaseNode & ChildrenMixin {
 }
 
 function isSceneNode(node: BaseNode): node is SceneNode {
-  return node.type !== 'DOCUMENT' && node.type !== 'PAGE'
+  // A FigJam table cell sits in the tree but is not a layer — it has none of a layer's methods,
+  // and its text travels with the table's `table.cells`.
+  return node.type !== 'DOCUMENT' && node.type !== 'PAGE' && (node.type as string) !== 'TABLE_CELL'
 }
