@@ -45,6 +45,7 @@ import { TEXT_OPS } from './text-ops.ts'
 import { TOKENS_OPS } from './tokens-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
+import { TRANSFER_OPS } from './transfer-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
 import { DATA_OPS } from './data-ops.ts'
@@ -2827,6 +2828,7 @@ export const ALL_OPS: readonly OpDef[] = [
   ...EDITOR_OPS,
   ...DATA_OPS,
   ...INBOX_OPS,
+  ...TRANSFER_OPS,
   ...PLUGIN_OPS,
 ]
 

@@ -24,6 +24,7 @@ import {
   COMMENT_REFUSALS,
   HISTORY_MANIFEST,
   HISTORY_REFUSALS,
+  TRANSFER_MANIFEST,
 } from '../../agent/bridge.mjs'
 import { ANALYTICS_MANIFEST, ORG_MANIFEST } from '../../agent/figma-org.mjs'
 import { CODE_CONNECT_MANIFEST } from '../../agent/code-connect.mjs'
@@ -55,6 +56,7 @@ test('every registered op has a row in the README', () => {
  * official CLI on this machine, and `figma.mcp` relays Figma's own desktop MCP server. */
 const BRIDGE_OPS = [
   ...COMMENT_MANIFEST,
+  ...TRANSFER_MANIFEST,
   ...HISTORY_MANIFEST,
   ...ORG_MANIFEST,
   ...ANALYTICS_MANIFEST,

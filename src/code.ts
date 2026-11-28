@@ -319,6 +319,8 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
+  | { type: 'NODE_SPEC'; nodes: unknown; depth?: number; budgetBytes?: number; localComponents?: string }
+  | { type: 'NODE_BUILD'; nodes: unknown; images?: unknown; parent?: string; ignore?: unknown; dryRun?: boolean }
   | {
       type: 'EMIT_REACT'
       scope?: ExportScope
@@ -2100,6 +2102,131 @@ const variableNameOf = async (id: string): Promise<string | null> => {
   const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
   if (variable) rememberVariable(variable)
   return variable?.name ?? null
+}
+
+/** Every image hash a spec's paints name, through its children. A read spells a picture as
+ * `{ image: { hash } }` (paint-reader); the one-line `image:<hash> FILL` is taken too. */
+function imageHashesIn(spec: CreateSpec): string[] {
+  const found: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s/.exec(value)
+      if (picture && picture[1] !== '?') found.push(picture[1])
+    } else if (Array.isArray(value)) value.forEach(visit)
+    else if (value && typeof value === 'object') {
+      const image = (value as { image?: { hash?: unknown } }).image
+      if (image && typeof image.hash === 'string') found.push(image.hash)
+      Object.values(value).forEach(visit)
+    }
+  }
+  visit(spec)
+  return [...new Set(found)]
+}
+
+/** The spec with every picture re-pointed through `resolve` — a hash this file has, or bytes. A
+ * picture `resolve` cannot answer is taken out of its paint list rather than left to fail. */
+function withImages(spec: CreateSpec, resolve: (hash: string) => { hash: string } | { bytes: string } | null): CreateSpec {
+  const paint = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s+(FILL|FIT|CROP|TILE)$/.exec(value.trim())
+      if (!picture) return value
+      const image = resolve(picture[1])
+      return image ? { image, scaleMode: picture[2] } : undefined
+    }
+    if (Array.isArray(value)) {
+      const kept = value.map(paint).filter((one) => one !== undefined)
+      return kept.length === 0 && value.length > 0 ? undefined : kept
+    }
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (!entry.image || typeof entry.image.hash !== 'string') return value
+      const image = resolve(entry.image.hash)
+      return image ? { ...(value as Record<string, unknown>), image } : undefined
+    }
+    return value
+  }
+  const props = { ...(spec.props ?? {}) } as Record<string, unknown>
+  for (const key of ['fill', 'stroke']) if (key in props) props[key] = paint(props[key]) ?? null
+  return {
+    ...spec,
+    props,
+    ...(Array.isArray(spec.children) ? { children: spec.children.map((child) => withImages(child, resolve)) } : {}),
+  } as CreateSpec
+}
+
+/** A reading with picture hashes blanked: a picture carried as bytes gets a new hash, and that is
+ * not a difference anyone looking at the two would see. */
+function imagesBlind(props: Record<string, unknown>): Record<string, unknown> {
+  const blank = (value: unknown): unknown => {
+    if (typeof value === 'string') return value.replace(/image:\S+/g, 'image:#')
+    if (Array.isArray(value)) return value.map(blank)
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (entry.image && typeof entry.image.hash === 'string') return { ...(value as Record<string, unknown>), image: { hash: '#' } }
+    }
+    return value
+  }
+  return Object.fromEntries(Object.entries(props).map(([key, value]) => [key, blank(value)]))
+}
+
+/** What becomes of an instance in a spec: made from a component (`of` — an id here, a library
+ * key in another file), rebuilt as a plain frame from what it shows (`detach`), or left out. */
+type InstancePlan = { of: string } | { detach: true; why: string } | null
+
+/**
+ * A node and its children as the spec NODE_CREATE takes — the reading, and nothing but the
+ * reading. Shared by the round trip (same file) and the transfer (another file); they differ only
+ * in what an instance turns into. Anything the planner will not take is recorded in `dropped` /
+ * `notValues` on the way past rather than quietly left out; `detached` names the instances that
+ * came across as frames.
+ */
+async function readSpecTree(
+  original: SceneNode,
+  depth: number,
+  dropped: RoundTripFinding[],
+  notValues: string[],
+  planInstance: (instance: InstanceNode) => Promise<InstancePlan>,
+  detached: string[] = []
+): Promise<{ spec: CreateSpec | null }> {
+  const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
+    const reading = await describeNode(one, true)
+    let asFrame = false
+    let of: string | null = null
+    if (one.type === 'INSTANCE') {
+      const plan = await planInstance(one as InstanceNode)
+      if (plan && 'of' in plan) of = plan.of
+      else if (plan && 'detach' in plan) {
+        asFrame = true
+        detached.push(`${one.name}: ${plan.why}`)
+      }
+    }
+    const kids: CreateSpec[] = []
+    // Not into an instance that is made from its component: what is inside it belongs to the
+    // component, and sending it again would build everything twice. A detached one IS its children.
+    // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
+    if (level > 0 && 'children' in one && (one.type !== 'INSTANCE' || asFrame) && String(one.type) !== 'TABLE') {
+      for (const child of (one as SceneNode & ChildrenMixin).children) {
+        const made = await build(child, level - 1)
+        if (made) kids.push(made)
+      }
+    }
+    const built = specFrom(asFrame ? { ...reading, type: 'FRAME' } : reading, kids, of)
+    if (!built) {
+      dropped.push({
+        property: `${one.name}`,
+        // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
+        // not build one; its source is read, and a new one made, through Figma's own MCP.
+        why: String(one.type) === 'CODE_INSTANCE'
+          ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
+          : `a ${one.type} cannot be made by NODE_CREATE`,
+      })
+      return null
+    }
+    for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
+    for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
+    return built.spec
+  }
+  return { spec: await build(original, depth) }
 }
 
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
@@ -6368,43 +6495,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const dropped: RoundTripFinding[] = []
           const notValues: string[] = []
 
-          // The reading, and the spec it amounts to. Anything the planner will not take is
-          // recorded on the way past rather than quietly left out.
-          const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
-            const reading = await describeNode(one, true)
-            const kids: CreateSpec[] = []
-            // Not into an instance: what is inside it belongs to its component, and copying it
-            // would compare a screen against a screen with everything in it twice.
-            // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
-            if (level > 0 && 'children' in one && one.type !== 'INSTANCE' && String(one.type) !== 'TABLE') {
-              for (const child of (one as SceneNode & ChildrenMixin).children) {
-                const made = await build(child, level - 1)
-                if (made) kids.push(made)
-              }
-            }
-            const of =
-              one.type === 'INSTANCE'
-                ? ((await (one as InstanceNode).getMainComponentAsync().catch(() => null))?.id ?? null)
-                : null
-
-            const built = specFrom(reading, kids, of)
-            if (!built) {
-              dropped.push({
-                property: '(node)',
-                // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
-                // not build one; its source is read, and a new one made, through Figma's own MCP.
-                why: String(one.type) === 'CODE_INSTANCE'
-                  ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
-                  : `a ${one.type} cannot be made by NODE_CREATE`,
-              })
-              return null
-            }
-            for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
-            for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
-            return built.spec
-          }
-
-          const spec = await build(original, depth)
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            const main = await one.getMainComponentAsync().catch(() => null)
+            return main ? { of: main.id } : null
+          })
           if (!spec) {
             reports.push({ node: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
             continue
@@ -6455,6 +6549,158 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'ROUNDTRIP', checked: reports.length, broken, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_ROUNDTRIP', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'NODE_SPEC': {
+      // @agent read: a node as a portable spec — the reading another file can build from: library components by key, pictures as bytes, and what could not travel
+      // @agent param nodes: the ids to read
+      // @agent param depth: how many levels of children to carry — 0 is the node alone, 6 by default
+      // @agent param budgetBytes: how many bytes of pictures to carry in one answer — 2 MB by default; past it a picture is named, not sent
+      // @agent param localComponents: "frame" (default) brings an instance of a component that lives in this file across as the frame it shows; "key" sends the component's key, for a file that uses this one as a library
+      // @agent cost: reads the subtree and the bytes of every picture in it
+      try {
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const depth = Math.min(Math.max(msg.depth ?? 6, 0), 12)
+        const budget = Math.min(Math.max(msg.budgetBytes ?? 2_000_000, 0), 2_500_000)
+        const out = []
+        const hashes = new Set<string>()
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            out.push({ source: id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          const original = node as SceneNode
+          const dropped: RoundTripFinding[] = []
+          const notValues: string[] = []
+          const detached: string[] = []
+          // Another file can only make an instance from a component it can import: a library
+          // one, by key. A main that lives only in this file — or nowhere — comes across as the
+          // frame it shows, and says so.
+          // Never `getPublishStatusAsync` here: it goes out to the team library, and when that call
+          // hangs it wedges every library read in the session — live, it took the plugin with it
+          // until the designer reopened it. A main from a library travels by key; a main local to
+          // this file comes across as the frame it shows unless the caller vouches that the other
+          // file has this one as a library (`localComponents: "key"`).
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            const main = await one.getMainComponentAsync().catch(() => null)
+            if (!main) return { detach: true, why: 'its main component is gone' }
+            if (main.remote || msg.localComponents === 'key') return { of: main.key }
+            return { detach: true, why: `its main "${main.name}" lives in this file — pass localComponents: "key" if the other file uses this one as a library` }
+          }, detached)
+          if (!spec) {
+            out.push({ source: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
+            continue
+          }
+          for (const hash of imageHashesIn(spec)) hashes.add(hash)
+          out.push({
+            source: id,
+            name: original.name,
+            type: original.type,
+            ok: true,
+            spec,
+            before: ((await describeNode(original, true)).props ?? {}) as Record<string, unknown>,
+            ...(dropped.length > 0 ? { dropped } : {}),
+            ...(notValues.length > 0 ? { notValues } : {}),
+            ...(detached.length > 0 ? { detached } : {}),
+          })
+        }
+        // Pictures by hash, once each however many layers paint them. The answer has a ceiling
+        // — the sandbox-to-UI hop stalls past about 3 MB — so past the budget a picture is named
+        // rather than sent, and the building side reports it as not carried.
+        const images: Record<string, string> = {}
+        const skipped: Array<{ hash: string; why: string }> = []
+        let spent = 0
+        for (const hash of hashes) {
+          const bytes = await figma.getImageByHash(hash)?.getBytesAsync().catch(() => null)
+          if (!bytes) {
+            skipped.push({ hash, why: 'the picture could not be read' })
+            continue
+          }
+          if (spent + bytes.length > budget) {
+            skipped.push({ hash, why: `over the ${Math.round(budget / 1000)} kB budget for one call (${Math.round(bytes.length / 1000)} kB)` })
+            continue
+          }
+          images[hash] = figma.base64Encode(bytes)
+          spent += bytes.length
+        }
+        postToUi({ type: 'NODE_SPECS', nodes: out, images, ...(skipped.length > 0 ? { imagesSkipped: skipped } : {}) })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_SPEC', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'NODE_BUILD': {
+      // @agent write: build nodes from portable specs (NODE_SPEC's answer, usually from another file), read them back and say what did not survive
+      // @agent param nodes: an array of { source, spec, before } — NODE_SPEC's nodes, as they came
+      // @agent param images: NODE_SPEC's images — the bytes of each picture, by the hash it had where it came from
+      // @agent param parent: where the copies go — a frame, section or page id; the current page when omitted
+      // @agent param ignore: property names to leave out of the comparison, for the ones a file legitimately changes
+      // @agent param dryRun: true checks every spec plans and changes nothing
+      // @agent cost: one subtree made per node; one call is one undo step
+      try {
+        const rows = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]) as Array<{ source?: unknown; spec?: unknown; before?: unknown }>
+        const images = (msg.images && typeof msg.images === 'object' ? msg.images : {}) as Record<string, string>
+        const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)))
+        const dry = msg.dryRun === true
+        let parent: BaseNode & ChildrenMixin = figma.currentPage
+        if (typeof msg.parent === 'string' && msg.parent !== '') {
+          const found = await figma.getNodeByIdAsync(msg.parent)
+          if (!found || !('appendChild' in found)) {
+            refuse('NODE_BUILD', `${msg.parent} is not a frame, section or page that can hold layers`)
+            break
+          }
+          if (found.type === 'PAGE') await (found as PageNode).loadAsync()
+          parent = found as BaseNode & ChildrenMixin
+        }
+        const reports = []
+        for (const row of rows) {
+          const source = String(row?.source ?? '?')
+          if (!row || typeof row.spec !== 'object' || row.spec === null) {
+            reports.push({ source, ok: false, error: 'no spec to build' })
+            continue
+          }
+          // A picture travels as bytes and gets a new hash here; one already in this file keeps
+          // its own. What did not travel is named rather than painted grey.
+          const missing: string[] = []
+          const spec = withImages(row.spec as CreateSpec, (hash) => (figma.getImageByHash(hash) ? { hash } : images[hash] ? { bytes: images[hash] } : (missing.push(hash), null)))
+          const problems: string[] = []
+          const plan = planCreate(spec, 'spec', problems)
+          if (!plan || problems.length > 0) {
+            reports.push({ source, ok: false, error: problems.slice(0, 6).join(' · ') || 'the spec did not plan' })
+            continue
+          }
+          if (dry) {
+            reports.push({ source, ok: true, dryRun: true, ...(missing.length > 0 ? { imagesMissing: missing } : {}) })
+            continue
+          }
+          const made = await createNode(plan, parent, false)
+          const copy = await figma.getNodeByIdAsync(made.id)
+          if (!copy || !('type' in copy)) {
+            reports.push({ source, ok: false, error: 'the copy was not made' })
+            continue
+          }
+          const before = imagesBlind((row.before ?? {}) as Record<string, unknown>)
+          const after = imagesBlind(((await describeNode(copy as SceneNode, true)).props ?? {}) as Record<string, unknown>)
+          const { same, diverged } = compare(before, after, ignore)
+          const failed = made.failures ?? []
+          reports.push({
+            source,
+            node: copy.id,
+            name: (copy as SceneNode).name,
+            ok: diverged.length === 0 && failed.length === 0 && missing.length === 0,
+            same: same.length,
+            ...(diverged.length > 0 ? { diverged } : {}),
+            ...(failed.length > 0 ? { failed } : {}),
+            ...(missing.length > 0 ? { imagesMissing: missing } : {}),
+          })
+        }
+        if (!dry && reports.some((one) => 'node' in one)) figma.commitUndo()
+        postToUi({ type: 'NODE_BUILT', dryRun: dry, parent: { id: parent.id, name: (parent as BaseNode).name }, nodes: reports })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_BUILD', message: String((error as Error)?.message || error) })
       }
       break
     }

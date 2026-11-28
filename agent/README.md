@@ -7,7 +7,7 @@ It is MCP-shaped without being MCP: there is no server to register, no client li
 nothing to keep in sync but the op names. If a tool can run a shell command, it can drive
 Figma.
 
-**Reads and writes, gated separately.** Most ops only look; thirty-seven of them change the
+**Reads and writes, gated separately.** Most ops only look; thirty-eight of them change the
 document or plugin-managed module storage and sit behind their own switch, which reads never imply.
 
 ---
@@ -420,6 +420,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `page.warm` | loads a page on purpose and reports what it cost — the wait moved to where you chose it, instead of arriving inside the first read that touched a cold page |
 | `node.get` | one node by id — geometry, auto-layout, text, instance bindings, children |
 | `node.find` | search by name substring, node type and/or `text` — what a TEXT layer actually says, case and spacing ignored — per page or whole document; `within` narrows any search to one frame or section, and every text match names its top-level `frame`. Up to `limit` matches per call; `cursor` continues |
+| `node.spec` | a layer as a portable spec another file can build — tokens by name, library components by key, components local to the file as frames, pictures as bytes; the reading half of `node.transfer` |
 | `selection.get` | what the designer has selected right now |
 | `components.list` | local components and sets, with property/variant definitions, descriptions and documentation links — page by page through the type index, `limit` per call, `cursor` continues |
 | `component.api` | one component as an API: axes with options and defaults, the variant that isolates each option, what it changes (with the token behind each value), and which layer every boolean/text/swap property drives |
@@ -490,7 +491,7 @@ allcrew-channel ops --json       # the same, machine-readable
 | `modules.inspect` | one installed module&rsquo;s declarative file and current state, with secret fields redacted |
 | `modules.export` | a transferable module file, optionally with non-secret state |
 
-Thirty-seven **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
+Thirty-eight **change** the document or plugin-managed module storage, and `allcrew-channel ops` marks them with a leading `!`. (This
 table is checked against the registry by a test — an op that ships without a row here fails the
 build rather than going quietly undocumented, which is how the count used to read "five".)
 
@@ -510,6 +511,8 @@ build rather than going quietly undocumented, which is how the count used to rea
 | `node.remove` | deletes nodes. Refuses a page or the document outright, and a component or set without `force` |
 | `node.move` | cut and paste: moves nodes into another frame, group, section or page, or reorders them with `index`. Keeps the canvas position across frames; refuses layers inside instances and a node into itself |
 | `node.duplicate` | copy and paste: copies nodes beside themselves or into any frame or page and reports each new id. A component pastes as an instance unless `components: "clone"`; a set needs it |
+| `node.build` | builds layers from `node.spec`'s answer in this file, reads them back and reports what diverged, what the file refused, which components it could not import and which pictures did not arrive; the writing half of `node.transfer` |
+| `node.transfer` | copies layers from one open file into another — the bridge's own op, since only it sees both: `node.spec` in `from`, `node.build` in `to`, one report per layer of what did not survive. Needs the write gate in `to` only |
 | `style.bind` | binds a paint style — a solid paint, or ONE gradient stop by position — or a text style field (`fontFamily`, `fontStyle`, `fontWeight`, `fontSize`, `lineHeight`, `letterSpacing`, `paragraphSpacing`, `paragraphIndent`) to a variable, and re-reads the style to check, because stop binding is undocumented API |
 | `style.remove` | deletes styles nothing uses. Refuses while a consumer exists; reports publish status first |
 | `instance.detach` | detaches instances from their main components. Bindings survive — plan a rebind after |
