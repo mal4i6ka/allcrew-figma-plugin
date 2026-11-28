@@ -17,6 +17,8 @@ import { componentFor, humanPropertyName, resolveProperties } from './components
 import {
   colourFrom,
   describeLinks,
+  GRID_TOKEN_FIELDS,
+  gridSpecsOf,
   formatGridTrack,
   gradientHandles,
   gradientTransform,
@@ -35,6 +37,7 @@ import type {
   ColourInput,
   FontSpec,
   GradientRef,
+  GridSpec,
   ImageRef,
   PaintRef,
   PlannedAction,
@@ -789,10 +792,27 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'grid': {
       if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
       const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
-      const kept = await keptByStyle(node, 'gridStyleId', describeGrids(bag.layoutGrids) === describeGrids(step.grids))
+      // Bound on the grid object, the way an effect's numbers are: each binding hands back a NEW grid.
+      let grids = step.grids
+      const failures: string[] = []
+      for (const binding of step.bind ?? []) {
+        try {
+          const variable = await resolveVariableRef(binding.variable)
+          if (variable.resolvedType !== 'FLOAT') throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and a grid wants a FLOAT`)
+          const bound = figma.variables.setBoundVariableForLayoutGrid(grids[binding.index], binding.field, variable)
+          grids = grids.map((grid, index) => (index === binding.index ? bound : grid))
+        } catch (error) {
+          failures.push(`${binding.field}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      const kept = await keptByStyle(
+        node,
+        'gridStyleId',
+        failures.length === 0 && !step.bind?.length && describeGrids(bag.layoutGrids) === describeGrids(grids)
+      )
       if (kept) return { property: 'grid', before, after: before, kept }
-      if (!dry) bag.layoutGrids = step.grids
-      return { property: 'grid', before, after: step.summary }
+      if (!dry) bag.layoutGrids = grids
+      return { property: 'grid', before, after: step.summary, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
     }
 
     case 'brush': {
@@ -2003,6 +2023,42 @@ export function describeGrids(value: unknown): string {
     )
   }
   return parts.join(' · ')
+}
+
+/**
+ * Layout grids in the words `grid` takes, a token-driven number as `{ variable }` — the plain
+ * reading of `gridSpecsOf` with each bound field named by the variable it follows, so a grid that
+ * follows the breakpoint tokens copies as one that still does.
+ */
+export async function readGrids(value: unknown): Promise<GridSpec[]> {
+  const specs = gridSpecsOf(value)
+  if (!Array.isArray(value)) return specs
+  const out: GridSpec[] = []
+  for (const [index, spec] of specs.entries()) {
+    const grid = value[index] as LayoutGrid & { boundVariables?: Record<string, { id?: string }> }
+    const bound = grid.boundVariables ?? {}
+    const words: Record<string, unknown> = { ...spec }
+    // The word each bound field goes by on THIS grid: a count is columns or rows, a size is the
+    // square, the width or the height.
+    const wordOf: Record<string, string | undefined> =
+      grid.pattern === 'GRID'
+        ? { sectionSize: 'square' }
+        : {
+            count: grid.pattern === 'COLUMNS' ? 'columns' : 'rows',
+            gutterSize: 'gutter',
+            offset: 'margin',
+            sectionSize: grid.pattern === 'COLUMNS' ? 'width' : 'height',
+          }
+    for (const field of new Set(Object.values(GRID_TOKEN_FIELDS))) {
+      const id = bound[field]?.id
+      const word = wordOf[field]
+      if (!id || !word) continue
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      if (variable) words[word] = { variable: variable.name }
+    }
+    out.push(words as GridSpec)
+  }
+  return out
 }
 
 /** Effects as one readable line, for the same reason paints are: this lands deep in a report. */

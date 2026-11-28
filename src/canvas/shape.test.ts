@@ -122,6 +122,33 @@ test('scale and the aspect lock come after the size they act on', () => {
   assert.deepEqual(stepsOf({ aspectLock: true, scale: 2, width: 100 }).map((step) => step.step), ['resize', 'rescale', 'aspect'])
 })
 
+/* --------------------------------------------------------------- grid tokens */
+
+test('a grid’s numbers may name variables, bound on the grid once the list is built', () => {
+  const [step] = stepsOf({
+    grid: [
+      { columns: { variable: 'grid/columns' }, gutter: { variable: 'spacing/m' }, margin: 24 },
+      { square: { variable: 'grid/baseline' } },
+    ],
+  })
+  assert.equal(step.step, 'grid')
+  const grid = step as Extract<typeof step, { step: 'grid' }>
+  assert.deepEqual(grid.bind, [
+    { index: 0, field: 'count', variable: 'grid/columns' },
+    { index: 0, field: 'gutterSize', variable: 'spacing/m' },
+    { index: 1, field: 'sectionSize', variable: 'grid/baseline' },
+  ])
+  assert.equal((grid.grids[0] as RowsColsLayoutGrid).offset, 24)
+  assert.match(grid.summary, /grid\/columns column\(s\) stretch gutter spacing\/m margin 24/)
+})
+
+test('a token margin keeps its offset even when the stand-in is zero', () => {
+  const [step] = stepsOf({ grid: [{ columns: 12, margin: { variable: 'grid/margin' } }] })
+  const grid = step as Extract<typeof step, { step: 'grid' }>
+  assert.equal((grid.grids[0] as RowsColsLayoutGrid).offset, 0)
+  assert.deepEqual(grid.bind, [{ index: 0, field: 'offset', variable: 'grid/margin' }])
+})
+
 /* ------------------------------------------------------------------ vectors */
 
 test('a vector network reads in the short forms the write takes, and plans back unchanged', () => {

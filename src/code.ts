@@ -134,7 +134,7 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { formatGridTrack, gridSpecsOf, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
+import { formatGridTrack, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
@@ -153,6 +153,7 @@ import {
   describeGrids,
   describePaints,
   buildPaints,
+  readGrids,
   readModes,
   variableName,
 } from './canvas/apply.ts'
@@ -2238,7 +2239,8 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
-    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
+    // The list `grid` takes back, tokens and all — a grid that follows the breakpoint tokens copies as one that still does.
+    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: await readGrids(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
       ? { animation: await describeAnimation(bag.animationStyles) }
       : {}),

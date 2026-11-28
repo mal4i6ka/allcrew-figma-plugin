@@ -283,10 +283,27 @@ export type EffectSpec =
  * Figma spells each as a pattern with an alignment, a gutter, a count and sometimes a width; a
  * person says "12 columns, 16 apart, 24 in from each side".
  */
+/** A grid number, or the variable it follows — `{ variable: "grid/columns" }`. */
+export type GridNumber = number | { variable: string }
+
 export type GridSpec =
-  | { columns: number; gutter?: number; margin?: number; width?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
-  | { rows: number; gutter?: number; margin?: number; height?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
-  | { square: number; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { columns: GridNumber; gutter?: GridNumber; margin?: GridNumber; width?: GridNumber; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { rows: GridNumber; gutter?: GridNumber; margin?: GridNumber; height?: GridNumber; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { square: GridNumber; color?: ColourInput; opacity?: number; visible?: boolean }
+
+/** The fields of a layout grid Figma binds a variable to. */
+export type GridTokenField = 'count' | 'gutterSize' | 'offset' | 'sectionSize'
+
+/** The grid words that can name a variable, against the field Figma binds. */
+export const GRID_TOKEN_FIELDS: Readonly<Record<string, GridTokenField>> = {
+  columns: 'count',
+  rows: 'count',
+  gutter: 'gutterSize',
+  margin: 'offset',
+  width: 'sectionSize',
+  height: 'sectionSize',
+  square: 'sectionSize',
+}
 
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
@@ -887,7 +904,13 @@ export type PropStep =
       /** Variables to bind afterwards: which effect, which field, which variable. */
       bind: Array<{ index: number; field: string; variable: string }>
     }
-  | { step: 'grid'; grids: LayoutGrid[]; summary: string }
+  | {
+      step: 'grid'
+      grids: LayoutGrid[]
+      summary: string
+      /** Token-driven numbers, bound on the grid itself — the node's bindings never hold them. */
+      bind?: Array<{ index: number; field: GridTokenField; variable: string }>
+    }
   | {
       step: 'animation'
       styles: Array<{ style: string; duration?: number; offset?: number; props: Record<string, unknown> }>
@@ -4071,6 +4094,7 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
 
   const grids: LayoutGrid[] = []
   const summary: string[] = []
+  const bind: Array<{ index: number; field: GridTokenField; variable: string }> = []
 
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
@@ -4079,7 +4103,22 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
       fail('must be { columns }, { rows } or { square }')
       continue
     }
-    const spec = entry as Record<string, unknown>
+    // Any number may name a variable instead — `{ columns: { variable: "grid/columns" } }` — which
+    // is how a grid follows the breakpoint tokens instead of copying them. The grid is built with
+    // a stand-in and bound once the list exists, the way an effect's numbers are.
+    const tokens: Array<{ field: GridTokenField; variable: string }> = []
+    const spec = Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, value]) => {
+        const field = GRID_TOKEN_FIELDS[key]
+        const named = typeof value === 'object' && value !== null && typeof (value as { variable?: unknown }).variable === 'string'
+        if (field && named) {
+          tokens.push({ field, variable: (value as { variable: string }).variable })
+          return [key, key === 'gutter' || key === 'margin' ? 0 : 1]
+        }
+        return [key, value]
+      })
+    ) as Record<string, unknown>
+    const before = grids.length
 
     const paint = (): { color?: RGBA } | null => {
       if (spec.color === undefined) return {}
@@ -4109,7 +4148,8 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
       const colour = paint()
       if (!colour) continue
       grids.push({ pattern: 'GRID', sectionSize: size, visible: spec.visible !== false, ...colour } as LayoutGrid)
-      summary.push(`square ${size}`)
+      summary.push(`square ${tokens.length > 0 ? `var:${tokens[0].variable}` : size}`)
+      for (const token of tokens) bind.push({ index: before, ...token })
       continue
     }
 
@@ -4154,22 +4194,27 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
     const colour = paint()
     if (!colour) continue
 
+    // A margin that follows a token is a margin even while its stand-in is zero.
+    const margined = margin !== 0 || tokens.some((token) => token.field === 'offset')
     grids.push({
       pattern: vertical ? 'COLUMNS' : 'ROWS',
       alignment: align as GridAlign,
       gutterSize: gutter,
       count,
       ...(size === undefined ? {} : { sectionSize: size }),
-      ...(margin === 0 ? {} : { offset: margin }),
+      ...(margined ? { offset: margin } : {}),
       visible: spec.visible !== false,
       ...colour,
     } as LayoutGrid)
+    const said = (field: string, value: unknown) => tokens.find((token) => token.field === field)?.variable ?? value
+    const tokenGutter = tokens.some((token) => token.field === 'gutterSize')
     summary.push(
-      `${count} ${vertical ? 'column' : 'row'}(s) ${align.toLowerCase()}${gutter ? ` gutter ${gutter}` : ''}${margin ? ` margin ${margin}` : ''}${size ? ` at ${size}` : ''}`
+      `${said('count', count)} ${vertical ? 'column' : 'row'}(s) ${align.toLowerCase()}${gutter || tokenGutter ? ` gutter ${said('gutterSize', gutter)}` : ''}${margined ? ` margin ${said('offset', margin)}` : ''}${size ? ` at ${said('sectionSize', size)}` : ''}`
     )
+    for (const token of tokens) bind.push({ index: before, ...token })
   }
 
-  return { step: 'grid', grids, summary: summary.join(' · ') || 'none' }
+  return { step: 'grid', grids, summary: summary.join(' · ') || 'none', ...(bind.length > 0 ? { bind } : {}) }
 }
 
 function planLayout(raw: unknown, where: string, problems: string[]): { step: PropStep | null; layout: LayoutProps } | null {
