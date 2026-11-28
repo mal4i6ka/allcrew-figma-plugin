@@ -138,6 +138,7 @@ import { ANNOTATION_PROPERTIES, formatGridTrack, NETWORK_READ_LIMIT, planFont, p
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { scaleCssUnits } from './targets/react/units.ts'
 import { asCodeLayer, CODE_LAYER_EXECUTABLES } from './targets/react/code-layer.ts'
 import { fileKeyFrom } from './targets/react/code-connect.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
@@ -1553,10 +1554,15 @@ if (figma.mode === 'codegen') {
         fileName: figma.root.name,
       })
 
+      // The unit the developer picked in Dev Mode's settings — px, or rem at the scale the manifest
+      // declares (16 unless they changed it). The emitter thinks in pixels; the CSS is converted
+      // on the way out.
+      const preferences = figma.codegen.preferences
+      const scale = preferences.unit === 'SCALED' ? (preferences.scaleFactor ?? 16) : null
       const results: CodegenResult[] = []
       for (const [path, contents] of Object.entries(files)) {
         if (path.endsWith('.tsx')) results.push({ title: path, code: contents, language: 'TYPESCRIPT' })
-        else if (path.endsWith('.css')) results.push({ title: path, code: contents, language: 'CSS' })
+        else if (path.endsWith('.css')) results.push({ title: path, code: scale ? scaleCssUnits(contents, scale) : contents, language: 'CSS' })
         else if (path.endsWith('.json')) results.push({ title: path, code: contents, language: 'JSON' })
       }
       // The gaps go in the panel too, and first: this is where a developer is looking when they
@@ -1573,6 +1579,9 @@ if (figma.mode === 'codegen') {
       return [{ title: 'React', code: `// ${String((error as Error)?.message || error)}`, language: 'TYPESCRIPT' }]
     }
   })
+  // The code names styles and tokens, so a style a collaborator edits while a developer is reading
+  // it has to show up — Figma regenerates on selection and preference changes, not on this.
+  figma.on('stylechange', () => figma.codegen.refresh())
 } else {
   figma.showUI(__html__, { ...UI_SIZE, themeColors: true })
 }
