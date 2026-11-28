@@ -108,3 +108,35 @@ test('applyTranslations skips entries that match no node', async () => {
   assert.equal(result.applied.length, 0)
   assert.deepEqual(result.skipped, [{ entry: entries[0], reason: 'not-found' }])
 })
+
+test('applyTranslations fills an empty text layer instead of throwing on its empty font range', async () => {
+  // `getRangeAllFontNames(0, 0)` throws in Figma (documented in typings 1.143.0, seen live); one
+  // empty layer used to abort the whole pass, the layers after it included.
+  const loaded: unknown[] = []
+  setFigma(loaded)
+  const empty = makeTextNode({
+    id: 'text:empty',
+    characters: '',
+    fontName: { family: 'Inter', style: 'Medium' },
+    getRangeAllFontNames: (start: number, end: number) => {
+      if (end <= start) throw new Error("in getRangeAllFontNames: Empty range selected. 'end' must be greater than 'start'")
+      return [{ family: 'Inter', style: 'Regular' }]
+    },
+  })
+  const after = makeTextNode({ id: 'text:after', characters: 'Cancel' })
+  const index = buildNodeIndex([empty, after])
+
+  const result = await applyTranslations(
+    [
+      { nodeId: 'text:empty', msgctxt: '', msgid: '', msgstr: 'Заполнено' },
+      { nodeId: 'text:after', msgctxt: '', msgid: 'Cancel', msgstr: 'Отмена' },
+    ],
+    index
+  )
+
+  assert.equal(empty.characters, 'Заполнено')
+  assert.equal(after.characters, 'Отмена')
+  assert.equal(result.applied.length, 2)
+  // The empty layer's own font, then the next layer's ranged one.
+  assert.deepEqual(loaded, [{ family: 'Inter', style: 'Medium' }, { family: 'Inter', style: 'Regular' }])
+})
