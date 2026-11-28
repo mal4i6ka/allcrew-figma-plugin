@@ -206,6 +206,11 @@ function pickVisualDeclarations(css: Record<string, string>): Record<string, str
   const picked: Record<string, string> = {}
   for (const [property, value] of Object.entries(css)) {
     if (IR_OWNED_CSS.has(property)) continue
+    // The origin is this emitter's to decide: a layer is placed by its top-left and turned about
+    // it. Since 3D transforms, `getCSSAsync` writes the 3D pivot here (`0px 50%` for a hinge, seen
+    // live) — taken as it came it replaced the `0 0` set below, and a layer both rotated and
+    // tilted turned about the wrong point. `transform3d.ts` writes the 3D pivot from the node.
+    if (property === 'transform-origin') continue
     if (property === 'transform') {
       const transform = sanitizeTransform(value)
       if (transform) {

@@ -17,6 +17,8 @@
  * WEBP variants need a post-export conversion step outside the plugin.
  */
 
+import { unwrapFigma3dSvg } from './svg-3d.ts'
+
 /** The raster formats `exportAsync` actually validates (see module note — no WEBP). */
 export type RasterFormat = 'png' | 'jpg'
 export type RasterScale = 1 | 2
@@ -198,7 +200,9 @@ export async function exportVectorAsset(
   node: VectorExportableNode,
   inlineThresholdBytes: number = DEFAULT_VECTOR_INLINE_THRESHOLD_BYTES
 ): Promise<VectorAsset> {
-  const svg = await node.exportAsync({ format: 'SVG_STRING' })
+  // A layer with a 3D transform exports wrapped in that transform; the stylesheet applies it, so
+  // the artwork is what ships (see svg-3d.ts).
+  const svg = unwrapFigma3dSvg(await node.exportAsync({ format: 'SVG_STRING' }))
 
   if (utf8ByteLength(svg) <= inlineThresholdBytes) return { kind: 'inline', svg }
   return { kind: 'file', filename: vectorFilename(node.id, node.name), svg }

@@ -270,3 +270,111 @@ test('the export report groups the 3D notes by what was done about each', () => 
     'preserve3d-not-rendered': { opacity: ['4:1', '4:4'], overflow: ['4:1'] },
   })
 })
+
+/* -------------------------------------------- what Figma's own CSS says (read live) */
+
+// `getCSSAsync` answers below are verbatim from Figma on 19.11.2026, for layers written through
+// this plugin. They settle two things the typings do not: Figma writes the 3D functions itself
+// (leaving out the zero ones), and it composes a 2D rotation OUTSIDE the 3D transform.
+
+test('a layer rotated in 2D with a hinged 3D pose: Figma’s own origin does not displace the top-left one', async () => {
+  const css = await emitCss(
+    [container('8:1')],
+    new Map([
+      [
+        '8:1',
+        source(
+          {
+            transform: 'translate(80px, 0px) rotate(-20deg) translate(-80px, 0px) translateZ(40px) rotateY(30deg)',
+            'transform-origin': '0px 50%',
+            'backface-visibility': 'hidden',
+            background: '#E5483F',
+          },
+          {
+            transform3d: fixed({ translateZ: 40, rotateY: 30.000000834826057, backfaceVisible: false, visible: true }),
+            transformOrigin: { x: { unit: 'PIXELS', value: 0 }, y: { unit: 'PERCENT', value: 50 } },
+          }
+        ),
+      ],
+    ]),
+    new Map(),
+    { preamble: false }
+  )
+  const rule = ruleFor(css, 'n8-1')
+  // The 2D turn stays about the top-left the layer is placed by; the hinge is baked into the 3D part.
+  assert.match(rule, /transform-origin: 0 0;/)
+  assert.match(rule, /transform: rotate\(-20deg\) translate\(0px, 50%\) translateZ\(40px\) rotateX\(0deg\) rotateY\(30deg\) rotateZ\(0deg\) translate\(0px, -50%\);/)
+  assert.match(rule, /backface-visibility: hidden;/)
+  assert.equal(rule.match(/transform-origin/g)?.length, 1)
+})
+
+test('a hinged 3D pose with no 2D turn takes the pivot as its transform-origin, once', async () => {
+  const css = await emitCss(
+    [container('8:2')],
+    new Map([
+      [
+        '8:2',
+        source(
+          { transform: 'translateZ(40px) rotateY(30deg)', 'transform-origin': '0px 50%', 'backface-visibility': 'hidden' },
+          {
+            transform3d: fixed({ translateZ: 40, rotateY: 30, backfaceVisible: false }),
+            transformOrigin: { x: { unit: 'PIXELS', value: 0 }, y: { unit: 'PERCENT', value: 50 } },
+          }
+        ),
+      ],
+    ]),
+    new Map(),
+    { preamble: false }
+  )
+  const rule = ruleFor(css, 'n8-2')
+  assert.match(rule, /transform: translateZ\(40px\) rotateX\(0deg\) rotateY\(30deg\) rotateZ\(0deg\);/)
+  assert.match(rule, /transform-origin: 0px 50%;/)
+  assert.equal(rule.match(/transform-origin/g)?.length, 1)
+})
+
+test('a centred pose with a 2D turn: the functions Figma wrote are not doubled', async () => {
+  const css = await emitCss(
+    [container('8:3')],
+    new Map([['8:3', source({ transform: 'rotate(15deg) rotateX(25deg) rotateZ(10deg)' }, { transform3d: fixed({ rotateX: 25.00000012650595, rotateZ: 9.99999970909292 }) })]]),
+    new Map(),
+    { preamble: false }
+  )
+  const rule = ruleFor(css, 'n8-3')
+  assert.match(rule, /transform: rotate\(15deg\) translate\(50%, 50%\) translateZ\(0px\) rotateX\(25deg\) rotateY\(0deg\) rotateZ\(10deg\) translate\(-50%, -50%\);/)
+  assert.match(rule, /transform-origin: 0 0;/)
+})
+
+test('a scene Figma already wrote is written once', async () => {
+  const css = await emitCss(
+    [container('8:4'), container('8:5')],
+    new Map([
+      ['8:4', source({ perspective: '800px', background: '#FFF' }, { scene3d: { perspective: 800, preserve3d: false, visible: true } })],
+      ['8:5', source({ 'transform-style': 'preserve-3d' }, { scene3d: { perspective: -1, preserve3d: true, visible: true } })],
+    ]),
+    new Map(),
+    { preamble: false }
+  )
+  assert.equal(ruleFor(css, 'n8-4').match(/perspective/g)?.length, 1)
+  assert.equal(ruleFor(css, 'n8-5').match(/transform-style: preserve-3d/g)?.length, 1)
+  assert.doesNotMatch(ruleFor(css, 'n8-5'), /perspective/)
+})
+
+test('a transform that is switched off is exported flat even though Figma’s CSS still carries it', async () => {
+  // Read live: `getCSSAsync` answered `rotateY(45deg)` for `{ rotateY: 45, visible: false }`.
+  const css = await emitCss(
+    [container('8:6'), container('8:7'), container('8:8')],
+    new Map([
+      ['8:6', source({ transform: 'rotateY(45deg)', 'backface-visibility': 'hidden' }, { transform3d: fixed({ rotateY: 45, backfaceVisible: false, visible: false }) })],
+      // The layer's own 2D turn is not part of what was switched off.
+      ['8:7', source({ transform: 'rotate(10deg) rotateY(45deg)' }, { transform3d: fixed({ rotateY: 45, visible: false }) })],
+      ['8:8', source({ perspective: '800px' }, { scene3d: { perspective: 800, preserve3d: false, visible: false } })],
+    ]),
+    new Map(),
+    { preamble: false }
+  )
+  assert.doesNotMatch(ruleFor(css, 'n8-6'), /transform|backface/)
+  assert.match(ruleFor(css, 'n8-7'), /transform: rotate\(10deg\);/)
+  assert.match(ruleFor(css, 'n8-7'), /transform-origin: 0 0;/)
+  assert.doesNotMatch(ruleFor(css, 'n8-7'), /rotateY/)
+  assert.doesNotMatch(ruleFor(css, 'n8-8'), /perspective/)
+})

@@ -68,6 +68,16 @@ export function transform3dFunctions(value: { translateZ: number; rotateX: numbe
 /** 3D functions a CSS generator could have written for the same transform. */
 const GENERATED_3D_FUNCTION = /(?:rotateX|rotateY|rotateZ|rotate3d|translateZ|translate3d|matrix3d|perspective)\([^)]*\)/g
 
+/** Takes the 3D functions out of `transform`; with nothing left, the 2D pass's origin goes too. */
+function strip3dFunctions(decl: Record<string, string>): void {
+  const flat = decl['transform']?.replace(GENERATED_3D_FUNCTION, '').replace(/\s{2,}/g, ' ').trim()
+  if (flat === undefined) return
+  if (flat === '') {
+    delete decl['transform']
+    delete decl['transform-origin']
+  } else decl['transform'] = flat
+}
+
 /** Declarations Figma does not render on a `preserve3d` container, and CSS flattens the scene for. */
 const NOT_RENDERED_UNDER_PRESERVE_3D = ['opacity', 'mix-blend-mode', 'box-shadow', 'filter', 'backdrop-filter', '-webkit-backdrop-filter']
 
@@ -84,21 +94,23 @@ export function apply3dDeclarations(
   if (!source) return
 
   const transform = source.transform3d
-  // `visible: false` is the transform switched off with its numbers kept — nothing to draw.
+  // `visible: false` is the transform switched off with its numbers kept — nothing to draw. But
+  // `getCSSAsync` writes its functions all the same (read live: `rotateY(45deg)` for a transform
+  // that is off), so they are taken out here rather than left to tilt a layer Figma shows flat.
+  if (transform?.type === 'FIXED_ORDER' && transform.visible === false) {
+    strip3dFunctions(decl)
+    delete decl['backface-visibility']
+  }
   if (transform && transform.type !== 'NONE' && transform.visible !== false) {
     if (transform.type === 'FREEFORM') {
       notes?.push({ type: 'transform3d-freeform', node: nodeId })
     } else if (transform.type === 'FIXED_ORDER') {
       const functions = transform3dFunctions(transform)
       const origin = { x: source.transformOrigin?.x ?? CENTRE, y: source.transformOrigin?.y ?? CENTRE }
-      // Whether `getCSSAsync` writes the 3D transform itself is not something this beta documents.
-      // If it does, those functions are the same numbers again: they are taken out so the
-      // transform is written once, here, in the order Figma names.
-      const flat = decl['transform']?.replace(GENERATED_3D_FUNCTION, '').replace(/\s{2,}/g, ' ').trim()
-      if (flat === '') {
-        delete decl['transform']
-        delete decl['transform-origin']
-      } else if (flat !== undefined) decl['transform'] = flat
+      // `getCSSAsync` writes the 3D functions itself (read live: `translateZ(40px) rotateY(30deg)`,
+      // zeros left out). Those are the same numbers again: they are taken out so the transform is
+      // written once, here, all four functions in the order Figma names.
+      strip3dFunctions(decl)
       const existing = decl['transform']
 
       if (!existing) {
@@ -116,7 +128,8 @@ export function apply3dDeclarations(
           : `translate(${offsetCss(origin.x, base.x, 1)}, ${offsetCss(origin.y, base.y, 1)}) ${functions} translate(${offsetCss(origin.x, base.x, -1)}, ${offsetCss(origin.y, base.y, -1)})`
         if (pinned) {
           // The layer's own 2D turn places it in its parent; the 3D transform happens inside that.
-          // Figma does not document how the two compose and no export shows it — said in a note.
+          // This is the order Figma's own `getCSSAsync` writes (2D rotate first, then the 3D
+          // functions — read live). The note stays: the pivot is baked, not a plain origin.
           decl['transform'] = `${existing} ${pivoted}`
           notes?.push({ type: 'transform3d-with-2d', node: nodeId })
         } else {
@@ -134,6 +147,9 @@ export function apply3dDeclarations(
     // `preserve3d` applies independently of that switch.
     if (scene.visible !== false && Number.isFinite(scene.perspective) && scene.perspective >= 0) {
       decl['perspective'] = `${round(scene.perspective)}px`
+    } else {
+      // Whatever a CSS generator wrote for a perspective that is off.
+      delete decl['perspective']
     }
     if (scene.preserve3d === true) {
       decl['transform-style'] = 'preserve-3d'
