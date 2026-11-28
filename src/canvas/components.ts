@@ -84,7 +84,7 @@ function describeDefault(value: unknown): string {
 
 export interface ResolvedProperties {
   /** Keyed the way `setProperties` wants them — suffixes and all. */
-  resolved: Record<string, string | boolean>
+  resolved: Record<string, string | boolean | { variable: string }>
   problems: string[]
 }
 
@@ -103,7 +103,7 @@ export function resolveProperties(
   wanted: Record<string, unknown>,
   defined: Record<string, PropertyOnInstance>
 ): ResolvedProperties {
-  const resolved: Record<string, string | boolean> = {}
+  const resolved: Record<string, string | boolean | { variable: string }> = {}
   const problems: string[] = []
   const keys = Object.keys(defined)
 
@@ -125,6 +125,16 @@ export function resolveProperties(
 
     const key = matches[0]
     const type = defined[key].type
+    // A variable in place of a value: the property follows the token. Its kind is checked when
+    // the variable is resolved, which needs Figma; here only its shape is.
+    if (typeof value === 'object' && value !== null && typeof (value as { variable?: unknown }).variable === 'string') {
+      if (type !== 'BOOLEAN' && type !== 'TEXT') {
+        problems.push(`${humanPropertyName(key)} is a ${type.toLowerCase()} property — only text and boolean properties follow a variable`)
+        continue
+      }
+      resolved[key] = { variable: (value as { variable: string }).variable }
+      continue
+    }
     if (type === 'BOOLEAN') {
       if (typeof value !== 'boolean') {
         problems.push(`${humanPropertyName(key)} is a boolean property, and ${JSON.stringify(value)} is not a boolean`)

@@ -2521,16 +2521,22 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     props.component = owner?.name ?? '(unavailable)'
     // `{ name: value }` — the shape `properties` takes on the way in. It used to read as
     // `"Label=Готово · Show dot=false"`, which is one readable line and could not be sent back.
-    const settings: Record<string, string | boolean> = {}
+    const settings: Record<string, string | boolean | { variable: string }> = {}
     const slots: string[] = []
     for (const [key, entry] of Object.entries(
-      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string }>
+      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string; boundVariables?: { value?: VariableAlias } }>
     )) {
       const name = humanPropertyName(key)
       // A slot holds a node, not a value: there is nothing here for a write to set, so it is
       // reported as the fact it is rather than as a property that failed to travel.
-      if (entry?.type === 'SLOT' || entry?.value === undefined) slots.push(name)
-      else settings[name] = entry.value as string | boolean
+      if (entry?.type === 'SLOT' || entry?.value === undefined) {
+        slots.push(name)
+        continue
+      }
+      // A property that follows a token says so, in the words `properties` takes it back in.
+      const bound = entry.boundVariables?.value?.id
+      const variable = bound ? await figma.variables.getVariableByIdAsync(bound).catch(() => null) : null
+      settings[name] = bound ? { variable: variable?.name ?? bound } : (entry.value as string | boolean)
     }
     if (Object.keys(settings).length > 0) props.properties = settings
     if (slots.length > 0) props.slots = slots
@@ -4462,7 +4468,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
       // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
-      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names (a text or boolean one may be { variable: "<token>" } to follow a token), swap: "<id|key>" changes which component it is, reset: true drops every override first
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
       // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands

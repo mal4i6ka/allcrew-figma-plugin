@@ -251,7 +251,17 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   // would lift it out of the deck. Inside a row the caller named, it goes where it was told.
   const gridded = GRID_PLACED.includes(plan.kind) && fallbackParent.type === 'PAGE'
   if (!moves && !gridded && node.parent !== fallbackParent) {
-    fallbackParent.appendChild(node)
+    // Into a GRID at a named cell in one call — Figma's `appendChildAt` — rather than appended
+    // to the next free cell and moved, which in a full grid first grows a row nobody asked for.
+    const cell = later.find((step) => step.step === 'gridCell')
+    const grid = fallbackParent as BaseNode & ChildrenMixin & {
+      layoutMode?: string
+      gridItemsPositioning?: string
+      appendChildAt?: (child: SceneNode, row: number, column: number) => void
+    }
+    if (cell && cell.step === 'gridCell' && grid.layoutMode === 'GRID' && grid.gridItemsPositioning !== 'ROW_AUTO_FLOW' && typeof grid.appendChildAt === 'function') {
+      grid.appendChildAt(node, cell.row, cell.column)
+    } else fallbackParent.appendChild(node)
   }
 
   // Now that the children are in and the node is placed, the rest can be set.
