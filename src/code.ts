@@ -2216,7 +2216,7 @@ async function readSpecTree(
   planInstance: (instance: InstanceNode) => Promise<InstancePlan>,
   detached: string[] = []
 ): Promise<{ spec: CreateSpec | null }> {
-  const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
+  const build = async (one: SceneNode, level: number, placedByParent = true): Promise<CreateSpec | null> => {
     traceSpec('reading the layer', `${one.name} (${one.id})`)
     let reading: Record<string, unknown>
     try {
@@ -2240,8 +2240,10 @@ async function readSpecTree(
     // component, and sending it again would build everything twice. A detached one IS its children.
     // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
     if (level > 0 && 'children' in one && (one.type !== 'INSTANCE' || asFrame) && String(one.type) !== 'TABLE') {
+      const laysOut = 'layoutMode' in one && (one as FrameNode).layoutMode !== 'NONE'
       for (const child of (one as SceneNode & ChildrenMixin).children) {
-        const made = await build(child, level - 1)
+        const absolute = 'layoutPositioning' in child && (child as FrameNode).layoutPositioning === 'ABSOLUTE'
+        const made = await build(child, level - 1, laysOut && !absolute)
         if (made) kids.push(made)
       }
     }
@@ -2259,6 +2261,12 @@ async function readSpecTree(
     }
     for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
     for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
+    // Position is the parent's business only when the parent lays its children out. In a free
+    // frame the coordinates ARE the layout: without them every child of a copied card piled up
+    // at its top-left corner.
+    if (!placedByParent) {
+      built.spec.props = { ...(built.spec.props ?? {}), x: Math.round(one.x * 100) / 100, y: Math.round(one.y * 100) / 100 }
+    }
     return built.spec
   }
   return { spec: await build(original, depth) }
