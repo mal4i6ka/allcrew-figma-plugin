@@ -16,7 +16,7 @@
 
 Design handoff is more than pixels. Agents need the variables behind values, component behavior, prototype edges, assets, and the live state of the file a designer has open. AllCrew exposes that context through a user-run loopback bridge, then keeps reads and writes behind separate switches visible in Figma.
 
-It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation (also drawn on the canvas), and declarative custom plugin screens. The list is open-ended: an agent builds any other stack or format from the same framework-neutral reading of the design (`design.ir`, `variables.get`). People and agents working in the same file can leave each other messages that are stored in the file.
+It also exports usable deliverables: mode-aware tokens, React, Django, Tauri, native color resources, documentation (also drawn on the canvas), and declarative custom plugin screens. The list is open-ended: an agent builds any other stack or format from the same framework-neutral reading of the design (`design.ir`, `variables.get`). A file can carry its own guidelines (DESIGN.md, a skill, brand rules) for every agent that opens it, and the people and agents working in it can leave each other messages, both stored in the file itself.
 
 Core extraction and generation run inside Figma. Optional Delivery and Agent Listener connections go only to endpoints the user configures; AllCrew operates no hosted relay and collects no telemetry.
 
@@ -34,6 +34,7 @@ repository-grade output.
 - **Dev Mode** measurements and the React code panel.
 - **Typed operations** for FigJam and Slides, where Figma's MCP has only free-form JavaScript.
 - **Version history**, **comments** and **messages between collaborators**.
+- **Guidelines stored in the file**, handed to every agent that opens it and shipped with the tokens.
 - **Code and tokens for any stack:** packaged React, Django, Tauri and token files, … and whatever else an agent builds from `design.ir` and `variables.get`, delivered to git, a pull request, a GitLab merge request or npm.
 
 **Where Figma's MCP is ahead:**
@@ -50,16 +51,19 @@ or only partly · — not available
 |---|:-:|:-:|
 | Read structure, layout, variables, motion | ✅ | ✅ |
 | Read variable-font axes, shaders, vector regions | — | ✅ |
+| 3D transforms: read, write, keyframe | 🟡 | ✅ |
 | Change layers: typed ops, one undo step each, behind **Allow changes** | 🟡 | ✅ |
 | Create components, variants and styles | 🟡 | ✅ |
 | Create and bind variables | 🟡 | ✅ |
 | Search team libraries | ✅ | 🟡 uses Figma's search |
 | Insert library components and styles by key | 🟡 | ✅ |
+| Move, duplicate, and copy layers between open files | 🟡 | ✅ reports what did not survive |
 | Generate a design from code or HTML | ✅ | — |
 | Generate images | ✅ | — |
 | Code from a frame | ✅ React + Tailwind reference | ✅ packaged React, Django, Tauri, … any stack the agent builds from `design.ir` (SwiftUI, Compose, React Native) |
 | Design tokens | — | ✅ CSS, JSON, TS, iOS, Android, … any format the agent writes from `variables.get` (values, modes, `codeSyntax`) |
 | `DESIGN.md` / `COMPONENTS.md` for agents | — | ✅ |
+| Guidelines (DESIGN.md, a skill, brand rules) stored in the file | — | ✅ |
 | Code Connect mappings | ✅ | ✅ templates and the official CLI |
 | Code layers (Figma Make) | ✅ | 🟡 packs the export for Figma's importer |
 | Markdown on the canvas | ✅ Specs (beta) | ✅ plain layers, refreshed on export |
@@ -72,7 +76,8 @@ or only partly · — not available
 |---|:-:|:-:|
 | Read the selection for code | ✅ desktop server | ✅ |
 | Measurements: read and set | — | ✅ |
-| Code in Dev Mode's code panel | 🟡 Code Connect snippets | ✅ React + CSS Modules |
+| Code in Dev Mode's code panel | 🟡 Code Connect snippets | ✅ React + CSS Modules, in px or rem |
+| Agent channel while the code panel is open | — | ✅ |
 
 ### FigJam
 
@@ -111,6 +116,8 @@ or only partly · — not available
 | Works on any plan | 🟡 | ✅ |
 | Separate read and write switches the designer sees | — | ✅ |
 | Operation log of what the agent did | — | ✅ |
+| Feed of what happened in the file since the plugin opened | — | ✅ |
+| Any panel command from Figma's command bar | — | ✅ |
 | Messages between collaborators and their agents, stored in the file | — | ✅ |
 | Delivery to a folder, git, a pull request, a GitLab merge request or npm | — | ✅ |
 | Design-to-site fidelity check | — | ✅ |
@@ -213,6 +220,16 @@ node tools/mcp.mjs --install claude
 # cursor, windsurf and vscode are also supported
 ```
 
+Beyond reading and changing layers, an agent can:
+- read `events.read`, a feed of what Figma reported since the plugin opened (selection, pages, runs);
+- run text review with `text.review`;
+- show a toast, open a link or close the plugin (`plugin.notify`, `plugin.openUrl`, `plugin.close`);
+- build layers from JSX with `node.fromJsx`.
+
+People get the same commands without the panel: every panel command is listed in Figma's command
+bar (**Quick actions**) and takes its parameters there. In Dev Mode the plugin also loads while
+the code panel is open, so the agent channel stays up there.
+
 Grants are remembered per file. A development plugin gets no `fileKey`, so the first grant in a file stamps it with a random id in the document's plugin data. Reopening or reloading the plugin in that file restores the listener with the same read and write switches. Renaming the file keeps the grant. A different file, even one with the same name, starts with both gates closed. A duplicate of the file keeps the stamp, and with it the grant.
 
 ## File mail
@@ -244,21 +261,38 @@ receipt and prune lands in undo and version history, because the Plugin API has 
 that. Anyone who can open the file can read the mail, so never send a secret. The sender's name is
 stamped by the sending client. That makes it attribution, not authentication: the plugin id is public.
 
+## Guidelines in the file
+
+A file can carry the rules for building from it: a DESIGN.md, a skill, brand rules as JSON, any
+text files. They are stored in the file's shared plugin data, so they travel with the file and
+reach everyone who opens it, on any machine.
+
+- **Agents** write them with `docs.write` and read them with `docs.read`. `document.info` returns
+  the list, so an agent sees there is something to read before it starts.
+- **Packages:** the design-token package ships them under `guidelines/`.
+- **Pinned documentation settings:** `docs.configure` pins Component contracts, Component previews
+  and the preview budget for the file. Every export of it then builds the same package, whatever
+  each person has set. Settings → Documentation shows *Pinned by this file* and locks those
+  switches. **On the canvas** stays a per-person choice.
+
+Figma Specs would be the natural home for this, but a plugin cannot create or fill a spec yet.
+
 ## What you get
 
 | File | Contents |
 |------|----------|
 | `tokens.css` | CSS custom properties. **One self-contained block per theme.** The merged single file. |
-| `<theme>.module.css` | The same blocks split **one CSS Module per theme** (`light.module.css`, `dark.module.css`, …), wrapped in `:global(…)`. Merged by your bundler (which strips `:global`), they're equivalent to `tokens.css`. |
+| `<layer>.module.css` | The parts of `tokens.css` as CSS Modules, wrapped in `:global(…)`: one per theme, or with theme attributes one per layer (`base`, each theme, each product). Merged by your bundler (which strips `:global`), they're equivalent to `tokens.css`. |
 | `tokens.json` | Canonical W3C token tree — every mode under `$extensions.modes`, source collection under `$extensions.figma`. For diffing / re-import. |
 | `tokens.ts` | Typed `tokens` object (values are `var(--…)` refs) + a `themes` list and `Theme` type. |
 | `Assets.xcassets/<token>.colorset/Contents.json` | *(iOS & Android tokens on)* One colorset per colour, in sRGB components, with a `luminosity: dark` entry **only where the dark theme actually changes it** — so `Color("text-primary")` follows the system appearance with nothing in the app deciding. |
 | `res/values/colors.xml`, `res/values-night/colors.xml` | *(iOS & Android tokens on)* The same, by Android resource qualifier. The night file is an override list: it carries only the colours that differ. |
 | `Tokens.swift`, `Tokens.kt` | *(iOS & Android tokens on)* Constants for what a catalogue cannot hold (spacing, radii, the type scale) and for the colours too, for a build that themes in code. Values identical in every theme are declared once, above the per-theme blocks; a length gets `CGFloat`/`.dp`, a line-height ratio does not. |
-| `DESIGN.md` | The design system written for people and agents: tokens grouped by role (roles come from **Collections in the export**), the full token reference, typography, themes, breakpoints, components, and a prompt for agents. |
+| `DESIGN.md` | The design system written for people and agents: tokens grouped by role (roles come from **Sets & themes**), the full token reference, typography, themes, breakpoints, components, and a prompt for agents. |
 | `COMPONENTS.md` | *(Component contracts on)* One section per component: its Description as a behaviour contract, its properties and its documentation links, with an index. |
 | `ICONS.md` | *(Component contracts on)* Icon components, which carry search keywords rather than behaviour, listed compactly instead of crowding `COMPONENTS.md`. |
 | `previews/*.png` | *(Component previews on)* A picture of every main component, up to the preview budget. |
+| `guidelines/…` | *(When the file carries guidelines)* The file's own DESIGN.md, skill and brand rules, as stored. |
 | `README.md` | Auto-generated usage notes for that specific export. |
 
 ## Settings
@@ -271,14 +305,12 @@ preferences (the choices persist per-user):
 |---------|---------|--------------|
 | **Inline primitives** | on | Resolves aliases that point at a *primitive* (raw, single-mode value) into the literal, and drops the primitive layer. Aliases **between semantic tokens** stay as `var(--…)`. |
 | **Flatten all aliases** | off | With Inline primitives on, also resolves the *semantic→semantic* `var(--…)` refs into literals, so **no** references remain in the output. Off keeps the readable, themeable semantic layer. |
-| **Theme attribute** | `data-theme-name` | The attribute the theme blocks key off (`[<attr>="Dark"]`). Set it to `data-theme` to match the AllCrew Figma Workspace board, or anything else. |
-| **Theme collections table** | empty | Maps any number of free-plan single-mode collections into exported multi-theme structures. Each row names the output structure, source collection and exported theme; repeat a structure name for Light, Dark, High contrast or additional brand themes. Conventional `theme` + `theme-dark` and `theme-light` + `theme-dark` layouts are detected automatically. |
-| **Per-theme `.module.css`** | on | Whether to emit the per-theme module files alongside `tokens.css`. |
+| **Sets & themes** | suggested from the file | How the file's variables become code, set up the way Tokens Studio does it, and saved **in the file** so everyone who exports it gets the same package. Attributes (`data-theme`, `data-product`, `data-brand`, … any names, at most two) take their values from **whole collections**, from **modes**, or from **a marker in the token names**, so it fits any Figma plan. Every other collection is a set with a status: **Export**, **Values only** (written into the tokens that use it), **Off**, or **Breakpoints → `--bp-*`**. The export structure editor shows the file on the left and the package on the right. A suggestion stays a preview until **Use for this file**. Agents read and pin the same mapping with `tokens.configure`. |
+| **Split into `.module.css`** | on | Emit the parts of `tokens.css` as module files: common, each theme, each product. |
 | **CSS Modules `:global()`** | on | Wrap module-file selectors in `:global(…)` (valid CSS Modules) or leave them plain. |
 | **iOS & Android tokens** | off | Also emit the asset catalogue, `res/values{,-night}/colors.xml`, `Tokens.swift` and `Tokens.kt`. Off by default because a palette becomes one colorset *directory* per colour, which is noise in a package a web project unzips. |
-| **Collections in the export** | Export | One row per variable collection of the open file, with a role picked from a list: **Export**, **Hide from code** (a primitive layer stays out while its values still reach the tokens that alias it), **Breakpoints → `--bp-*`**, **Separate file → `name.css`** (a parallel product collection gets its own stylesheet built from the shared base plus that collection), or a DESIGN.md role (spacing, radius, text colour, motion duration, …). Saved roles for collections the file does not have stay listed, struck through. |
 | **Include library variables** | off | Also export the enabled **libraries'** own collections. Not needed for values this file takes from a library: aliases into a library are resolved by id and substituted without it. It is a network read per token, and the panel reports progress while it runs. |
-| **Component contracts** | on | Write `COMPONENTS.md` (and `ICONS.md`) from each component's Description and documentation link. |
+| **Component contracts** | on | Write `COMPONENTS.md` (and `ICONS.md`) from each component's Description and documentation link. A slow or background window ships partial docs that name the pages it did not read. A file can pin this and the next two settings (`docs.configure`). |
 | **Component previews** | off | Render a PNG of every main component into `previews/`. Slower scan, bigger package. |
 | **Preview budget, MB** | 8 | Images land in the repository; components past the budget ship without a picture. |
 | **On the canvas** | off | Every export also lays the package's Markdown out on a `Docs` page (FigJam: the current board), one frame per document: headings, native lists, tables, code, quotes and previews as ordinary layers. Index entries and links between documents jump to their frame. A re-export refreshes the same frames in place, so edits made there are replaced. Agents can do the same with `DOCS_TO_CANVAS`. |
@@ -287,8 +319,8 @@ preferences (the choices persist per-user):
 
 ### tokens.css shape
 
-Themes are the **modes of collections that have more than one**. With none, the
-stylesheet is a single `:root`. The default theme occupies `:root`, so an
+Themes are the **modes of collections that have more than one**, unless **Sets & themes** says
+otherwise. With none, the stylesheet is a single `:root`. The default theme occupies `:root`, so an
 un-themed page still renders; every other theme block holds **only the values it
 changes**.
 
@@ -352,15 +384,26 @@ Switch theme by setting the attribute on any ancestor:
 <html data-theme-name="Dark">
 ```
 
-### Per-theme `<theme>.module.css`
+### `.module.css` files
 
-The same theme blocks are also emitted one file per theme, named after the mode
+The same blocks are also emitted as CSS Modules, wrapped in `:global(…)` so
+they're valid in a CSS-Modules project (Next.js, etc.). Without theme
+attributes there is one file per theme, named after the mode
 (`light.module.css`, `dark.module.css`, … — slugified; `default.module.css` when
-the export is a single `:root`), wrapped in `:global(…)` so they're valid in a
-CSS-Modules project (Next.js, etc.). A collection marked **Separate file** gets
-its own `<name>.css`, and its modules are prefixed with it
-(`business-dark.module.css`); the export summary names the tokens one product
-file defines that another lacks.
+the export is a single `:root`).
+
+When **Sets & themes** declares attributes, `tokens.css` is cut into layers, each
+under its own comment, and each layer is its own module:
+
+| File | Holds | Selector |
+|---|---|---|
+| `base.module.css` | what is the same in every theme | `:root` |
+| `light.module.css` | what the default theme changes | `:root, [data-theme="light"]` |
+| `dark.module.css` | the same names for dark | `[data-theme="dark"]` |
+| `business.module.css` | what a product changes, per theme | `[data-product="business"]…` |
+
+Attributes sit on one element by default (`<html data-product="business" data-theme="dark">`).
+An attribute marked *nested* also gets the selectors that let it be switched again on a subtree.
 
 ```css
 /* light.module.css */
@@ -375,7 +418,7 @@ The default theme also lands on `:global(:root)`. Concatenating every
 `*.module.css` (or letting your bundler merge the ones you import) reproduces
 `tokens.css` — that's the "merged single file". For **runtime** theme-switching,
 keep every theme present (use `tokens.css`, or import all `*.module.css`) and
-toggle `data-theme-name`.
+toggle the theme attribute (`data-theme-name` unless **Sets & themes** names another).
 
 ## Django app export
 
