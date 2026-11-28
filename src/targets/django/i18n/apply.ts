@@ -5,6 +5,7 @@
  * pre-translation text so a later locale switch can restore the original.
  */
 
+import { fontsToLoad } from '../../../utils/text-fonts.ts'
 import { getPluginData, setPluginData, PluginDataKey } from '../../../utils/plugin-data.ts'
 import { translationKey } from './normalize.ts'
 import type { TranslationEntry } from './import.ts'
@@ -55,7 +56,8 @@ export async function applyTranslations(entries: readonly TranslationEntry[], in
       continue
     }
 
-    const fonts = node.getRangeAllFontNames(0, node.characters.length)
+    // An empty layer has no range to ask about — `(0, 0)` throws and took the whole pass down with it.
+    const fonts = fontsToLoad(node)
     await Promise.all(fonts.map((font) => figma.loadFontAsync(font)))
 
     if (getPluginData<string>(node, PluginDataKey.I18N_ORIGINAL) === null) {

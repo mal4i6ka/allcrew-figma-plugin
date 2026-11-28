@@ -17,6 +17,9 @@ import { componentFor, humanPropertyName, resolveProperties } from './components
 import {
   colourFrom,
   describeLinks,
+  GRID_TOKEN_FIELDS,
+  gridSpecsOf,
+  RANGE_BINDABLE,
   formatGridTrack,
   gradientHandles,
   gradientTransform,
@@ -36,6 +39,7 @@ import type {
   ColourInput,
   FontSpec,
   GradientRef,
+  GridSpec,
   ImageRef,
   PaintRef,
   PlannedAction,
@@ -58,7 +62,63 @@ export interface AppliedProp {
   note?: string
   /** Present when the write changed something nobody named — a Buzz format resizing its asset. */
   sideEffect?: string
+  /** Present when the write was left out because the style the layer follows already gives it. */
+  kept?: string
+  /** Present when the step took half a second or more. */
+  ms?: number
 }
+
+/** A step that took long enough to notice says how long — a 27 s create used to say nothing. */
+function withTime(result: AppliedProp, started: number): AppliedProp {
+  const ms = Date.now() - started
+  return ms >= 500 ? { ...result, ms } : result
+}
+
+/**
+ * A font once per plugin session.
+ *
+ * Figma documents a repeat `loadFontAsync` as returning at once. Measured live it does not: on a
+ * fresh bulleted, underlined text the SECOND load of a font loaded a moment earlier to make the
+ * node took 11 s, then 60 s, growing with the text on the page. A loaded font stays loaded for
+ * the run, so a font this session has loaded is not awaited again.
+ */
+const LOADED_FONTS = new Set<string>()
+
+export async function ensureFont(font: FontName | FontNameInput | { family: string; style?: string }): Promise<void> {
+  const key = `${font.family}|${font.style ?? ''}|${JSON.stringify((font as { variationSettings?: unknown }).variationSettings ?? null)}`
+  if (LOADED_FONTS.has(key)) return
+  await figma.loadFontAsync(font as FontName)
+  LOADED_FONTS.add(key)
+}
+
+/**
+ * Whether a write would only repeat what a followed style already gives.
+ *
+ * Figma detaches a layer from its style the moment a property the style governs is assigned —
+ * even to the value it already has. A read says both things (`textStyle: "H1"` and the font size
+ * H1 gives), so a read sent straight back used to arrive with every style link cut. Same value,
+ * style held: the write is left out and the report says why.
+ */
+async function keptByStyle(node: SceneNode, slot: string, same: boolean): Promise<string | null> {
+  if (!same) return null
+  const id = (node as unknown as Record<string, unknown>)[slot]
+  if (typeof id !== 'string' || id === '') return null
+  const style = await figma.getStyleByIdAsync(id).catch(() => null)
+  return style ? `follows ${style.name}` : null
+}
+
+/** The text properties a text style governs — assigning any of them cuts the link. */
+const TEXT_STYLE_FIELDS = new Set([
+  'fontSize',
+  'textCase',
+  'textDecoration',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'listSpacing',
+  'leadingTrim',
+  'hangingPunctuation',
+  'hangingList',
+])
 
 export interface ApplyReport {
   applied: AppliedProp[]
@@ -130,16 +190,18 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
   let failed = 0
 
   for (const step of steps) {
+    const started = Date.now()
     try {
       // A step can also fail in part — `properties` sets four of five and names the fifth — so
       // the report is what decides, not only whether something was thrown.
       const result = await applyStep(node, step, dry)
       if (result.error) failed++
       const unseen = result.error ? null : notRenderedNote(node, result.property, dry ? step : null)
-      applied.push(unseen ? { ...result, note: unseen } : result)
+      const timed = withTime(result, started)
+      applied.push(unseen ? { ...timed, note: unseen } : timed)
     } catch (error) {
       failed++
-      applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
+      applied.push(withTime({ property: propertyOf(step), error: String((error as Error)?.message || error) }, started))
     }
   }
   return { applied, failed }
@@ -260,6 +322,14 @@ const propertyOf = (step: PropStep): string => {
     // them nothing about which of the five they got wrong.
     case 'style':
       return step.slot
+    case 'textRange':
+      return step.field
+    case 'flip':
+      return 'flip'
+    case 'rescale':
+      return 'scale'
+    case 'aspect':
+      return 'aspectLock'
     // `layout`, `constraints` and `lineHeight` are named after themselves.
     default:
       return step.step
@@ -287,6 +357,10 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
+      const kept = TEXT_STYLE_FIELDS.has(step.property)
+        ? await keptByStyle(node, 'textStyleId', JSON.stringify(before) === JSON.stringify(step.value))
+        : null
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
       // A name is read back: a node Figma names itself takes the assignment and keeps its own,
       // and a report of the request would say a rename happened that did not.
@@ -318,7 +392,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const font: FontNameInput = step.font
       // Loading a family without a style loads every named instance, which is what variable-font
       // axis selection needs before Figma can choose the closest instance.
-      await figma.loadFontAsync(font)
+      await ensureFont(font)
+      const kept = await keptByStyle(node, 'textStyleId', before === describeFont(font))
+      if (kept) return { property: 'fontName', before, after: before, kept }
       // The 1.141 docs explicitly accept FontNameInput here, but the generated property type
       // still says FontName. Keep the cast at this one upstream mismatch rather than requiring
       // a fake style and defeating variable-font instance selection.
@@ -340,6 +416,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = node.lineHeight
       const after: LineHeight =
         step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: step.unit ?? 'PIXELS' }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.lineHeight = after
       return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -349,6 +427,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       await loadNodeFont(node)
       const before = node.letterSpacing
       const after: LetterSpacing = { value: step.value, unit: step.unit }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.letterSpacing = after
       return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -432,6 +512,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
         // The second gap only exists once the layout wraps, so it is set after `layoutWrap`.
         if (layout.wrapGap !== undefined) frame.counterAxisSpacing = layout.wrapGap
+        if (layout.alignContent !== undefined) frame.counterAxisAlignContent = layout.alignContent
         if (layout.reverseZ !== undefined) frame.itemReverseZIndex = layout.reverseZ
         if (layout.strokesInLayout !== undefined) frame.strokesIncludedInLayout = layout.strokesInLayout
         const grid = frame as unknown as GridFrame
@@ -507,7 +588,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
             if (words === null || row >= node.numRows || column >= node.numColumns) continue
             const text = node.cellAt(row, column).text
             const font = text.fontName
-            if (font !== figma.mixed) await figma.loadFontAsync(font)
+            if (font !== figma.mixed) await ensureFont(font)
             else await loadNodeFont(text as unknown as TextNode)
             text.characters = words
           }
@@ -613,6 +694,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
       const before = await describePaints(bag[step.property])
       const paints = await buildPaints(step.ref)
+      const after = await describePaints(paints)
+      const kept = await keptByStyle(node, step.property === 'fills' ? 'fillStyleId' : 'strokeStyleId', before === after)
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) {
         // A pattern can only go on through the async setter, which waits for its source node to
         // load; everything else takes the plain assignment it always did.
@@ -622,7 +706,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           await (bag[setter] as (paints: Paint[]) => Promise<void>).call(node, paints)
         } else bag[step.property] = paints
       }
-      return { property: step.property, before, after: await describePaints(paints) }
+      return { property: step.property, before, after }
     }
 
     case 'reset': {
@@ -804,6 +888,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         }
       }
 
+      const kept = await keptByStyle(node, 'effectStyleId', failures.length === 0 && before === (await describeEffects(effects)))
+      if (kept) return { property: 'effects', before, after: before, kept }
       if (!dry) bag.effects = effects
       return {
         property: 'effects',
@@ -894,8 +980,27 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'grid': {
       if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
       const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
-      if (!dry) bag.layoutGrids = step.grids
-      return { property: 'grid', before, after: step.summary }
+      // Bound on the grid object, the way an effect's numbers are: each binding hands back a NEW grid.
+      let grids = step.grids
+      const failures: string[] = []
+      for (const binding of step.bind ?? []) {
+        try {
+          const variable = await resolveVariableRef(binding.variable)
+          if (variable.resolvedType !== 'FLOAT') throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and a grid wants a FLOAT`)
+          const bound = figma.variables.setBoundVariableForLayoutGrid(grids[binding.index], binding.field, variable)
+          grids = grids.map((grid, index) => (index === binding.index ? bound : grid))
+        } catch (error) {
+          failures.push(`${binding.field}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      const kept = await keptByStyle(
+        node,
+        'gridStyleId',
+        failures.length === 0 && !step.bind?.length && describeGrids(bag.layoutGrids) === describeGrids(grids)
+      )
+      if (kept) return { property: 'grid', before, after: before, kept }
+      if (!dry) bag.layoutGrids = grids
+      return { property: 'grid', before, after: step.summary, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
     }
 
     case 'brush': {
@@ -931,6 +1036,211 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'hyperlink', before, after: step.url ?? 'none' }
     }
 
+    case 'flip': {
+      if (!('relativeTransform' in bag)) throw new Error(`a ${node.type} cannot be flipped`)
+      const frame = node as SceneNode & LayoutMixin
+      const before = frame.relativeTransform
+      // A flip is a mirror in the layer's OWN space, taken across its centre so it stays where it
+      // stands: negate one column of the matrix and move the origin to the far edge.
+      const [[a, b, x], [c, d, y]] = before
+      const after: Transform =
+        step.axis === 'HORIZONTAL'
+          ? [
+              [-a, b, x + a * frame.width],
+              [-c, d, y + c * frame.width],
+            ]
+          : [
+              [a, -b, x + b * frame.height],
+              [c, -d, y + d * frame.height],
+            ]
+      if (!dry) frame.relativeTransform = after
+      return { property: 'flip', before, after }
+    }
+
+    case 'rescale': {
+      const holder = node as SceneNode & { rescale?: (scale: number) => void; width: number; height: number }
+      if (typeof holder.rescale !== 'function') throw new Error(`a ${node.type} cannot be scaled`)
+      const before = `${round(holder.width)}×${round(holder.height)}`
+      if (!dry) holder.rescale(step.factor)
+      return { property: 'scale', before, after: dry ? `×${step.factor}` : `${round(holder.width)}×${round(holder.height)}` }
+    }
+
+    case 'aspect': {
+      const holder = node as SceneNode & {
+        lockAspectRatio?: () => void
+        unlockAspectRatio?: () => void
+        targetAspectRatio?: Vector | null
+      }
+      if (typeof holder.lockAspectRatio !== 'function') throw new Error(`a ${node.type} has no aspect ratio to lock`)
+      const before = Boolean(holder.targetAspectRatio)
+      if (!dry) {
+        if (step.locked) holder.lockAspectRatio()
+        else holder.unlockAspectRatio?.()
+      }
+      return { property: 'aspectLock', before, after: step.locked }
+    }
+
+    case 'modes': {
+      const holder = node as SceneNode & {
+        setExplicitVariableModeForCollection?: (collection: VariableCollection, modeId: string) => void
+        clearExplicitVariableModeForCollection?: (collection: VariableCollection) => void
+      }
+      if (typeof holder.setExplicitVariableModeForCollection !== 'function') {
+        throw new Error(`a ${node.type} cannot be drawn in a mode of its own`)
+      }
+      const before = await readModes(node)
+      const after: Record<string, string | null> = {}
+      const failures: string[] = []
+      for (const [ref, mode] of Object.entries(step.modes)) {
+        try {
+          const collection = await collectionNear(node, ref)
+          if (mode === null) {
+            if (!dry) holder.clearExplicitVariableModeForCollection?.(collection)
+            after[collection.name] = null
+            continue
+          }
+          const [chosen] = resolveModes(collection, mode)
+          if (!dry) holder.setExplicitVariableModeForCollection(collection, chosen.modeId)
+          after[collection.name] = chosen.name
+        } catch (error) {
+          failures.push(`${ref}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      return { property: 'modes', before, after, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
+    }
+
+    case 'sharedData': {
+      const before: Record<string, Record<string, string>> = {}
+      for (const [namespace, entries] of Object.entries(step.data)) {
+        before[namespace] = {}
+        for (const key of Object.keys(entries)) before[namespace][key] = node.getSharedPluginData(namespace, key)
+        // An empty string is how Figma removes a key; null is how this vocabulary says it.
+        if (!dry) for (const [key, value] of Object.entries(entries)) node.setSharedPluginData(namespace, key, value ?? '')
+      }
+      return { property: 'sharedData', before, after: step.data }
+    }
+
+    case 'relaunch': {
+      const before = node.getRelaunchData()
+      // Figma refuses a key the manifest's relaunchButtons does not declare, naming the key — the
+      // message is better than any list kept here, which would be a second copy of the manifest.
+      if (!dry) node.setRelaunchData(step.data)
+      return { property: 'relaunch', before, after: step.data }
+    }
+
+    case 'annotations': {
+      const holder = node as SceneNode & { annotations?: ReadonlyArray<Annotation> }
+      if (!('annotations' in holder)) throw new Error(`a ${node.type} cannot hold annotations`)
+      const categories = step.notes.some((note) => note.category) ? await figma.annotations.getAnnotationCategoriesAsync() : []
+      const notes: Annotation[] = []
+      for (const note of step.notes) {
+        let categoryId: string | undefined
+        if (note.category) {
+          const wanted = note.category.trim()
+          // An id goes straight to Figma; a label is matched against the list.
+          const byId = /^\d+:\d+$/.test(wanted) ? await figma.annotations.getAnnotationCategoryByIdAsync(wanted).catch(() => null) : null
+          const found =
+            byId ?? categories.find((one) => one.id === wanted) ?? categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
+          if (!found) throw new Error(`no annotation category "${wanted}" — this file has: ${categories.map((one) => one.label).join(', ') || '(none)'}`)
+          categoryId = found.id
+        }
+        notes.push({
+          ...(note.label ? { labelMarkdown: note.label } : {}),
+          ...(note.properties ? { properties: note.properties.map((type) => ({ type: type as AnnotationPropertyType })) } : {}),
+          ...(categoryId ? { categoryId } : {}),
+        })
+      }
+      const before = `${holder.annotations?.length ?? 0} note(s)`
+      // Replaced whole, the way `links` is: a read sent back must leave what it read, not twice it.
+      if (!dry) (holder as unknown as { annotations: Annotation[] }).annotations = notes
+      return { property: 'annotations', before, after: `${notes.length} note(s)` }
+    }
+
+    case 'devLinks': {
+      const own = (await node.getDevResourcesAsync()).filter((link) => link.nodeId === node.id)
+      const wanted = new Map(step.links.map((link) => [link.url, link]))
+      const done: string[] = []
+      if (!dry) {
+        // The URL is the identity: one not asked for goes, one missing comes, one renamed is edited.
+        for (const link of own) {
+          const keep = wanted.get(link.url)
+          if (!keep) {
+            await node.deleteDevResourceAsync(link.url)
+            done.push(`-${link.url}`)
+          } else if (keep.name && keep.name !== link.name) {
+            await node.editDevResourceAsync(link.url, { name: keep.name })
+            done.push(`~${link.url}`)
+          }
+        }
+        const held = new Set(own.map((link) => link.url))
+        for (const link of step.links) {
+          if (held.has(link.url)) continue
+          await node.addDevResourceAsync(link.url, link.name)
+          done.push(`+${link.url}`)
+        }
+      }
+      return { property: 'devLinks', before: `${own.length} link(s)`, after: done.join(' ') || 'unchanged' }
+    }
+
+    case 'replace': {
+      if (!isText(node)) throw new Error(`only text has words to replace, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.characters
+      // Every place to change, found against the text as it stands, then edited from the END so
+      // an earlier edit never shifts a later one's indices.
+      const spots: Array<{ from: number; to: number; with: string }> = []
+      const problems: string[] = []
+      for (const edit of step.edits) {
+        const { ranges, problem } = resolveRanges(
+          before,
+          (edit.match !== undefined ? { match: edit.match } : { from: edit.from, to: edit.to }) as TextRun
+        )
+        if (problem) problems.push(problem)
+        for (const [from, to] of ranges) spots.push({ from, to, with: edit.with })
+      }
+      spots.sort((a, b) => b.from - a.from)
+      for (const [index, spot] of spots.entries()) {
+        if (index > 0 && spot.to > spots[index - 1].from) {
+          problems.push(`"${before.slice(spot.from, spot.to)}" overlaps another replacement — say each place once`)
+          spots.length = index
+          break
+        }
+      }
+      if (!dry) {
+        for (const spot of spots) {
+          // Inserted BEFORE the end of the old words, so the new ones take THEIR style — the bold
+          // price stays bold — and only then are the old ones taken out.
+          if (spot.with !== '') node.insertCharacters(spot.to, spot.with, 'BEFORE')
+          node.deleteCharacters(spot.from, spot.to)
+        }
+      }
+      return {
+        property: 'replace',
+        before,
+        after: dry ? `${spots.length} place(s)` : node.characters,
+        ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
+    case 'textRange': {
+      // A list and its depth are not properties of the layer in Figma — there is no
+      // `node.listOptions` — only of ranges. Asked of the whole layer, they are its whole range.
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT holds lists, not a ${node.type}`)
+      await loadNodeFont(node)
+      const end = node.characters.length
+      if (end === 0) throw new Error(`there are no characters to make ${step.field === 'list' ? 'a list' : 'an indent'} of — set text first`)
+      const before = step.field === 'list' ? node.getRangeListOptions(0, end) : node.getRangeIndentation(0, end)
+      if (!dry) {
+        if (step.field === 'list') node.setRangeListOptions(0, end, { type: step.value as TextListOptions['type'] })
+        else node.setRangeIndentation(0, end, step.value as number)
+      }
+      return {
+        property: step.field,
+        before: before === figma.mixed ? 'mixed' : typeof before === 'object' ? before.type : before,
+        after: step.value,
+      }
+    }
+
     case 'runs': {
       if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`)
       await loadNodeFont(node)
@@ -946,14 +1256,37 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         // The font of a run has to be in memory before the run can be written, exactly as for the
         // whole node — and it is a different font from the one already loaded, or there would be
         // no point setting it.
-        if (run.fontName) await figma.loadFontAsync(run.fontName)
-        const paints = run.fill === undefined ? null : await buildPaints(run.fill)
-        // Styles resolved once per run, before any range: a name that matches nothing is the
-        // run's problem, and the rest of the runs still go on.
-        const textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
-        const fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
-        // A text style brings its own font, which has to be loaded before it can be applied.
-        if (textStyle) await figma.loadFontAsync(textStyle.fontName)
+        // Everything the run names is resolved before any range is written, and a run that cannot
+        // resolve — a style name seven styles share, a variable that is not there — fails on its
+        // own: it used to abort the whole step and lose the runs that were fine.
+        let paints: Paint[] | null = null
+        let textStyle: TextStyle | null = null
+        let fillStyle: BaseStyle | null = null
+        const bindings: Array<{ field: string; variable: Variable | null }> = []
+        try {
+          if (run.fontName) await ensureFont(run.fontName)
+          paints = run.fill === undefined ? null : await buildPaints(run.fill)
+          textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
+          fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
+          // A text style brings its own font, which has to be loaded before it can be applied.
+          if (textStyle) await ensureFont(textStyle.fontName)
+          // Variables on these characters only, resolved and type-checked before anything is written.
+          for (const [field, ref] of Object.entries(run.bind ?? {})) {
+            if (ref === null) {
+              bindings.push({ field, variable: null })
+              continue
+            }
+            const variable = await resolveVariableRef(ref)
+            const wants = RANGE_BINDABLE[field]
+            if (variable.resolvedType !== wants) {
+              throw new Error(`bind.${field}: "${variable.name}" is a ${variable.resolvedType}, and ${field} wants a ${wants}`)
+            }
+            bindings.push({ field, variable })
+          }
+        } catch (error) {
+          problems.push(`${describeRun(run)}: ${String((error as Error)?.message || error)}`)
+          continue
+        }
 
         for (const [from, to] of ranges) {
           if (dry) continue
@@ -988,6 +1321,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           if (run.listSpacing !== undefined) paragraphs.setRangeListSpacing?.(from, to, run.listSpacing)
           if (run.paragraphSpacing !== undefined) paragraphs.setRangeParagraphSpacing?.(from, to, run.paragraphSpacing)
           if (run.paragraphIndent !== undefined) paragraphs.setRangeParagraphIndent?.(from, to, run.paragraphIndent)
+          for (const { field, variable } of bindings) node.setRangeBoundVariable(from, to, field as VariableBindableTextField, variable)
           if (run.decoration !== undefined) {
             const planned = planDecoration(run.decoration)
             if ('values' in planned) {
@@ -1438,6 +1772,7 @@ function describeRun(run: TextRun): string {
   if (run.paragraphSpacing !== undefined) parts.push(`paragraph spacing ${run.paragraphSpacing}`)
   if (run.paragraphIndent !== undefined) parts.push(`first-line indent ${run.paragraphIndent}`)
   if (run.decoration !== undefined) parts.push(`decoration ${JSON.stringify(run.decoration)}`)
+  for (const [field, ref] of Object.entries(run.bind ?? {})) parts.push(ref === null ? `${field} unbound` : `${field}=var:${ref}`)
   return parts.join(' ')
 }
 
@@ -1515,6 +1850,73 @@ function asInstance(node: SceneNode, wanted: string): InstanceNode {
   return node
 }
 
+const COLLECTION_ID = /^VariableCollectionId:/
+
+/**
+ * A collection by name, looked for where it can actually be: this file's own, the library ones
+ * the node already resolves a mode for, and — last — the enabled libraries, imported on demand.
+ *
+ * A frame in a product file is drawn in LIBRARY collections almost always, so a local-only
+ * resolver could not set the one mode anyone ever wants to set. A name two libraries share is a
+ * question, answered by id.
+ */
+async function collectionNear(node: SceneNode, ref: string): Promise<VariableCollection> {
+  if (COLLECTION_ID.test(ref)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(ref)
+    if (!collection) throw new Error(`no variable collection with id ${ref}`)
+    return collection
+  }
+  const wanted = ref.trim().toLowerCase()
+  const seen = new Map<string, VariableCollection>()
+  for (const collection of await figma.variables.getLocalVariableCollectionsAsync()) seen.set(collection.id, collection)
+  const holder = node as unknown as { resolvedVariableModes?: Record<string, string>; explicitVariableModes?: Record<string, string> }
+  for (const id of [...Object.keys(holder.resolvedVariableModes ?? {}), ...Object.keys(holder.explicitVariableModes ?? {})]) {
+    if (seen.has(id)) continue
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) seen.set(id, collection)
+  }
+  let matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  if (matches.length === 0) {
+    // Not in the file yet: a library collection becomes reachable by importing one of its
+    // variables, and the variable names the collection it lives in.
+    const libraries = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => [])
+    for (const library of libraries.filter((one) => one.name.toLowerCase() === wanted)) {
+      const [first] = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(library.key).catch(() => [])
+      if (!first) continue
+      const variable = await figma.variables.importVariableByKeyAsync(first.key).catch(() => null)
+      const collection = variable ? await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId) : null
+      if (collection) seen.set(collection.id, collection)
+    }
+    matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  }
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    throw new Error(`"${ref}" names ${matches.length} collections — use the id: ${matches.map((one) => one.id).join(', ')}`)
+  }
+  const names = [...new Set([...seen.values()].map((one) => one.name))]
+  throw new Error(`no collection called "${ref}" here — the node can reach ${names.join(', ') || 'none'}`)
+}
+
+/**
+ * The modes a node is told to use, as `{ collection: mode }` — the words `modes` takes. A name
+ * that two of the node's collections share is written as the id, so the read still goes back.
+ */
+export async function readModes(node: SceneNode): Promise<Record<string, string>> {
+  const explicit = (node as unknown as { explicitVariableModes?: Record<string, string> }).explicitVariableModes ?? {}
+  const entries: Array<{ collection: VariableCollection; modeId: string }> = []
+  for (const [id, modeId] of Object.entries(explicit)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) entries.push({ collection, modeId })
+  }
+  const out: Record<string, string> = {}
+  for (const { collection, modeId } of entries) {
+    const shared = entries.filter((one) => one.collection.name === collection.name).length > 1
+    const mode = collection.modes.find((one) => one.modeId === modeId)
+    out[shared ? collection.id : collection.name] = mode?.name ?? modeId
+  }
+  return out
+}
+
 /** The properties that a TEXT node will not let go of until its font is in memory. */
 const TEXT_PROPERTIES = [
   'textWrapStyle',
@@ -1546,7 +1948,7 @@ const TEXT_PROPERTIES = [
  */
 async function loadNodeFont(node: TextNode): Promise<void> {
   if (node.fontName !== figma.mixed) {
-    await figma.loadFontAsync(node.fontName as FontName)
+    await ensureFont(node.fontName as FontName)
     return
   }
   const fonts = new Set<string>()
@@ -1559,7 +1961,7 @@ async function loadNodeFont(node: TextNode): Promise<void> {
     fonts.add(key)
     wanted.push(font as FontName)
   }
-  await Promise.all(wanted.map((font) => figma.loadFontAsync(font)))
+  await Promise.all(wanted.map((font) => ensureFont(font)))
 }
 
 function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'FIXED' | 'HUG' | 'FILL'): void {
@@ -1570,7 +1972,7 @@ function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'F
   ;(frame as unknown as Record<string, unknown>)[property] = mode
 }
 
-async function buildPaints(ref: PaintRef): Promise<Paint[]> {
+export async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   if (ref === null) return []
   // A list is a stack of layers, bottom-up the way Figma holds them.
   if (Array.isArray(ref)) {
@@ -1709,6 +2111,10 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     imageHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
+    ...(ref.tile === undefined ? {} : { scalingFactor: ref.tile }),
+    ...(ref.crop ? { imageTransform: ref.crop } : {}),
   }
 }
 
@@ -1720,6 +2126,8 @@ async function buildVideo(ref: VideoRef): Promise<VideoPaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     videoHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
   } as VideoPaint
 }
 
@@ -1964,6 +2372,42 @@ export function describeGrids(value: unknown): string {
     )
   }
   return parts.join(' · ')
+}
+
+/**
+ * Layout grids in the words `grid` takes, a token-driven number as `{ variable }` — the plain
+ * reading of `gridSpecsOf` with each bound field named by the variable it follows, so a grid that
+ * follows the breakpoint tokens copies as one that still does.
+ */
+export async function readGrids(value: unknown): Promise<GridSpec[]> {
+  const specs = gridSpecsOf(value)
+  if (!Array.isArray(value)) return specs
+  const out: GridSpec[] = []
+  for (const [index, spec] of specs.entries()) {
+    const grid = value[index] as LayoutGrid & { boundVariables?: Record<string, { id?: string }> }
+    const bound = grid.boundVariables ?? {}
+    const words: Record<string, unknown> = { ...spec }
+    // The word each bound field goes by on THIS grid: a count is columns or rows, a size is the
+    // square, the width or the height.
+    const wordOf: Record<string, string | undefined> =
+      grid.pattern === 'GRID'
+        ? { sectionSize: 'square' }
+        : {
+            count: grid.pattern === 'COLUMNS' ? 'columns' : 'rows',
+            gutterSize: 'gutter',
+            offset: 'margin',
+            sectionSize: grid.pattern === 'COLUMNS' ? 'width' : 'height',
+          }
+    for (const field of new Set(Object.values(GRID_TOKEN_FIELDS))) {
+      const id = bound[field]?.id
+      const word = wordOf[field]
+      if (!id || !word) continue
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      if (variable) words[word] = { variable: variable.name }
+    }
+    out.push(words as GridSpec)
+  }
+  return out
 }
 
 /** Effects as one readable line, for the same reason paints are: this lands deep in a report. */

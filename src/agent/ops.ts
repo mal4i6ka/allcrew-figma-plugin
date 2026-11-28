@@ -2764,6 +2764,9 @@ export const READ_OPS: readonly OpDef[] = [
         ...(figma.mode === 'codegen' ? { codegenPreferences: figma.codegen.preferences } : {}),
         fileName: figma.root.name,
         fileKey: figma.fileKey ?? null,
+        // Which plugin this sandbox is, and whether it is running inside VS Code's Figma panel.
+        pluginId: figma.pluginId ?? null,
+        ...(figma.vscode ? { vscode: true } : {}),
         ...probe('eval', () => (0, eval)('1 + 1')),
         ...probe('newFunction', () => new Function('return 1 + 1')()),
         // Figma Specs (Markdown documents, embedded as SPEC_BLOCK nodes) exist in the runtime only

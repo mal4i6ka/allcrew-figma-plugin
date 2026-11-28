@@ -56,5 +56,16 @@
       "label": "React + CSS Modules",
       "value": "react"
     }
+  ],
+  "codegenPreferences": [
+    {
+      "itemType": "unit",
+      "scaledUnit": "Rem",
+      "defaultScaleFactor": 16,
+      "default": false,
+      "includedLanguages": [
+        "react"
+      ]
+    }
   ]
 }

@@ -11,7 +11,7 @@
  * change, and a node created inside an auto-layout parent gets laid out twice.
  */
 
-import { applyProps, type AppliedProp } from './apply.ts'
+import { applyProps, ensureFont, type AppliedProp } from './apply.ts'
 import { editorProblem, gridPlace } from './board.ts'
 import { componentFor } from './components.ts'
 import { dependsOnChildren, dependsOnPlacement, movesToAnotherParent, planProps, type PropStep } from './props.ts'
@@ -343,7 +343,7 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       // is missing hands back a node nothing can be written into — so the font it claims is
       // loaded before anyone tries.
       const font = text.fontName
-      if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
+      if (font !== figma.mixed) await ensureFont(font as FontName)
       return text
     }
     case 'vector':
@@ -370,7 +370,7 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       const [segment, position] = (plan.at ?? [0, 0]) as [number, number]
       const path = figma.createTextPath(outline, segment, position)
       const font = path.fontName
-      if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
+      if (font !== figma.mixed) await ensureFont(font as FontName)
       return path
     }
     case 'instance': {

@@ -143,10 +143,11 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { formatGridTrack, gridSpecsOf, planFont, planProps, repeatModifier, repeatWords } from './canvas/props.ts'
+import { ANNOTATION_PROPERTIES, formatGridTrack, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { scaleCssUnits } from './targets/react/units.ts'
 import { asCodeLayer, CODE_LAYER_EXECUTABLES } from './targets/react/code-layer.ts'
 import { fileKeyFrom } from './targets/react/code-connect.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
@@ -161,10 +162,13 @@ import {
   describeEffects,
   describeGrids,
   describePaints,
+  buildPaints,
+  readGrids,
+  readModes,
   variableName,
 } from './canvas/apply.ts'
 import { createNode, planCreate, syncSlideGrid, type CreatePlan, type CreateSpec } from './canvas/create.ts'
-import { styledRuns, writableFont } from './canvas/text-runs.ts'
+import { textRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
@@ -185,7 +189,7 @@ import {
   type PropertyType,
 } from './canvas/components.ts'
 import { binaryFile, slugify, textFile } from './agent/files.ts'
-import { describeStyle, localStyles, styleFor, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
+import { describeStyle, localStyles, styleFor, styleLinks, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 import { identity, mayDecide, type MailItem } from './mail/mailbox.ts'
@@ -324,6 +328,16 @@ type PluginMessage =
   | { type: 'FILE_THUMBNAIL' }
   | { type: 'FILE_THUMBNAIL_SET'; nodeId: string | null }
   | { type: 'UNDO' }
+  | { type: 'PAGE_SET'; pageId?: string; name?: string; background?: unknown; prototypeBackground?: unknown; guides?: unknown }
+  | { type: 'VIEWPORT' }
+  | { type: 'VIEWPORT_SET'; nodes?: unknown; center?: unknown; zoom?: number }
+  | { type: 'STORAGE_KEYS' }
+  | { type: 'STORAGE_REMOVE'; keys: unknown }
+  | { type: 'UI_POSITION'; x?: number; y?: number }
+  | { type: 'CHANGES_WATCH'; on: boolean; document?: boolean }
+  | { type: 'CHANGES_READ'; since?: number; limit?: number; origin?: string }
+  | { type: 'SELECTION_SET'; nodes?: unknown; text?: unknown }
+  | { type: 'VARIABLE_SUGGEST'; nodes?: unknown }
   // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
   | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
   | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
@@ -1790,10 +1804,15 @@ if (figma.mode === 'textreview') {
         fileName: figma.root.name,
       })
 
+      // The unit the developer picked in Dev Mode's settings — px, or rem at the scale the manifest
+      // declares (16 unless they changed it). The emitter thinks in pixels; the CSS is converted
+      // on the way out.
+      const preferences = figma.codegen.preferences
+      const scale = preferences.unit === 'SCALED' ? (preferences.scaleFactor ?? 16) : null
       const results: CodegenResult[] = []
       for (const [path, contents] of Object.entries(files)) {
         if (path.endsWith('.tsx')) results.push({ title: path, code: contents, language: 'TYPESCRIPT' })
-        else if (path.endsWith('.css')) results.push({ title: path, code: contents, language: 'CSS' })
+        else if (path.endsWith('.css')) results.push({ title: path, code: scale ? scaleCssUnits(contents, scale) : contents, language: 'CSS' })
         else if (path.endsWith('.json')) results.push({ title: path, code: contents, language: 'JSON' })
       }
       // The gaps go in the panel too, and first: this is where a developer is looking when they
@@ -1810,6 +1829,9 @@ if (figma.mode === 'textreview') {
       return [{ title: 'React', code: `// ${String((error as Error)?.message || error)}`, language: 'TYPESCRIPT' }]
     }
   })
+  // The code names styles and tokens, so a style a collaborator edits while a developer is reading
+  // it has to show up — Figma regenerates on selection and preference changes, not on this.
+  figma.on('stylechange', () => figma.codegen.refresh())
 } else {
   listenEverywhere()
   /* The panel opens on `run`, not at load. A Tab in quick actions runs the plugin in query mode
@@ -2262,15 +2284,6 @@ async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Ar
   }))
 }
 
-/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
-const ANNOTATION_PROPERTIES = [
-  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
-  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
-  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
-  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
-  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
-  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
-]
 
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
@@ -2646,6 +2659,80 @@ async function describeNodeCapped(node: SceneNode, withProps: boolean, ms = 30_0
   }
 }
 
+/**
+ * The rest of what a layer IS, beyond paints and layout — each said only when it departs from
+ * Figma's default, so an ordinary rectangle still reads in a few lines. Every word here is one
+ * `NODE_SET` takes back.
+ */
+async function readShape(node: SceneNode, props: Record<string, unknown>): Promise<void> {
+  const bag = node as unknown as Record<string, unknown>
+  const round = (value: number, places = 2) => Math.round(value * 10 ** places) / 10 ** places
+  // A turn is the rotation; anything else the matrix holds — a mirror, a skew — only the matrix can say.
+  const matrix = bag.relativeTransform as Transform | undefined
+  if (matrix) {
+    const [[a, b], [c, d]] = matrix
+    const turned = Math.abs(a - d) < 1e-6 && Math.abs(b + c) < 1e-6 && Math.abs(a * a + c * c - 1) < 1e-6
+    if (!turned) props.transform = matrix.map((row) => row.map((value) => round(value, 6)))
+    else if (typeof bag.rotation === 'number' && Math.abs(bag.rotation) > 0.001) props.rotation = round(bag.rotation)
+  }
+  if (bag.isMask === true) {
+    props.isMask = true
+    if (bag.maskType !== 'ALPHA') props.maskType = bag.maskType
+  }
+  if (typeof bag.cornerSmoothing === 'number' && bag.cornerSmoothing > 0) props.cornerSmoothing = round(bag.cornerSmoothing)
+  if (
+    typeof bag.strokeMiterLimit === 'number' &&
+    Array.isArray(bag.strokes) &&
+    bag.strokes.length > 0 &&
+    Math.abs(bag.strokeMiterLimit - 4) > 0.001
+  ) {
+    props.strokeMiterLimit = round(bag.strokeMiterLimit)
+  }
+  if (node.type === 'STAR' || node.type === 'POLYGON') props.pointCount = bag.pointCount
+  if (node.type === 'STAR') props.innerRadius = round(bag.innerRadius as number)
+  if (node.type === 'ELLIPSE') {
+    const arc = readArc(bag.arcData as ArcData)
+    if (arc) props.arc = arc
+  }
+  if (node.type === 'BOOLEAN_OPERATION') props.booleanOperation = bag.booleanOperation
+  if (node.type === 'VECTOR' && typeof bag.handleMirroring === 'string' && bag.handleMirroring !== 'NONE') {
+    props.handleMirroring = bag.handleMirroring
+  }
+  if (bag.targetAspectRatio) props.aspectLock = true
+  if (node.type === 'INSTANCE') {
+    if (typeof bag.scaleFactor === 'number' && Math.abs(bag.scaleFactor - 1) > 0.0001) props.scaleFactor = Math.round(bag.scaleFactor * 1000) / 1000
+    // The nested instances whose properties this one offers at its own level — what a designer
+    // sees listed under the instance's properties without opening it.
+    const exposed = (bag.exposedInstances as InstanceNode[] | undefined) ?? []
+    if (exposed.length > 0) props.exposedInstances = exposed.map((one) => ({ id: one.id, name: one.name }))
+  }
+  // Figma's own judgement that the layer is an asset — an icon, an illustration — the thing an
+  // export should ship as a file rather than rebuild.
+  if ((node as SceneNode & { isAsset?: boolean }).isAsset === true) props.asset = true
+  if (Array.isArray(bag.exportSettings) && bag.exportSettings.length > 0) {
+    props.exports = readExports(bag.exportSettings as ExportSettings[])
+  }
+  if (bag.devStatus && typeof bag.devStatus === 'object') {
+    const status = bag.devStatus as { type: string; description?: string }
+    props.devStatus = status.description ? { type: status.type, description: status.description } : status.type
+  }
+  if (bag.sectionContentsHidden === true) props.contentsHidden = true
+  if (bag.isExposedInstance === true) props.exposed = true
+  if (Array.isArray(bag.guides) && bag.guides.length > 0) {
+    props.guides = (bag.guides as Guide[]).map((guide) => ({ axis: guide.axis, offset: round(guide.offset) }))
+  }
+  if (Object.keys((bag.explicitVariableModes as Record<string, string> | undefined) ?? {}).length > 0) {
+    const modes = await readModes(node).catch(() => ({}))
+    if (Object.keys(modes).length > 0) props.modes = modes
+  }
+  try {
+    const relaunch = node.getRelaunchData()
+    if (Object.keys(relaunch).length > 0) props.relaunch = relaunch
+  } catch {
+    /* a node inside an instance answers with a throw; it has none of its own */
+  }
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -2711,7 +2798,8 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
     ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await traced(node, 'effects', () => readEffects(bag.effects)) } : {}),
-    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
+    // The list `grid` takes back, tokens and all — a grid that follows the breakpoint tokens copies as one that still does.
+    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: await traced(node, 'grids', () => readGrids(bag.layoutGrids)) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
       ? { animation: await traced(node, 'animation styles', () => describeAnimation(bag.animationStyles)) }
       : {}),
@@ -2733,6 +2821,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL'
       ? { blendMode: bag.blendMode }
       : {}),
+    // The styles the layer follows. Written and never read until now, so a heading in "H1" came
+    // back as loose numbers and its copy followed nothing.
+    ...(await styleLinks(node)),
   }
   if ('layoutMode' in bag && bag.layoutMode !== 'NONE') {
     props.layout = {
@@ -2742,6 +2833,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
       ...(bag.layoutWrap === 'WRAP' ? { wrap: true, wrapGap: round(bag.counterAxisSpacing) } : {}),
+      ...(bag.layoutWrap === 'WRAP' && bag.counterAxisAlignContent === 'SPACE_BETWEEN' ? { alignContent: 'SPACE_BETWEEN' } : {}),
       ...(bag.layoutMode === 'GRID' ? readGridLayout(bag) : {}),
     }
   }
@@ -2814,10 +2906,15 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   }
   const shape = bag.vectorNetwork as VectorNetwork | undefined
   if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
-    props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
-      shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
-    }`
+    // The network itself when it is icon-sized, so a copy is the same drawing; a count past that.
+    props.network =
+      shape.vertices.length <= NETWORK_READ_LIMIT
+        ? readNetwork(shape)
+        : `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
+            shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
+          }`
   }
+  await readShape(node, props)
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
@@ -2882,8 +2979,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       (definitions ?? {}) as Parameters<typeof describePropertyDefinitions>[0]
     )
     if (line) props.properties = line
-    const description = (owner.description || '').trim()
-    if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}…` : description
+    // Whole and in markdown, which is what the panel shows and what `description` writes back. It
+    // was cut at 200 characters when it was only something to look at.
+    const description = (owner.descriptionMarkdown || owner.description || '').trim()
+    if (description) props.description = description
     const documentation = (owner.documentationLinks ?? []).map((link) => link.uri)
     if (documentation.length > 0) props.documentation = documentation
     if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') props.variantOf = node.parent.name
@@ -2958,7 +3057,16 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const runs = await traced(node, 'text runs', () => styledRuns(node))
+    const { runs, paragraphs, partlyBound } = await traced(node, 'text runs', () => textRuns(node))
+    // A list the whole text shares is the layer's — one bulleted block is ONE run, never printed.
+    Object.assign(props, paragraphs)
+    // Bound on some characters only: said by the runs, not by the layer.
+    if (props.bind && partlyBound.length > 0) {
+      const bind = { ...(props.bind as Record<string, string>) }
+      for (const field of partlyBound) delete bind[field]
+      if (Object.keys(bind).length > 0) props.bind = bind
+      else delete props.bind
+    }
     if (runs.length > 1) props.runs = runs
   }
   Object.assign(props, await traced(node, 'board properties', () => boardProps(node)))
@@ -3422,6 +3530,122 @@ async function docsToCanvas(files: Readonly<Record<string, unknown>>): Promise<P
   }
   const docs = docNames(files).map((name) => ({ name, markdown: files[name] as string }))
   return placeDocs(docs, images)
+}
+
+/**
+ * What changed, recorded while somebody asked to know.
+ *
+ * Figma tells a plugin about changes as they happen and never afterwards, so an agent that wants
+ * "what did the designer do since my last write" needs the plugin to have been listening. The page
+ * events are per page under dynamic-page (the document-wide event would load every page first),
+ * so the listener follows the designer from page to page; styles have one event for the file.
+ */
+interface ChangeEntry {
+  seq: number
+  at: string
+  origin: 'LOCAL' | 'REMOTE'
+  kind: string
+  id: string
+  page?: string
+  type?: string
+  name?: string
+  properties?: string[]
+}
+
+const CHANGE_LOG_LIMIT = 1000
+
+const changeWatch: { on: boolean; document: boolean; seq: number; log: ChangeEntry[]; page: PageNode | null } = {
+  on: false,
+  document: false,
+  seq: 1,
+  log: [],
+  page: null,
+}
+
+function recordChange(entry: Omit<ChangeEntry, 'seq' | 'at'>): void {
+  changeWatch.log.push({ seq: changeWatch.seq++, at: new Date().toISOString(), ...entry })
+  if (changeWatch.log.length > CHANGE_LOG_LIMIT) changeWatch.log.splice(0, changeWatch.log.length - CHANGE_LOG_LIMIT)
+}
+
+function onNodeChange(event: NodeChangeEvent): void {
+  const page = changeWatch.page?.name
+  for (const change of event.nodeChanges) {
+    const node = change.node as SceneNode | RemovedNode
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      type: node.type,
+      // A removed node keeps its id and type and nothing else.
+      ...('removed' in node && node.removed ? {} : { name: (node as SceneNode).name }),
+      ...(change.type === 'PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function onStyleChange(event: StyleChangeEvent): void {
+  for (const change of event.styleChanges) {
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(change.style ? { name: change.style.name, type: change.style.type } : {}),
+      ...(change.type === 'STYLE_PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function followPage(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = figma.currentPage
+  changeWatch.page.on('nodechange', onNodeChange)
+}
+
+/** The whole document at once — each change says which page it happened on. */
+function onDocumentChange(event: DocumentChangeEvent): void {
+  for (const change of event.documentChanges) {
+    // Styles come through their own event, which is subscribed either way.
+    if (change.type === 'STYLE_CREATE' || change.type === 'STYLE_DELETE' || change.type === 'STYLE_PROPERTY_CHANGE') continue
+    const node = (change as { node?: SceneNode | RemovedNode }).node
+    const alive = node && !('removed' in node && node.removed) ? (node as SceneNode) : null
+    const page = alive ? pageOf(alive)?.name : undefined
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      ...(node ? { type: node.type } : {}),
+      ...(alive ? { name: alive.name } : {}),
+      ...('properties' in change && Array.isArray(change.properties) ? { properties: [...change.properties] as string[] } : {}),
+    })
+  }
+}
+
+async function watchChanges(wholeDocument: boolean): Promise<void> {
+  if (changeWatch.on) return
+  changeWatch.on = true
+  changeWatch.document = wholeDocument
+  if (wholeDocument) {
+    // Under dynamic-page the document-wide event is refused until every page is loaded.
+    await figma.loadAllPagesAsync()
+    figma.on('documentchange', onDocumentChange)
+  } else {
+    followPage()
+    figma.on('currentpagechange', followPage)
+  }
+  figma.on('stylechange', onStyleChange)
+}
+
+function unwatchChanges(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = null
+  figma.off('currentpagechange', followPage)
+  if (changeWatch.document) figma.off('documentchange', onDocumentChange)
+  figma.off('stylechange', onStyleChange)
+  changeWatch.on = false
+  changeWatch.document = false
+  changeWatch.log = []
 }
 
 /**
@@ -6625,14 +6849,24 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({
         type: 'PAGES',
         current: figma.currentPage.id,
-        pages: figma.root.children.map((page) => ({
-          id: page.id,
-          name: page.name,
-          current: page.id === figma.currentPage.id,
-          // A divider is a page in the list and nothing on the canvas — a section heading in the
-          // pages panel. Without the flag it read as an empty page called "———".
-          ...(page.isPageDivider ? { divider: true } : {}),
-        })),
+        pages: await Promise.all(
+          figma.root.children.map(async (page) => ({
+            id: page.id,
+            name: page.name,
+            current: page.id === figma.currentPage.id,
+            // A divider is a page in the list and nothing on the canvas — a section heading in the
+            // pages panel. Without the flag it read as an empty page called "———".
+            ...(page.isPageDivider ? { divider: true } : {}),
+            // The canvas colour behind everything, and the one the prototype is shown on.
+            background: await describePaints(page.backgrounds),
+            // Figma's default is transparent black, which shows nothing and is not worth a line.
+            ...(page.prototypeBackgrounds.some((paint) => paint.visible !== false && (paint.opacity ?? 1) > 0)
+              ? { prototypeBackground: await describePaints(page.prototypeBackgrounds) }
+              : {}),
+          }))
+        ),
+        // How the file's colours are interpreted — sRGB, Display P3 or legacy.
+        colorProfile: figma.root.documentColorProfile,
       })
       break
     }
@@ -6717,6 +6951,296 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       figma.triggerUndo()
       figma.notify('Undone')
       postToUi({ type: 'UNDONE' })
+      break
+    }
+    case 'PAGE_SET': {
+      // @agent write: rename a page, change the canvas colour behind it or the one its prototype is shown on, or set its ruler guides
+      // @agent param pageId: the page to change; omitted, the open one
+      // @agent param name: the page's new name
+      // @agent param background: the canvas colour, "#RRGGBB" — the same words a fill takes
+      // @agent param prototypeBackground: the colour the prototype is presented on
+      // @agent param guides: [{ axis: "X" | "Y", offset }] on the page itself; [] removes them
+      try {
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('PAGE_SET', `no page with id ${msg.pageId}`)
+          break
+        }
+        const plan = planProps({
+          ...(msg.background === undefined ? {} : { fill: msg.background }),
+          ...(msg.guides === undefined ? {} : { guides: msg.guides }),
+        })
+        const backdrop = msg.prototypeBackground === undefined ? null : planProps({ fill: msg.prototypeBackground })
+        const problems = [...plan.problems, ...(backdrop?.problems ?? []).map((one) => one.replace('props.fill', 'prototypeBackground'))]
+        if (msg.name !== undefined && (typeof msg.name !== 'string' || msg.name.trim() === '')) problems.push('name must be a non-empty string')
+        if (problems.length > 0) {
+          refuse('PAGE_SET', problems.join(' · '))
+          break
+        }
+        const before = { name: page.name, background: await describePaints(page.backgrounds) }
+        if (typeof msg.name === 'string') page.name = msg.name.trim()
+        for (const step of plan.steps) {
+          if (step.step === 'paint') page.backgrounds = await buildPaints(step.ref)
+          if (step.step === 'assign' && step.property === 'guides') page.guides = step.value as Guide[]
+        }
+        const shown = backdrop?.steps.find((step) => step.step === 'paint')
+        if (shown && shown.step === 'paint') page.prototypeBackgrounds = await buildPaints(shown.ref)
+        figma.commitUndo()
+        postToUi({
+          type: 'PAGE_SET_DONE',
+          page: { id: page.id, name: page.name },
+          before,
+          after: {
+            name: page.name,
+            background: await describePaints(page.backgrounds),
+            prototypeBackground: await describePaints(page.prototypeBackgrounds),
+            guides: page.guides.length,
+          },
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'PAGE_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VIEWPORT': {
+      // @agent read: where the designer is looking — the centre, the zoom and the rectangle of canvas on screen
+      const view = figma.viewport
+      postToUi({
+        type: 'VIEWPORT',
+        page: { id: figma.currentPage.id, name: figma.currentPage.name },
+        center: { x: Math.round(view.center.x), y: Math.round(view.center.y) },
+        zoom: Math.round(view.zoom * 1000) / 1000,
+        bounds: {
+          x: Math.round(view.bounds.x),
+          y: Math.round(view.bounds.y),
+          width: Math.round(view.bounds.width),
+          height: Math.round(view.bounds.height),
+        },
+      })
+      break
+    }
+    case 'VIEWPORT_SET': {
+      // @agent write: move the designer's view — fit some nodes, or put a point in the middle at a zoom. Nothing in the document changes; the designer's screen does
+      // @agent param nodes: ids to fit on screen — Figma's own "zoom to selection"
+      // @agent param center: { x, y } on the canvas to put in the middle
+      // @agent param zoom: 1 is 100%; 0.5 shows twice as much
+      try {
+        if (msg.nodes !== undefined) {
+          const targets = await nodesFrom(msg.nodes)
+          if (targets.length === 0) {
+            refuse('VIEWPORT_SET', 'nodes named nothing')
+            break
+          }
+          figma.viewport.scrollAndZoomIntoView(targets)
+        }
+        if (msg.center !== undefined) {
+          const point = msg.center as { x?: unknown; y?: unknown }
+          if (typeof point?.x !== 'number' || typeof point?.y !== 'number') {
+            refuse('VIEWPORT_SET', 'center must be { x, y }')
+            break
+          }
+          figma.viewport.center = { x: point.x, y: point.y }
+        }
+        if (msg.zoom !== undefined) {
+          if (typeof msg.zoom !== 'number' || !(msg.zoom > 0)) {
+            refuse('VIEWPORT_SET', 'zoom must be a number above 0 — 1 is 100%')
+            break
+          }
+          figma.viewport.zoom = msg.zoom
+        }
+        postToUi({
+          type: 'VIEWPORT',
+          page: { id: figma.currentPage.id, name: figma.currentPage.name },
+          center: { x: Math.round(figma.viewport.center.x), y: Math.round(figma.viewport.center.y) },
+          zoom: Math.round(figma.viewport.zoom * 1000) / 1000,
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VIEWPORT_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'STORAGE_KEYS': {
+      // @agent read: what this plugin keeps on this machine (clientStorage) — the keys and how big each is, never the values, which can hold a module's secrets
+      const keys = await figma.clientStorage.keysAsync()
+      const rows = []
+      for (const key of keys.sort()) {
+        const value = await figma.clientStorage.getAsync(key)
+        rows.push({ key, bytes: value === undefined ? 0 : (JSON.stringify(value)?.length ?? 0) })
+      }
+      postToUi({ type: 'STORAGE_KEYS', keys: rows })
+      break
+    }
+    case 'STORAGE_REMOVE': {
+      // @agent write: forget some of what this plugin keeps on this machine — saved settings, panel size, installed modules. Cannot be undone
+      // @agent param keys: the keys to delete, as STORAGE_KEYS lists them
+      const keys = Array.isArray(msg.keys) ? msg.keys.map(String) : typeof msg.keys === 'string' ? [msg.keys] : []
+      if (keys.length === 0) {
+        refuse('STORAGE_REMOVE', 'name the keys to remove — STORAGE_KEYS lists them')
+        break
+      }
+      const known = new Set(await figma.clientStorage.keysAsync())
+      const missing = keys.filter((key) => !known.has(key))
+      if (missing.length > 0) {
+        refuse('STORAGE_REMOVE', `no such key: ${missing.join(', ')}`)
+        break
+      }
+      for (const key of keys) await figma.clientStorage.deleteAsync(key)
+      // The modules live in memory too; what was just forgotten on disk must not keep running.
+      if (keys.includes(MODULES_KEY)) await loadUserModules()
+      postToUi({ type: 'STORAGE_REMOVED', keys })
+      break
+    }
+    case 'UI_POSITION': {
+      // @agent read: where the plugin's own window sits, and move it — panel chrome, nothing in the document
+      // @agent param x: left edge in the canvas's window space, pixels; give x and y together
+      // @agent param y: top edge in the same space
+      if (msg.x !== undefined || msg.y !== undefined) {
+        if (typeof msg.x !== 'number' || typeof msg.y !== 'number') {
+          refuse('UI_POSITION', 'give x and y together, both numbers')
+          break
+        }
+        figma.ui.reposition(msg.x, msg.y)
+      }
+      const at = figma.ui.getPosition()
+      postToUi({
+        type: 'UI_POSITION',
+        window: { x: Math.round(at.windowSpace.x), y: Math.round(at.windowSpace.y) },
+        canvas: { x: Math.round(at.canvasSpace.x), y: Math.round(at.canvasSpace.y) },
+      })
+      break
+    }
+    case 'CHANGES_WATCH': {
+      // @agent read: start or stop recording what changes on the open page and in the styles — by the designer, by collaborators, by this plugin — so CHANGES_READ can say what happened since
+      // @agent param on: true starts (and survives page switches), false stops and forgets
+      // @agent param document: true listens to EVERY page instead of the open one — Figma has to load all pages first, which on a large file takes a while
+      if (msg.on === true) await watchChanges(msg.document === true)
+      else unwatchChanges()
+      postToUi({
+        type: 'CHANGES_WATCH',
+        on: changeWatch.on,
+        scope: changeWatch.document ? 'document' : 'open page',
+        recorded: changeWatch.log.length,
+        next: changeWatch.seq,
+      })
+      break
+    }
+    case 'SELECTION_SET': {
+      // @agent write: select layers for the designer, or a stretch of characters inside a text — the designer's selection changes, the document does not
+      // @agent param nodes: ids to select, all on one page (Figma's rule); the view moves to that page if needed. [] clears the selection
+      // @agent param text: { node, start, end } selects characters inside a text layer instead
+      try {
+        if (msg.text !== undefined) {
+          const asked = msg.text as { node?: unknown; start?: unknown; end?: unknown }
+          const text = typeof asked?.node === 'string' ? await figma.getNodeByIdAsync(asked.node) : null
+          if (!text || text.type !== 'TEXT') {
+            refuse('SELECTION_SET', 'text.node must be the id of a TEXT layer')
+            break
+          }
+          const start = asked.start
+          const end = asked.end
+          if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end > text.characters.length) {
+            refuse('SELECTION_SET', `text.start and text.end must sit within its ${text.characters.length} character(s)`)
+            break
+          }
+          const page = pageOf(text)
+          if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+          figma.currentPage.selectedTextRange = { node: text, start, end }
+          postToUi({ type: 'SELECTED', text: { node: text.id, start, end, characters: text.characters.slice(start, end) } })
+          break
+        }
+        const targets = Array.isArray(msg.nodes) && msg.nodes.length === 0 ? [] : await nodesFrom(msg.nodes ?? [])
+        const pages = new Set(targets.map((node) => pageOf(node)))
+        if (pages.size > 1) {
+          refuse('SELECTION_SET', 'a selection lives on one page — these nodes are on several')
+          break
+        }
+        const [page] = [...pages]
+        if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+        figma.currentPage.selection = targets
+        postToUi({ type: 'SELECTED', page: figma.currentPage.name, nodes: targets.map((node) => ({ id: node.id, name: node.name })) })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'SELECTION_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VARIABLE_SUGGEST': {
+      // @agent read: which variables Figma itself thinks a layer's hard-coded values are — per field, the tokens whose value matches. The shortest way from loose numbers and colours to bound ones
+      // @agent param nodes: ids to ask about; omitted, the current selection
+      // @agent cost: Figma answers this from its servers — about 30 s per node cold, under 100 ms warm, and a 10 s "unable to establish connection" when offline
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('VARIABLE_SUGGEST', 'name some nodes, or select something')
+          break
+        }
+        // A suggestion from a library the file has not imported yet has no variable here to name,
+        // and its id is not its key either: the hex in `VariableID:<hex>/<n>` is the LIBRARY's,
+        // shared by every variable in it (seen live). So it stays an id, said to be one.
+        const names = new Map<string, string>()
+        let unnamed = 0
+        const nameOf = async (alias: VariableAlias) => {
+          if (!names.has(alias.id)) {
+            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null)
+            if (!variable) unnamed++
+            names.set(alias.id, variable?.name ?? alias.id)
+          }
+          return names.get(alias.id)!
+        }
+        const rows = []
+        for (const node of targets) {
+          const inferred =
+            (node as SceneNode & { inferredVariables?: Record<string, VariableAlias[] | VariableAlias[][]> }).inferredVariables ?? {}
+          const fields: Record<string, unknown> = {}
+          const bag = node as unknown as Record<string, unknown>
+          for (const [field, found] of Object.entries(inferred)) {
+            // Figma answers for every field, a zero padding matched against every zero token among
+            // them; only a value the layer actually has is worth a suggestion.
+            if (field === '' || (field !== 'fills' && field !== 'strokes' && !bag[field])) continue
+            // A stroke weight with no stroke to weigh is the default 1, not a design decision.
+            if (/^stroke.*Weight$/.test(field) && !(Array.isArray(bag.strokes) && bag.strokes.length > 0)) continue
+            // Paints answer per paint — fills[0] has its own candidates — everything else per field.
+            if (field === 'fills' || field === 'strokes') {
+              const perPaint = []
+              for (const one of found as VariableAlias[][]) perPaint.push(await Promise.all(one.map(nameOf)))
+              if (perPaint.some((one) => one.length > 0)) fields[field] = perPaint
+            } else if ((found as VariableAlias[]).length > 0) fields[field] = await Promise.all((found as VariableAlias[]).map(nameOf))
+          }
+          rows.push({ node: node.id, name: node.name, suggestions: fields })
+        }
+        postToUi({
+          type: 'VARIABLE_SUGGESTIONS',
+          nodes: rows,
+          ...(unnamed > 0 ? { unnamed: `${unnamed} suggestion(s) are library variables this file has not imported — shown by id` } : {}),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VARIABLE_SUGGEST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'CHANGES_READ': {
+      // @agent read: what changed since a point — node creations, deletions and property changes on the watched pages, and style changes — each with who made it (LOCAL is this machine, REMOTE a collaborator)
+      // @agent param since: the `next` number a previous read or CHANGES_WATCH answered; omitted, everything still held (the last 1000)
+      // @agent param limit: how many entries, newest last; 200 by default
+      // @agent param origin: LOCAL or REMOTE to keep only one side
+      if (!changeWatch.on && changeWatch.log.length === 0) {
+        refuse('CHANGES_READ', 'nothing is being recorded — CHANGES_WATCH with on: true first')
+        break
+      }
+      const since = typeof msg.since === 'number' ? msg.since : 0
+      const limit = Math.min(Math.max(msg.limit ?? 200, 1), 1000)
+      const origin = typeof msg.origin === 'string' ? msg.origin.toUpperCase() : null
+      const kept = changeWatch.log.filter((entry) => entry.seq >= since && (!origin || entry.origin === origin))
+      const shown = kept.slice(-limit)
+      postToUi({
+        type: 'CHANGES',
+        watching: changeWatch.on,
+        next: changeWatch.seq,
+        total: kept.length,
+        ...(kept.length > shown.length ? { truncated: kept.length - shown.length } : {}),
+        // Older entries than the window holds are gone; saying so beats a silent gap.
+        ...(since > 0 && changeWatch.log.length > 0 && changeWatch.log[0].seq > since ? { lost: changeWatch.log[0].seq - since } : {}),
+        changes: shown,
+      })
       break
     }
 

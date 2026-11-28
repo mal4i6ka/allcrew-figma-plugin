@@ -40,6 +40,7 @@
  * id, which prototype links pointing at the old node do not follow. Both facts are in the report.
  */
 
+import { fontsToLoad } from '../utils/text-fonts.ts'
 import { componentFor } from '../canvas/components.ts'
 import { ParamError, type OpDef, type ParamSpec } from './protocol.ts'
 import { findAllByTypes } from '../utils/tree.ts'
@@ -217,8 +218,11 @@ async function writeCharacters(node: SceneNode, value: unknown): Promise<void> {
    * is exactly the layer whose restore would otherwise fail after the swap already happened. */
   const fonts: FontName[] = []
   try {
-    fonts.push(...node.getRangeAllFontNames(0, Math.max(node.characters.length, 1)))
+    // An empty layer is asked for its own font, not for a range: `(0, 0)` throws, and so does the
+    // `(0, 1)` this used to ask for, which is outside a string of no characters.
+    fonts.push(...fontsToLoad(node))
   } catch {
+    // Not the empty case any more — an older runtime or a double without the range call.
     const single = node.fontName
     if (typeof single === 'object') fonts.push(single)
   }

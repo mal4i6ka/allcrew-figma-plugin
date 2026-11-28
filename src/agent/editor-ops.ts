@@ -9,6 +9,7 @@
  * name, anywhere else — a missing constructor is not an explanation.
  */
 
+import { fontsToLoad } from '../utils/text-fonts.ts'
 import { BUZZ_ASSET_TYPES, editorFeatures, editorProblem, transitionWords } from '../canvas/board.ts'
 import type { OpDef } from './protocol.ts'
 import { resolveSceneNode } from './subtree.ts'
@@ -246,7 +247,7 @@ export const EDITOR_OPS: readonly OpDef[] = [
         const field = pick(textFields, key)
         const before = field.value
         if (field.node && field.node.fontName !== figma.mixed) await figma.loadFontAsync(field.node.fontName)
-        else if (field.node) await Promise.all(field.node.getRangeAllFontNames(0, field.node.characters.length).map((font) => figma.loadFontAsync(font)))
+        else if (field.node) await Promise.all(fontsToLoad(field.node).map((font) => figma.loadFontAsync(font)))
         await field.setValueAsync(value)
         changed.push({ text: key, before, after: value })
       }

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planProps, resolveRanges } from './props.ts'
-import { styledRuns, writableFont } from './text-runs.ts'
+import { styledRuns, textRuns, writableFont } from './text-runs.ts'
 
 const runsOf = (runs: unknown) => {
   const plan = planProps({ runs })
@@ -125,4 +125,89 @@ test('an axis that is not a four-letter tag is refused, because Figma throws on 
   )
   assert.match(planProps({ fontName: { family: 'Inter', weight: 700 } }).problems[0], /unknown key "weight"/)
   assert.match(planProps({ fontName: 'Inter Bold' }).problems[0], /must be \{ family, style\?, variationSettings\? \}/)
+})
+
+/* ------------------------------------------------------------ whole-text lists */
+
+test('a whole text becomes a list after its characters, whichever order it was asked in', () => {
+  const steps = planProps({ list: 'unordered', indent: 1, text: 'One\nTwo' }).steps
+  assert.deepEqual(
+    steps.map((step) => step.step),
+    ['text', 'textRange', 'textRange']
+  )
+  assert.deepEqual(steps.slice(1), [
+    { step: 'textRange', field: 'list', value: 'UNORDERED' },
+    { step: 'textRange', field: 'indent', value: 1 },
+  ])
+})
+
+test('a list type and a depth outside what Figma has are refused by name', () => {
+  assert.match(planProps({ list: 'BULLETS' }).problems[0], /list must be one of: ORDERED, UNORDERED, NONE/)
+  assert.match(planProps({ indent: 1.5 }).problems[0], /indent must be a whole number >= 0/)
+  assert.match(planProps({ listOptions: { type: 'ORDERED' } }).problems[0], /here it is "list"/)
+})
+
+test("a list the whole text shares is the layer's, and runs say only where a paragraph departs", async () => {
+  const segment = (start: number, end: number, type: string, indentation: number) => ({
+    start,
+    end,
+    listOptions: { type },
+    indentation,
+  })
+  const whole = { type: 'TEXT', getStyledTextSegments: () => [segment(0, 7, 'UNORDERED', 1)] }
+  assert.deepEqual(await textRuns(whole as never), {
+    runs: [{ from: 0, to: 7 }],
+    paragraphs: { list: 'UNORDERED', indent: 1 },
+    partlyBound: [],
+  })
+  const mixed = { type: 'TEXT', getStyledTextSegments: () => [segment(0, 4, 'NONE', 0), segment(4, 9, 'ORDERED', 0)] }
+  assert.deepEqual(await textRuns(mixed as never), {
+    runs: [
+      { from: 0, to: 4 },
+      { from: 4, to: 9, list: 'ORDERED' },
+    ],
+    paragraphs: {},
+    partlyBound: [],
+  })
+})
+
+/* ------------------------------------------------- variables on a run, handoff */
+
+test('a run binds variables on its own characters, refused by field name before Figma sees it', () => {
+  assert.deepEqual(runsOf([{ match: 'Total', bind: { fontSize: 'type/size/l', fontFamily: null } }]), [
+    { match: 'Total', bind: { fontSize: 'type/size/l', fontFamily: null } },
+  ])
+  assert.match(planProps({ runs: [{ match: 'x', bind: { textCase: 'a' } }] }).problems[0], /bind must be \{ field: "variable" \| null \} with fields from: fontFamily/)
+})
+
+test('a variable on some characters is the runs\' to say, not the layer\'s', async () => {
+  ;(globalThis as unknown as { figma: unknown }).figma = {
+    variables: { getVariableByIdAsync: async (id: string) => ({ name: id === 'V:l' ? 'type/size/l' : 'type/size/m' }) },
+  }
+  const node = {
+    type: 'TEXT',
+    fontSize: 16,
+    getStyledTextSegments: () => [
+      { start: 0, end: 6, fontSize: 16, boundVariables: { fontSize: { id: 'V:m' } } },
+      { start: 6, end: 11, fontSize: 24, boundVariables: { fontSize: { id: 'V:l' } } },
+    ],
+  }
+  const { runs, partlyBound } = await textRuns(node as never)
+  assert.deepEqual(partlyBound, ['fontSize'])
+  assert.deepEqual(runs, [
+    { from: 0, to: 6, bind: { fontSize: 'type/size/m' } },
+    { from: 6, to: 11, fontSize: 24, bind: { fontSize: 'type/size/l' } },
+  ])
+})
+
+test('Dev Mode notes and links are whole lists, in the shape a read gives them', () => {
+  assert.deepEqual(planProps({ annotations: [{ label: 'Tap target **44pt**', properties: ['height'], category: 'Accessibility' }] }).steps, [
+    { step: 'annotations', notes: [{ label: 'Tap target **44pt**', properties: ['height'], category: 'Accessibility' }] },
+  ])
+  assert.deepEqual(planProps({ annotations: [] }).steps, [{ step: 'annotations', notes: [] }])
+  assert.match(planProps({ annotations: [{ properties: ['colour'] }] }).problems[0], /properties must name some of/)
+  assert.match(planProps({ annotations: [{}] }).problems[0], /says nothing/)
+  assert.deepEqual(planProps({ devLinks: ['https://x.dev/a', { url: 'https://x.dev/b', name: 'B' }] }).steps, [
+    { step: 'devLinks', links: [{ url: 'https://x.dev/a' }, { url: 'https://x.dev/b', name: 'B' }] },
+  ])
 })
