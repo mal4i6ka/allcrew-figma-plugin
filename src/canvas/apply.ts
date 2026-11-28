@@ -1614,7 +1614,7 @@ function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'F
   ;(frame as unknown as Record<string, unknown>)[property] = mode
 }
 
-async function buildPaints(ref: PaintRef): Promise<Paint[]> {
+export async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   if (ref === null) return []
   // A list is a stack of layers, bottom-up the way Figma holds them.
   if (Array.isArray(ref)) {

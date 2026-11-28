@@ -152,6 +152,7 @@ import {
   describeEffects,
   describeGrids,
   describePaints,
+  buildPaints,
   readModes,
   variableName,
 } from './canvas/apply.ts'
@@ -311,6 +312,14 @@ type PluginMessage =
   | { type: 'FILE_THUMBNAIL' }
   | { type: 'FILE_THUMBNAIL_SET'; nodeId: string | null }
   | { type: 'UNDO' }
+  | { type: 'PAGE_SET'; pageId?: string; name?: string; background?: unknown; prototypeBackground?: unknown; guides?: unknown }
+  | { type: 'VIEWPORT' }
+  | { type: 'VIEWPORT_SET'; nodes?: unknown; center?: unknown; zoom?: number }
+  | { type: 'STORAGE_KEYS' }
+  | { type: 'STORAGE_REMOVE'; keys: unknown }
+  | { type: 'UI_POSITION'; x?: number; y?: number }
+  | { type: 'CHANGES_WATCH'; on: boolean; document?: boolean }
+  | { type: 'CHANGES_READ'; since?: number; limit?: number; origin?: string }
   // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
   | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
   | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
@@ -2905,6 +2914,122 @@ async function docsToCanvas(files: Readonly<Record<string, unknown>>): Promise<P
   }
   const docs = docNames(files).map((name) => ({ name, markdown: files[name] as string }))
   return placeDocs(docs, images)
+}
+
+/**
+ * What changed, recorded while somebody asked to know.
+ *
+ * Figma tells a plugin about changes as they happen and never afterwards, so an agent that wants
+ * "what did the designer do since my last write" needs the plugin to have been listening. The page
+ * events are per page under dynamic-page (the document-wide event would load every page first),
+ * so the listener follows the designer from page to page; styles have one event for the file.
+ */
+interface ChangeEntry {
+  seq: number
+  at: string
+  origin: 'LOCAL' | 'REMOTE'
+  kind: string
+  id: string
+  page?: string
+  type?: string
+  name?: string
+  properties?: string[]
+}
+
+const CHANGE_LOG_LIMIT = 1000
+
+const changeWatch: { on: boolean; document: boolean; seq: number; log: ChangeEntry[]; page: PageNode | null } = {
+  on: false,
+  document: false,
+  seq: 1,
+  log: [],
+  page: null,
+}
+
+function recordChange(entry: Omit<ChangeEntry, 'seq' | 'at'>): void {
+  changeWatch.log.push({ seq: changeWatch.seq++, at: new Date().toISOString(), ...entry })
+  if (changeWatch.log.length > CHANGE_LOG_LIMIT) changeWatch.log.splice(0, changeWatch.log.length - CHANGE_LOG_LIMIT)
+}
+
+function onNodeChange(event: NodeChangeEvent): void {
+  const page = changeWatch.page?.name
+  for (const change of event.nodeChanges) {
+    const node = change.node as SceneNode | RemovedNode
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      type: node.type,
+      // A removed node keeps its id and type and nothing else.
+      ...('removed' in node && node.removed ? {} : { name: (node as SceneNode).name }),
+      ...(change.type === 'PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function onStyleChange(event: StyleChangeEvent): void {
+  for (const change of event.styleChanges) {
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(change.style ? { name: change.style.name, type: change.style.type } : {}),
+      ...(change.type === 'STYLE_PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function followPage(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = figma.currentPage
+  changeWatch.page.on('nodechange', onNodeChange)
+}
+
+/** The whole document at once — each change says which page it happened on. */
+function onDocumentChange(event: DocumentChangeEvent): void {
+  for (const change of event.documentChanges) {
+    // Styles come through their own event, which is subscribed either way.
+    if (change.type === 'STYLE_CREATE' || change.type === 'STYLE_DELETE' || change.type === 'STYLE_PROPERTY_CHANGE') continue
+    const node = (change as { node?: SceneNode | RemovedNode }).node
+    const alive = node && !('removed' in node && node.removed) ? (node as SceneNode) : null
+    const page = alive ? pageOf(alive)?.name : undefined
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      ...(node ? { type: node.type } : {}),
+      ...(alive ? { name: alive.name } : {}),
+      ...('properties' in change && Array.isArray(change.properties) ? { properties: [...change.properties] as string[] } : {}),
+    })
+  }
+}
+
+async function watchChanges(wholeDocument: boolean): Promise<void> {
+  if (changeWatch.on) return
+  changeWatch.on = true
+  changeWatch.document = wholeDocument
+  if (wholeDocument) {
+    // Under dynamic-page the document-wide event is refused until every page is loaded.
+    await figma.loadAllPagesAsync()
+    figma.on('documentchange', onDocumentChange)
+  } else {
+    followPage()
+    figma.on('currentpagechange', followPage)
+  }
+  figma.on('stylechange', onStyleChange)
+}
+
+function unwatchChanges(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = null
+  figma.off('currentpagechange', followPage)
+  if (changeWatch.document) figma.off('documentchange', onDocumentChange)
+  figma.off('stylechange', onStyleChange)
+  changeWatch.on = false
+  changeWatch.document = false
+  changeWatch.log = []
 }
 
 /**
@@ -5980,14 +6105,24 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({
         type: 'PAGES',
         current: figma.currentPage.id,
-        pages: figma.root.children.map((page) => ({
-          id: page.id,
-          name: page.name,
-          current: page.id === figma.currentPage.id,
-          // A divider is a page in the list and nothing on the canvas — a section heading in the
-          // pages panel. Without the flag it read as an empty page called "———".
-          ...(page.isPageDivider ? { divider: true } : {}),
-        })),
+        pages: await Promise.all(
+          figma.root.children.map(async (page) => ({
+            id: page.id,
+            name: page.name,
+            current: page.id === figma.currentPage.id,
+            // A divider is a page in the list and nothing on the canvas — a section heading in the
+            // pages panel. Without the flag it read as an empty page called "———".
+            ...(page.isPageDivider ? { divider: true } : {}),
+            // The canvas colour behind everything, and the one the prototype is shown on.
+            background: await describePaints(page.backgrounds),
+            // Figma's default is transparent black, which shows nothing and is not worth a line.
+            ...(page.prototypeBackgrounds.some((paint) => paint.visible !== false && (paint.opacity ?? 1) > 0)
+              ? { prototypeBackground: await describePaints(page.prototypeBackgrounds) }
+              : {}),
+          }))
+        ),
+        // How the file's colours are interpreted — sRGB, Display P3 or legacy.
+        colorProfile: figma.root.documentColorProfile,
       })
       break
     }
@@ -6072,6 +6207,203 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       figma.triggerUndo()
       figma.notify('Undone')
       postToUi({ type: 'UNDONE' })
+      break
+    }
+    case 'PAGE_SET': {
+      // @agent write: rename a page, change the canvas colour behind it or the one its prototype is shown on, or set its ruler guides
+      // @agent param pageId: the page to change; omitted, the open one
+      // @agent param name: the page's new name
+      // @agent param background: the canvas colour, "#RRGGBB" — the same words a fill takes
+      // @agent param prototypeBackground: the colour the prototype is presented on
+      // @agent param guides: [{ axis: "X" | "Y", offset }] on the page itself; [] removes them
+      try {
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('PAGE_SET', `no page with id ${msg.pageId}`)
+          break
+        }
+        const plan = planProps({
+          ...(msg.background === undefined ? {} : { fill: msg.background }),
+          ...(msg.guides === undefined ? {} : { guides: msg.guides }),
+        })
+        const backdrop = msg.prototypeBackground === undefined ? null : planProps({ fill: msg.prototypeBackground })
+        const problems = [...plan.problems, ...(backdrop?.problems ?? []).map((one) => one.replace('props.fill', 'prototypeBackground'))]
+        if (msg.name !== undefined && (typeof msg.name !== 'string' || msg.name.trim() === '')) problems.push('name must be a non-empty string')
+        if (problems.length > 0) {
+          refuse('PAGE_SET', problems.join(' · '))
+          break
+        }
+        const before = { name: page.name, background: await describePaints(page.backgrounds) }
+        if (typeof msg.name === 'string') page.name = msg.name.trim()
+        for (const step of plan.steps) {
+          if (step.step === 'paint') page.backgrounds = await buildPaints(step.ref)
+          if (step.step === 'assign' && step.property === 'guides') page.guides = step.value as Guide[]
+        }
+        const shown = backdrop?.steps.find((step) => step.step === 'paint')
+        if (shown && shown.step === 'paint') page.prototypeBackgrounds = await buildPaints(shown.ref)
+        figma.commitUndo()
+        postToUi({
+          type: 'PAGE_SET_DONE',
+          page: { id: page.id, name: page.name },
+          before,
+          after: {
+            name: page.name,
+            background: await describePaints(page.backgrounds),
+            prototypeBackground: await describePaints(page.prototypeBackgrounds),
+            guides: page.guides.length,
+          },
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'PAGE_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VIEWPORT': {
+      // @agent read: where the designer is looking — the centre, the zoom and the rectangle of canvas on screen
+      const view = figma.viewport
+      postToUi({
+        type: 'VIEWPORT',
+        page: { id: figma.currentPage.id, name: figma.currentPage.name },
+        center: { x: Math.round(view.center.x), y: Math.round(view.center.y) },
+        zoom: Math.round(view.zoom * 1000) / 1000,
+        bounds: {
+          x: Math.round(view.bounds.x),
+          y: Math.round(view.bounds.y),
+          width: Math.round(view.bounds.width),
+          height: Math.round(view.bounds.height),
+        },
+      })
+      break
+    }
+    case 'VIEWPORT_SET': {
+      // @agent write: move the designer's view — fit some nodes, or put a point in the middle at a zoom. Nothing in the document changes; the designer's screen does
+      // @agent param nodes: ids to fit on screen — Figma's own "zoom to selection"
+      // @agent param center: { x, y } on the canvas to put in the middle
+      // @agent param zoom: 1 is 100%; 0.5 shows twice as much
+      try {
+        if (msg.nodes !== undefined) {
+          const targets = await nodesFrom(msg.nodes)
+          if (targets.length === 0) {
+            refuse('VIEWPORT_SET', 'nodes named nothing')
+            break
+          }
+          figma.viewport.scrollAndZoomIntoView(targets)
+        }
+        if (msg.center !== undefined) {
+          const point = msg.center as { x?: unknown; y?: unknown }
+          if (typeof point?.x !== 'number' || typeof point?.y !== 'number') {
+            refuse('VIEWPORT_SET', 'center must be { x, y }')
+            break
+          }
+          figma.viewport.center = { x: point.x, y: point.y }
+        }
+        if (msg.zoom !== undefined) {
+          if (typeof msg.zoom !== 'number' || !(msg.zoom > 0)) {
+            refuse('VIEWPORT_SET', 'zoom must be a number above 0 — 1 is 100%')
+            break
+          }
+          figma.viewport.zoom = msg.zoom
+        }
+        postToUi({
+          type: 'VIEWPORT',
+          page: { id: figma.currentPage.id, name: figma.currentPage.name },
+          center: { x: Math.round(figma.viewport.center.x), y: Math.round(figma.viewport.center.y) },
+          zoom: Math.round(figma.viewport.zoom * 1000) / 1000,
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VIEWPORT_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'STORAGE_KEYS': {
+      // @agent read: what this plugin keeps on this machine (clientStorage) — the keys and how big each is, never the values, which can hold a module's secrets
+      const keys = await figma.clientStorage.keysAsync()
+      const rows = []
+      for (const key of keys.sort()) {
+        const value = await figma.clientStorage.getAsync(key)
+        rows.push({ key, bytes: value === undefined ? 0 : (JSON.stringify(value)?.length ?? 0) })
+      }
+      postToUi({ type: 'STORAGE_KEYS', keys: rows })
+      break
+    }
+    case 'STORAGE_REMOVE': {
+      // @agent write: forget some of what this plugin keeps on this machine — saved settings, panel size, installed modules. Cannot be undone
+      // @agent param keys: the keys to delete, as STORAGE_KEYS lists them
+      const keys = Array.isArray(msg.keys) ? msg.keys.map(String) : typeof msg.keys === 'string' ? [msg.keys] : []
+      if (keys.length === 0) {
+        refuse('STORAGE_REMOVE', 'name the keys to remove — STORAGE_KEYS lists them')
+        break
+      }
+      const known = new Set(await figma.clientStorage.keysAsync())
+      const missing = keys.filter((key) => !known.has(key))
+      if (missing.length > 0) {
+        refuse('STORAGE_REMOVE', `no such key: ${missing.join(', ')}`)
+        break
+      }
+      for (const key of keys) await figma.clientStorage.deleteAsync(key)
+      // The modules live in memory too; what was just forgotten on disk must not keep running.
+      if (keys.includes(MODULES_KEY)) await loadUserModules()
+      postToUi({ type: 'STORAGE_REMOVED', keys })
+      break
+    }
+    case 'UI_POSITION': {
+      // @agent read: where the plugin's own window sits, and move it — panel chrome, nothing in the document
+      // @agent param x: left edge in the canvas's window space, pixels; give x and y together
+      // @agent param y: top edge in the same space
+      if (msg.x !== undefined || msg.y !== undefined) {
+        if (typeof msg.x !== 'number' || typeof msg.y !== 'number') {
+          refuse('UI_POSITION', 'give x and y together, both numbers')
+          break
+        }
+        figma.ui.reposition(msg.x, msg.y)
+      }
+      const at = figma.ui.getPosition()
+      postToUi({
+        type: 'UI_POSITION',
+        window: { x: Math.round(at.windowSpace.x), y: Math.round(at.windowSpace.y) },
+        canvas: { x: Math.round(at.canvasSpace.x), y: Math.round(at.canvasSpace.y) },
+      })
+      break
+    }
+    case 'CHANGES_WATCH': {
+      // @agent read: start or stop recording what changes on the open page and in the styles — by the designer, by collaborators, by this plugin — so CHANGES_READ can say what happened since
+      // @agent param on: true starts (and survives page switches), false stops and forgets
+      // @agent param document: true listens to EVERY page instead of the open one — Figma has to load all pages first, which on a large file takes a while
+      if (msg.on === true) await watchChanges(msg.document === true)
+      else unwatchChanges()
+      postToUi({
+        type: 'CHANGES_WATCH',
+        on: changeWatch.on,
+        scope: changeWatch.document ? 'document' : 'open page',
+        recorded: changeWatch.log.length,
+        next: changeWatch.seq,
+      })
+      break
+    }
+    case 'CHANGES_READ': {
+      // @agent read: what changed since a point — node creations, deletions and property changes on the watched pages, and style changes — each with who made it (LOCAL is this machine, REMOTE a collaborator)
+      // @agent param since: the `next` number a previous read or CHANGES_WATCH answered; omitted, everything still held (the last 1000)
+      // @agent param limit: how many entries, newest last; 200 by default
+      // @agent param origin: LOCAL or REMOTE to keep only one side
+      if (!changeWatch.on && changeWatch.log.length === 0) {
+        refuse('CHANGES_READ', 'nothing is being recorded — CHANGES_WATCH with on: true first')
+        break
+      }
+      const since = typeof msg.since === 'number' ? msg.since : 0
+      const limit = Math.min(Math.max(msg.limit ?? 200, 1), 1000)
+      const origin = typeof msg.origin === 'string' ? msg.origin.toUpperCase() : null
+      const kept = changeWatch.log.filter((entry) => entry.seq >= since && (!origin || entry.origin === origin))
+      const shown = kept.slice(-limit)
+      postToUi({
+        type: 'CHANGES',
+        watching: changeWatch.on,
+        next: changeWatch.seq,
+        total: kept.length,
+        ...(kept.length > shown.length ? { truncated: kept.length - shown.length } : {}),
+        // Older entries than the window holds are gone; saying so beats a silent gap.
+        ...(since > 0 && changeWatch.log.length > 0 && changeWatch.log[0].seq > since ? { lost: changeWatch.log[0].seq - since } : {}),
+        changes: shown,
+      })
       break
     }
 
