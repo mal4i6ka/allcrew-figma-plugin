@@ -51730,7 +51730,9 @@ figma make deploy --build-dir dist
     return work();
   }
   var devLinksDownUntil = 0;
+  var devLinksRefusedUntil = 0;
   async function devLinksOf(node) {
+    if (Date.now() < devLinksRefusedUntil) return [];
     if (Date.now() < devLinksDownUntil) return "Figma did not answer a moment ago, so they are not asked again for a minute";
     try {
       return await withCeiling(node.getDevResourcesAsync(), 5e3, "Dev Mode links");
@@ -51740,7 +51742,8 @@ figma make deploy --build-dir dist
         devLinksDownUntil = Date.now() + 6e4;
         return "Figma did not answer within 5 s";
       }
-      return `Figma refused them: ${message}`;
+      devLinksRefusedUntil = Date.now() + 10 * 6e4;
+      return [];
     }
   }
   async function describeNodeCapped(node, withProps, ms = 3e4) {

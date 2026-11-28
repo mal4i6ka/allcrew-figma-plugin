@@ -2637,8 +2637,10 @@ async function traced<T>(node: SceneNode, step: string, work: () => Promise<T>):
  * of a hundred-node query.
  */
 let devLinksDownUntil = 0
+let devLinksRefusedUntil = 0
 
 async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | string> {
+  if (Date.now() < devLinksRefusedUntil) return []
   if (Date.now() < devLinksDownUntil) return 'Figma did not answer a moment ago, so they are not asked again for a minute'
   try {
     return await withCeiling(node.getDevResourcesAsync(), 5_000, 'Dev Mode links')
@@ -2648,8 +2650,11 @@ async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | st
       devLinksDownUntil = Date.now() + 60_000
       return 'Figma did not answer within 5 s'
     }
-    // A refusal is not silence: said as Figma said it, not as a hang.
-    return `Figma refused them: ${message}`
+    // A refusal is not silence and not a gap in the read: the file's links are not this
+    // session's to see (live: a 403 on related_links for every node of a file without Dev Mode
+    // access). There are none to show, and asking again per node only repeats the XHR.
+    devLinksRefusedUntil = Date.now() + 10 * 60_000
+    return []
   }
 }
 
