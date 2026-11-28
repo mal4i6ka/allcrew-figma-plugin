@@ -18,7 +18,7 @@ All notable changes to AllCrew Figma Workspace are documented here.
 
 - The plugin is built against `@figma/plugin-typings` 1.143.0.
 
-## Unreleased — port of upstream 1.2.0
+## 1.16.0 — 2026-11-28
 
 Upstream design-system work from 2026-10-15 to 2026-11-27 that this product did not have yet, adapted to AllCrew names and merged into AllCrew's own designs (FigJam/Slides/Buzz, docs on the canvas, file mail).
 
