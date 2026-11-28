@@ -14,6 +14,7 @@
  * a path that doesn't exist.
  */
 
+import { apply3dDeclarations, type Transform3dNote } from './transform3d.ts'
 import type {
   IrNode,
   IrLayout,
@@ -87,6 +88,10 @@ export interface DjangoNodeSource {
   readonly cornerSmoothing?: number
   /** `effects` (M8) — DropShadow behind-node re-mapping and unsupported-effect detection. */
   readonly effects?: readonly EffectLike[]
+  /** 3D transform, its origin and the container's scene (typings 1.143.0, beta) — see `transform3d.ts`. */
+  readonly transform3d?: Transform3d
+  readonly transformOrigin?: TransformOrigin
+  readonly scene3d?: Scene3d | null
   /** The node's shared plugin data, read by `html-emitter.ts` for the manual i18n `msgctxt` a
    * designer attached through the annotation panel. Optional so mock nodes stay two-field objects;
    * absent simply means "no annotation", which is what an un-annotated node has anyway. */
@@ -102,6 +107,9 @@ export type EmitterNote =
   /** A paint CSS has no way to draw — a SHADER layer above all. `getCSSAsync` drops it without
    * a word, so the emitted rule is a picture with a layer missing and nothing said about it. */
   | { type: 'unsupported-fill'; node: string; fill: string }
+  /** 3D transforms: an imported transform exported flat, a 2D+3D composition, or a declaration
+   * left out of a `preserve3d` container because Figma does not render it there. */
+  | Transform3dNote
 
 export function toClassName(id: string): string {
   return `n${id.replace(/[^a-zA-Z0-9]+/g, '-')}`
@@ -988,6 +996,11 @@ async function emitBoxRules(
     decl['transform'] = decl['transform'] ? `${decl['transform']} rotate(${node.imageRotation}deg)` : `rotate(${node.imageRotation}deg)`
   }
 
+  // 3D transform and scene — after every pass that writes `transform`, `transform-origin`,
+  // `opacity`, `filter`, `box-shadow` or `overflow`, since it composes with the first two and
+  // takes the rest off a `preserve3d` container.
+  apply3dDeclarations(decl, source, node.id, notes)
+
   // REFORM phase 14 (C): a themed kit-button instance trades its mapped pixel props for Bootstrap
   // var overrides — equal-to-master props drop entirely (the theme's .btn/.btn-<role> vars carry
   // them), designer overrides become `--bs-btn-*` on the instance class. Runs AFTER the smoothing/
@@ -1228,6 +1241,8 @@ async function computeVariantDeclarations(
     if (effect.dropBoxShadow) delete decl['box-shadow']
     decl['filter'] = decl['filter'] ? `${effect.filter} ${decl['filter']}` : effect.filter
   }
+  // Same 3D pass as the base rule, so a variant that differs only in depth or tilt diffs as one.
+  apply3dDeclarations(decl, source, node.id)
   return decl
 }
 
