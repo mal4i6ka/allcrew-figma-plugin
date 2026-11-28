@@ -59,6 +59,31 @@ export interface AppliedProp {
   error?: string
   /** Present when the write was left out because the style the layer follows already gives it. */
   kept?: string
+  /** Present when the step took half a second or more. */
+  ms?: number
+}
+
+/** A step that took long enough to notice says how long — a 27 s create used to say nothing. */
+function withTime(result: AppliedProp, started: number): AppliedProp {
+  const ms = Date.now() - started
+  return ms >= 500 ? { ...result, ms } : result
+}
+
+/**
+ * A font once per plugin session.
+ *
+ * Figma documents a repeat `loadFontAsync` as returning at once. Measured live it does not: on a
+ * fresh bulleted, underlined text the SECOND load of a font loaded a moment earlier to make the
+ * node took 11 s, then 60 s, growing with the text on the page. A loaded font stays loaded for
+ * the run, so a font this session has loaded is not awaited again.
+ */
+const LOADED_FONTS = new Set<string>()
+
+export async function ensureFont(font: FontName | FontNameInput | { family: string; style?: string }): Promise<void> {
+  const key = `${font.family}|${font.style ?? ''}|${JSON.stringify((font as { variationSettings?: unknown }).variationSettings ?? null)}`
+  if (LOADED_FONTS.has(key)) return
+  await figma.loadFontAsync(font as FontName)
+  LOADED_FONTS.add(key)
 }
 
 /**
@@ -160,15 +185,16 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
   let failed = 0
 
   for (const step of steps) {
+    const started = Date.now()
     try {
       // A step can also fail in part — `properties` sets four of five and names the fifth — so
       // the report is what decides, not only whether something was thrown.
       const result = await applyStep(node, step, dry)
       if (result.error) failed++
-      applied.push(result)
+      applied.push(withTime(result, started))
     } catch (error) {
       failed++
-      applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
+      applied.push(withTime({ property: propertyOf(step), error: String((error as Error)?.message || error) }, started))
     }
   }
   return { applied, failed }
@@ -257,7 +283,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const font: FontNameInput = step.font
       // Loading a family without a style loads every named instance, which is what variable-font
       // axis selection needs before Figma can choose the closest instance.
-      await figma.loadFontAsync(font)
+      await ensureFont(font)
       const kept = await keptByStyle(node, 'textStyleId', before === describeFont(font))
       if (kept) return { property: 'fontName', before, after: before, kept }
       // The 1.141 docs explicitly accept FontNameInput here, but the generated property type
@@ -453,7 +479,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
             if (words === null || row >= node.numRows || column >= node.numColumns) continue
             const text = node.cellAt(row, column).text
             const font = text.fontName
-            if (font !== figma.mixed) await figma.loadFontAsync(font)
+            if (font !== figma.mixed) await ensureFont(font)
             else await loadNodeFont(text as unknown as TextNode)
             text.characters = words
           }
@@ -1075,12 +1101,12 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         let fillStyle: BaseStyle | null = null
         const bindings: Array<{ field: string; variable: Variable | null }> = []
         try {
-          if (run.fontName) await figma.loadFontAsync(run.fontName)
+          if (run.fontName) await ensureFont(run.fontName)
           paints = run.fill === undefined ? null : await buildPaints(run.fill)
           textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
           fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
           // A text style brings its own font, which has to be loaded before it can be applied.
-          if (textStyle) await figma.loadFontAsync(textStyle.fontName)
+          if (textStyle) await ensureFont(textStyle.fontName)
           // Variables on these characters only, resolved and type-checked before anything is written.
           for (const [field, ref] of Object.entries(run.bind ?? {})) {
             if (ref === null) {
@@ -1728,7 +1754,7 @@ const TEXT_PROPERTIES = [
  */
 async function loadNodeFont(node: TextNode): Promise<void> {
   if (node.fontName !== figma.mixed) {
-    await figma.loadFontAsync(node.fontName as FontName)
+    await ensureFont(node.fontName as FontName)
     return
   }
   const fonts = new Set<string>()
@@ -1741,7 +1767,7 @@ async function loadNodeFont(node: TextNode): Promise<void> {
     fonts.add(key)
     wanted.push(font as FontName)
   }
-  await Promise.all(wanted.map((font) => figma.loadFontAsync(font)))
+  await Promise.all(wanted.map((font) => ensureFont(font)))
 }
 
 function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'FIXED' | 'HUG' | 'FILL'): void {
