@@ -61,7 +61,7 @@ const plainValue = (held: unknown): unknown => {
 
 /** One stored track, in the shape `keyframes` takes — or null when nothing in it is readable. */
 function readTrack(word: string, binding: unknown): unknown | null {
-  const held = binding as { baseValue?: unknown; keyframes?: unknown[] } | undefined
+  const held = binding as { baseValue?: unknown; keyframes?: unknown[]; keyframeOperation?: string } | undefined
   const frames = Array.isArray(held?.keyframes) ? held.keyframes : []
 
   const at: unknown[] = []
@@ -79,7 +79,10 @@ function readTrack(word: string, binding: unknown): unknown | null {
   if (at.length === 0) return null
 
   const from = plainValue(held?.baseValue)
-  return { field: word, ...(from === undefined ? {} : { from }), at }
+  // OFFSET and SCALE move relative to wherever the layer is; the plugin API reads them and has no
+  // way to write one, so a read says which it is and the write refuses it by name.
+  const operation = held?.keyframeOperation && held.keyframeOperation !== 'SET' ? { operation: held.keyframeOperation } : {}
+  return { field: word, ...(from === undefined ? {} : { from }), at, ...operation }
 }
 
 export function readKeyframes(tracks: unknown): { keyframes?: unknown[] } {

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planArc, planExports, planProps, readArc, readExports, readNetwork } from './props.ts'
+import { readKeyframes } from './keyframes.ts'
 
 const stepsOf = (props: unknown) => {
   const plan = planProps(props)
@@ -131,6 +132,23 @@ test('words are replaced after the text is set and before the runs that may styl
   assert.match(planProps({ replace: [{ match: 'a', from: 0, to: 1, with: 'b' }] }).problems[0], /either a match or a from\/to range/)
   assert.match(planProps({ replace: [{ match: 'a' }] }).problems[0], /must be \{ match, with \}/)
   assert.deepEqual(stepsOf({ scaleFactor: 1.5 }), [{ step: 'assign', property: 'scaleFactor', value: 1.5 }])
+})
+
+/* --------------------------------------------------------------- keyframes */
+
+test('a relative keyframe track is read for what it is and refused on the way back, not flattened', () => {
+  const read = readKeyframes({
+    TRANSLATION_X: {
+      keyframeOperation: 'OFFSET',
+      keyframes: [{ timelinePosition: 0, value: { type: 'FLOAT', value: 20 }, easing: { type: 'LINEAR' } }],
+    },
+  })
+  assert.deepEqual(read.keyframes, [{ field: 'x', at: [{ time: 0, value: 20, easing: 'LINEAR' }], operation: 'OFFSET' }])
+  assert.match(
+    planProps({ keyframes: [{ field: 'x', operation: 'OFFSET', at: [{ time: 0, value: 0 }] }] }).problems[0],
+    /operation "OFFSET" cannot be written/
+  )
+  assert.deepEqual(planProps({ keyframes: [{ field: 'opacity', operation: 'SET', at: [{ time: 0, value: 0 }] }] }).problems, [])
 })
 
 /* --------------------------------------------------------------- grid tokens */

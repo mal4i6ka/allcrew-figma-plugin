@@ -976,8 +976,10 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         let categoryId: string | undefined
         if (note.category) {
           const wanted = note.category.trim()
+          // An id goes straight to Figma; a label is matched against the list.
+          const byId = /^\d+:\d+$/.test(wanted) ? await figma.annotations.getAnnotationCategoryByIdAsync(wanted).catch(() => null) : null
           const found =
-            categories.find((one) => one.id === wanted) ?? categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
+            byId ?? categories.find((one) => one.id === wanted) ?? categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
           if (!found) throw new Error(`no annotation category "${wanted}" — this file has: ${categories.map((one) => one.label).join(', ') || '(none)'}`)
           categoryId = found.id
         }

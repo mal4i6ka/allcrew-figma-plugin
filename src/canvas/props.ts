@@ -3685,8 +3685,16 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
   const tracks: Array<{ name: string; field: unknown; track: unknown | null }> = []
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
-    const one = entry as { field?: unknown; from?: unknown; at?: unknown }
+    const one = entry as { field?: unknown; from?: unknown; at?: unknown; operation?: unknown }
     const word = typeof one?.field === 'string' ? one.field.trim() : ''
+    // A relative track — "move 20 px from wherever it is" — has no write in the plugin API; taken
+    // as absolute it would quietly become "move to x = 20", so it is refused by name instead.
+    if (one?.operation !== undefined && one.operation !== 'SET') {
+      problems.push(
+        `${at}.operation ${JSON.stringify(one.operation)} cannot be written — Figma's plugin API reads relative (OFFSET / SCALE) tracks and only writes absolute ones`
+      )
+      continue
+    }
     const property = KEYFRAME_FIELDS[word]
     const indexed = property ? null : parseIndexedField(word)
     if (!property && !indexed) {
