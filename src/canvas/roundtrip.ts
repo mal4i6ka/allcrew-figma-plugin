@@ -74,8 +74,6 @@ const NOT_PROPERTIES = new Set([
   'component',
   'key',
   'variantOf',
-  'description',
-  'documentation',
   'timelines',
   'devLinks',
   'annotations',
@@ -103,6 +101,18 @@ const NOT_PROPERTIES = new Set([
  * known summary instead of fifteen times as a fresh defect.
  */
 const SUMMARIES = new Set(['network', 'brush', 'shader'])
+
+/** A summary is a sentence; `network` is one only past the size a read spells out in full. */
+const isSummary = (key: string, value: unknown): boolean => SUMMARIES.has(key) && (key !== 'network' || typeof value === 'string')
+
+/**
+ * The matrix without where it stands: its translation is the node's position, which is the parent's
+ * business here exactly as x and y are — sent, it would land the copy on top of the original.
+ */
+const unplaced = (value: unknown): unknown =>
+  Array.isArray(value) && value.length === 2 && value.every((row) => Array.isArray(row) && row.length === 3)
+    ? (value as number[][]).map((row) => [row[0], row[1], 0])
+    : value
 
 /**
  * Where a node sits is its parent's business, so position is compared and never sent.
@@ -154,11 +164,11 @@ export function sendable(props: Record<string, unknown>): {
       notValues.push(key)
       continue
     }
-    if (SUMMARIES.has(key)) {
+    if (isSummary(key, value)) {
       notValues.push(`${key} (summary)`)
       continue
     }
-    candidate[key] = value
+    candidate[key] = key === 'transform' ? unplaced(value) : value
   }
 
   // One plan, then the problems tell us which keys to take out. Planning key by key would answer
@@ -233,18 +243,18 @@ export function compare(
   // A shape that could not travel takes its size with it: a vector whose `network` is a summary
   // comes out empty, and reporting the height as a second finding says the same thing twice while
   // hiding what a real size difference would mean.
-  const shaped = [...keys].some((key) => SUMMARIES.has(key) && before[key] !== undefined)
+  const shaped = [...keys].some((key) => before[key] !== undefined && isSummary(key, before[key]))
 
   for (const key of keys) {
     if (NOT_PROPERTIES.has(key) || ignore.has(key)) continue
     // A summary cannot travel by design, and it is already reported as one. Comparing it too
     // would count the same known limit twice and hide a real divergence behind it.
-    if (SUMMARIES.has(key)) continue
+    if (isSummary(key, before[key])) continue
     if (shaped && (key === 'width' || key === 'height')) continue
     // Where the copy sits is not what is being tested; how big it came out is.
     if (key === 'x' || key === 'y') continue
-    const left = JSON.stringify(before[key] ?? null)
-    const right = JSON.stringify(after[key] ?? null)
+    const left = JSON.stringify((key === 'transform' ? unplaced(before[key]) : before[key]) ?? null)
+    const right = JSON.stringify((key === 'transform' ? unplaced(after[key]) : after[key]) ?? null)
     if (left === right) same.push(key)
     else diverged.push({ property: key, was: before[key] ?? null, became: after[key] ?? null })
   }

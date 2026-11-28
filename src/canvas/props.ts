@@ -368,6 +368,8 @@ export interface LayoutProps {
    * at, counted against the order BEFORE the move. Children travel with their tracks. */
   moveRows?: TrackMove
   moveColumns?: TrackMove
+  /** A wrapping layout: how the wrapped lines share the cross axis — packed (`AUTO`) or spread (`SPACE_BETWEEN`). */
+  alignContent?: 'AUTO' | 'SPACE_BETWEEN'
 }
 
 export interface RepeatSpec {
@@ -656,6 +658,71 @@ export interface NodeProps {
   stuckTo?: string | null
   /** Buzz: what the asset is for — INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM… */
   assetType?: (typeof BUZZ_ASSET_TYPES)[number]
+  /** Whether this layer masks the layers above it in the same parent. */
+  isMask?: boolean
+  /** How a mask cuts: by `ALPHA`, by the `VECTOR` outline alone, or by `LUMINANCE`. */
+  maskType?: 'ALPHA' | 'VECTOR' | 'LUMINANCE'
+  /** Squircle corners, 0 to 1: 0 is a plain arc, 0.6 is what iOS draws. */
+  cornerSmoothing?: number
+  /** How far a sharp MITER join may reach before Figma bevels it, as a ratio of the stroke weight. */
+  strokeMiterLimit?: number
+  /** POLYGON and STAR only: how many corners, 3 or more. */
+  pointCount?: number
+  /** STAR only: how deep the points cut in, 0 to 1. */
+  innerRadius?: number
+  /** ELLIPSE only: part of a circle in degrees — `{ start: 0, end: 270 }` — and a hole, 0 to 1, for a ring. */
+  arc?: { start?: number; end?: number; inner?: number }
+  /** BOOLEAN_OPERATION only: how its children combine. */
+  booleanOperation?: 'UNION' | 'INTERSECT' | 'SUBTRACT' | 'EXCLUDE'
+  /** The whole 2×3 matrix, `[[a, b, x], [c, d, y]]` — what a flip or a skew is, which `rotation` cannot say. */
+  transform?: [[number, number, number], [number, number, number]]
+  /** Mirror the layer across its own centre, where it stands. */
+  flip?: 'HORIZONTAL' | 'VERTICAL'
+  /** Scale the layer AND what it is drawn with — strokes, radii, text, effects — the way the K tool does. */
+  scale?: number
+  /** Keep the width-to-height ratio when the layer is resized by hand. */
+  aspectLock?: boolean
+  /** Export presets on the layer — `[{ format: "PNG", scale: 2, suffix: "@2x" }, "SVG"]`. `[]` removes them. */
+  exports?: Array<string | ExportSpec>
+  /** Dev Mode status: `READY_FOR_DEV` or `COMPLETED`, or `{ type, description }`. `null` clears it. */
+  devStatus?: 'READY_FOR_DEV' | 'COMPLETED' | { type: 'READY_FOR_DEV' | 'COMPLETED'; description?: string } | null
+  /** SECTION only: hide what is inside it on the canvas. */
+  contentsHidden?: boolean
+  /** Whether the layer is opened out in the layers panel. */
+  expanded?: boolean
+  /** Which mode of a variable collection this layer is drawn in — `{ "Business": "Dark" }`. `null` inherits again. */
+  modes?: Record<string, string | null>
+  /** Ruler guides on a frame: `[{ axis: "X", offset: 24 }]`. `[]` removes them. */
+  guides?: Array<{ axis: 'X' | 'Y'; offset: number }>
+  /** COMPONENT and COMPONENT_SET only: what it is for, as the panel shows it. Markdown is kept. */
+  description?: string
+  /** COMPONENT and COMPONENT_SET only: links to its documentation. */
+  documentation?: string[]
+  /** A nested INSTANCE inside a component: offer its properties on every instance of the outer one. */
+  exposed?: boolean
+  /** VECTOR only: how a curve's two handles move together — `NONE`, `ANGLE` or `ANGLE_AND_LENGTH`. */
+  handleMirroring?: 'NONE' | 'ANGLE' | 'ANGLE_AND_LENGTH'
+  /** What other plugins keep on the layer, by their namespace — `{ "tokens": { "ref": "x" } }`. A null value clears a key. */
+  sharedData?: Record<string, Record<string, string | null>>
+  /** Relaunch buttons Figma shows on the layer, by manifest command — `{ "reexport": "Re-export this frame" }`. `{}` clears them. */
+  relaunch?: Record<string, string>
+}
+
+/** One export preset, as the layer's Export panel holds it. */
+export interface ExportSpec {
+  format: 'PNG' | 'JPG' | 'SVG' | 'PDF'
+  /** Density, for PNG and JPG: `2` is @2x. Or a target `width` or `height` in pixels instead. */
+  scale?: number
+  width?: number
+  height?: number
+  suffix?: string
+  contentsOnly?: boolean
+  useAbsoluteBounds?: boolean
+  colorProfile?: 'DOCUMENT' | 'SRGB' | 'DISPLAY_P3_V4'
+  /** SVG only: text as outlines, layer names as ids, strokes simplified. */
+  svgOutlineText?: boolean
+  svgIdAttribute?: boolean
+  svgSimplifyStroke?: boolean
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
@@ -780,7 +847,7 @@ export interface FlowLink {
 /* ---------------------------------------------------------------------- plan */
 
 export type PropStep =
-  | { step: 'assign'; property: string; value: string | number | boolean }
+  | { step: 'assign'; property: string; value: string | number | boolean | null | Readonly<Record<string, unknown>> | readonly unknown[] }
   | { step: 'space3d'; property: Space3dProperty; value: Space3dValue }
   | { step: 'font'; font: FontSpec }
   | { step: 'text'; characters: string }
@@ -810,6 +877,12 @@ export type PropStep =
   | { step: 'bound'; property: string; value: number | null }
   | { step: 'runs'; runs: TextRun[] }
   | { step: 'textRange'; field: 'list' | 'indent'; value: string | number }
+  | { step: 'flip'; axis: 'HORIZONTAL' | 'VERTICAL' }
+  | { step: 'rescale'; factor: number }
+  | { step: 'aspect'; locked: boolean }
+  | { step: 'modes'; modes: Record<string, string | null> }
+  | { step: 'sharedData'; data: Record<string, Record<string, string | null>> }
+  | { step: 'relaunch'; data: Record<string, string> }
   | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -944,6 +1017,7 @@ const LAYOUT_KEYS = [
   'positioning',
   'moveRows',
   'moveColumns',
+  'alignContent',
 ]
 
 /**
@@ -1034,7 +1108,11 @@ const ORDER = [
   'overrides',
   'visible',
   'locked',
+  'expanded',
   'clipsContent',
+  'isMask',
+  'maskType',
+  'contentsHidden',
   'layout',
   // Validated in the loop, applied after it: the two sizing steps are computed from the layout and
   // this together, and they land either side of the resize.
@@ -1045,6 +1123,9 @@ const ORDER = [
   'absolute',
   'width',
   'height',
+  // After the size it multiplies, and before anything that reads the size it produces.
+  'scale',
+  'aspectLock',
   'minWidth',
   'maxWidth',
   'minHeight',
@@ -1071,16 +1152,26 @@ const ORDER = [
   'x',
   'y',
   'rotation',
+  // After x, y and rotation, which it contains — the matrix is the last word on where the layer
+  // stands — and the flip after it, since a flip is taken across wherever the layer ended up.
+  'transform',
+  'flip',
   // 3D (beta): the origin before the transform it turns about, the scene on the container.
   'transformOrigin',
   'transform3d',
   'scene3d',
   'opacity',
   'cornerRadius',
+  'cornerSmoothing',
+  'pointCount',
+  'innerRadius',
+  'arc',
+  'booleanOperation',
   // Before the paints: the shape decides what there is to fill.
   'path',
   'paths',
   'network',
+  'handleMirroring',
   // Before the paints and the type: following a style sets the whole bundle, and a colour named
   // in the same breath is meant to override it, not to be overwritten by it.
   'fillStyle',
@@ -1094,6 +1185,7 @@ const ORDER = [
   'strokeAlign',
   'strokeCap',
   'strokeJoin',
+  'strokeMiterLimit',
   'strokeDashes',
   'strokeProfile',
   'brush',
@@ -1141,6 +1233,15 @@ const ORDER = [
   'fixedChildren',
   'links',
   'data',
+  'sharedData',
+  'relaunch',
+  'modes',
+  'exports',
+  'devStatus',
+  'guides',
+  'description',
+  'documentation',
+  'exposed',
   'parent',
   'index',
 ] as const
@@ -1192,6 +1293,31 @@ const FIGMA_NAMES: Record<string, string> = {
   connectorLineType: 'connector.line',
   listOptions: 'list',
   indentation: 'indent',
+  arcData: 'arc',
+  relativeTransform: 'transform',
+  exportSettings: 'exports',
+  constrainProportions: 'aspectLock',
+  sectionContentsHidden: 'contentsHidden',
+  isExposedInstance: 'exposed',
+  explicitVariableModes: 'modes',
+  documentationLinks: 'documentation',
+  descriptionMarkdown: 'description',
+  gridChildHorizontalAlign: 'gridAlign.horizontal',
+  gridChildVerticalAlign: 'gridAlign.vertical',
+  gridColumnSizes: 'layout.columnSizes',
+  gridRowSizes: 'layout.rowSizes',
+  gridItemsPositioning: 'layout.positioning',
+  gridRowAnchorIndex: 'gridCell',
+  gridColumnAnchorIndex: 'gridCell',
+  counterAxisAlignContent: 'layout.alignContent',
+  horizontalPadding: 'layout.padding',
+  verticalPadding: 'layout.padding',
+  primaryAxisSizingMode: 'sizing',
+  counterAxisSizingMode: 'sizing',
+  layoutGrow: 'sizing',
+  layoutAlign: 'sizing',
+  mainComponent: 'swap',
+  backgrounds: 'fill',
 }
 
 /** What to tell a caller about a key we do not know: the one it meant, or what there is. */
@@ -1217,6 +1343,7 @@ const PLACED = [
   'layoutPositioning',
   'x',
   'y',
+  'relativeTransform',
   'gridRowSpan',
   'gridColumnSpan',
   'gridChildVerticalAlign',
@@ -1258,6 +1385,8 @@ export function dependsOnPlacement(step: PropStep): boolean {
   if (step.step === 'timeline') return true
   // A cell is a place in the parent's grid; a detached node has no grid to be placed in.
   if (step.step === 'gridCell') return true
+  // A flip is taken across where the node stands, and a detached node is not standing there yet.
+  if (step.step === 'flip') return true
   return step.step === 'assign' && PLACED.includes(step.property)
 }
 
@@ -1527,6 +1656,160 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         if (typeof cell !== 'object' || cell === null || !index(cell.row) || !index(cell.column)) {
           fail('gridCell must be { row, column }, each a whole number counted from 0')
         } else steps.push({ step: 'gridCell', row: cell.row as number, column: cell.column as number })
+        break
+      }
+      case 'isMask':
+      case 'expanded':
+      case 'contentsHidden':
+      case 'exposed': {
+        if (typeof props[key] !== 'boolean') fail(`${key} must be true or false`)
+        else steps.push({ step: 'assign', property: FIGMA_FLAG_NAMES[key] ?? key, value: props[key] as boolean })
+        break
+      }
+      case 'aspectLock': {
+        if (typeof props.aspectLock !== 'boolean') fail('aspectLock must be true or false')
+        else steps.push({ step: 'aspect', locked: props.aspectLock })
+        break
+      }
+      case 'maskType':
+      case 'booleanOperation':
+      case 'handleMirroring': {
+        const allowed = SHAPE_ENUMS[key]
+        const value = typeof props[key] === 'string' ? normaliseEnum(props[key] as string) : props[key]
+        if (typeof value !== 'string' || !allowed.includes(value)) fail(`${key} must be one of: ${allowed.join(', ')}`)
+        else steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'cornerSmoothing':
+      case 'innerRadius': {
+        const value = number(key, 0, 1)
+        if (value !== null) steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'strokeMiterLimit': {
+        const value = number('strokeMiterLimit', 1)
+        if (value !== null) steps.push({ step: 'assign', property: 'strokeMiterLimit', value })
+        break
+      }
+      case 'pointCount': {
+        const value = props.pointCount
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 3) fail('pointCount must be a whole number of at least 3')
+        else steps.push({ step: 'assign', property: 'pointCount', value })
+        break
+      }
+      case 'arc': {
+        const arc = planArc(props.arc)
+        if (typeof arc === 'string') fail(`arc ${arc}`)
+        else steps.push({ step: 'assign', property: 'arcData', value: { ...arc } })
+        break
+      }
+      case 'transform': {
+        const matrix = props.transform
+        const row = (one: unknown) => Array.isArray(one) && one.length === 3 && one.every((n) => typeof n === 'number' && Number.isFinite(n))
+        if (!Array.isArray(matrix) || matrix.length !== 2 || !row(matrix[0]) || !row(matrix[1])) {
+          fail('transform must be [[a, b, x], [c, d, y]] — six numbers in two rows')
+        } else steps.push({ step: 'assign', property: 'relativeTransform', value: matrix as unknown[] })
+        break
+      }
+      case 'flip': {
+        const value = typeof props.flip === 'string' ? normaliseEnum(props.flip) : props.flip
+        if (value !== 'HORIZONTAL' && value !== 'VERTICAL') fail('flip must be HORIZONTAL or VERTICAL')
+        else steps.push({ step: 'flip', axis: value })
+        break
+      }
+      case 'scale': {
+        const value = number('scale', 0.01)
+        if (value !== null) steps.push({ step: 'rescale', factor: value })
+        break
+      }
+      case 'exports': {
+        const presets = planExports(props.exports)
+        if (typeof presets === 'string') fail(`exports${presets}`)
+        else steps.push({ step: 'assign', property: 'exportSettings', value: presets as unknown as readonly unknown[] })
+        break
+      }
+      case 'devStatus': {
+        const value = props.devStatus
+        const kinds = ['READY_FOR_DEV', 'COMPLETED']
+        if (value === null) steps.push({ step: 'assign', property: 'devStatus', value: null })
+        else if (typeof value === 'string' && kinds.includes(normaliseEnum(value))) {
+          steps.push({ step: 'assign', property: 'devStatus', value: { type: normaliseEnum(value) } })
+        } else if (
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          typeof (value as { type?: unknown }).type === 'string' &&
+          kinds.includes(normaliseEnum((value as { type: string }).type)) &&
+          ['undefined', 'string'].includes(typeof (value as { description?: unknown }).description)
+        ) {
+          const { type, description } = value as { type: string; description?: string }
+          steps.push({ step: 'assign', property: 'devStatus', value: { type: normaliseEnum(type), ...(description ? { description } : {}) } })
+        } else fail(`devStatus must be ${kinds.join(' or ')}, { type, description? }, or null`)
+        break
+      }
+      case 'modes': {
+        const value = props.modes
+        if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.keys(value).length === 0) {
+          fail('modes must be { "<collection>": "<mode>" }, a null mode to inherit again')
+          break
+        }
+        const bad = Object.entries(value as Record<string, unknown>).filter(
+          ([, mode]) => !(mode === null || (typeof mode === 'string' && mode.trim() !== ''))
+        )
+        if (bad.length > 0) fail(`modes.${bad[0][0]} must be a mode name or id, or null`)
+        else steps.push({ step: 'modes', modes: value as Record<string, string | null> })
+        break
+      }
+      case 'guides': {
+        const value = props.guides
+        const guide = (one: unknown) =>
+          typeof one === 'object' &&
+          one !== null &&
+          ((one as { axis?: unknown }).axis === 'X' || (one as { axis?: unknown }).axis === 'Y') &&
+          typeof (one as { offset?: unknown }).offset === 'number' &&
+          Number.isFinite((one as { offset: number }).offset)
+        if (!Array.isArray(value) || !value.every(guide)) fail('guides must be [{ axis: "X" | "Y", offset }]')
+        else steps.push({ step: 'assign', property: 'guides', value: value.map((one) => ({ axis: one.axis, offset: one.offset })) })
+        break
+      }
+      case 'description': {
+        if (typeof props.description !== 'string') fail('description must be a string')
+        // Markdown is what the panel renders; plain text is markdown with nothing to render.
+        else steps.push({ step: 'assign', property: 'descriptionMarkdown', value: props.description })
+        break
+      }
+      case 'documentation': {
+        const value = props.documentation
+        if (!Array.isArray(value) || !value.every((uri) => typeof uri === 'string' && uri.trim() !== '')) {
+          fail('documentation must be a list of URLs')
+        } else steps.push({ step: 'assign', property: 'documentationLinks', value: value.map((uri) => ({ uri: uri.trim() })) })
+        break
+      }
+      case 'sharedData': {
+        const value = props.sharedData
+        // Figma's rule for a namespace: at least three characters of letters, numbers, `_` and `.`.
+        // A hyphen is refused by Figma at write time (found live), so it is refused here first.
+        const space = /^[A-Za-z0-9_.]{3,}$/
+        const ok =
+          typeof value === 'object' &&
+          value !== null &&
+          !Array.isArray(value) &&
+          Object.entries(value).every(
+            ([namespace, entries]) =>
+              space.test(namespace) &&
+              typeof entries === 'object' &&
+              entries !== null &&
+              !Array.isArray(entries) &&
+              Object.values(entries).every((one) => typeof one === 'string' || one === null)
+          )
+        if (!ok) fail('sharedData must be { "<namespace: 3+ letters, numbers, _ or .>": { key: "value" | null } }')
+        else steps.push({ step: 'sharedData', data: value as Record<string, Record<string, string | null>> })
+        break
+      }
+      case 'relaunch': {
+        const value = props.relaunch
+        if (typeof value !== 'object' || value === null || Array.isArray(value) || !Object.values(value).every((one) => typeof one === 'string')) {
+          fail('relaunch must be { "<manifest command>": "description" } — {} clears it')
+        } else steps.push({ step: 'relaunch', data: value as Record<string, string> })
         break
       }
       case 'strokeWeight': {
@@ -2602,6 +2885,156 @@ function buildTransition(
   }
 }
 
+/** Our words for flags Figma spells longer. */
+const FIGMA_FLAG_NAMES: Readonly<Record<string, string>> = {
+  contentsHidden: 'sectionContentsHidden',
+  exposed: 'isExposedInstance',
+}
+
+const SHAPE_ENUMS: Readonly<Record<string, readonly string[]>> = {
+  maskType: ['ALPHA', 'VECTOR', 'LUMINANCE'],
+  booleanOperation: ['UNION', 'INTERSECT', 'SUBTRACT', 'EXCLUDE'],
+  handleMirroring: ['NONE', 'ANGLE', 'ANGLE_AND_LENGTH'],
+}
+
+const DEGREES = Math.PI / 180
+
+/**
+ * An ellipse's arc in degrees, as Figma's own panel shows it — `arcData` stores radians, and
+ * nobody writes `4.71238898` for three-quarters of a circle. Absent ends are a whole circle, the
+ * way Figma's own default reads.
+ */
+export function planArc(raw: unknown): ArcData | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return 'must be { start?, end?, inner? }'
+  const arc = raw as Record<string, unknown>
+  for (const key of Object.keys(arc)) {
+    if (!['start', 'end', 'inner'].includes(key)) return `: unknown key "${key}" — accepted: start, end, inner`
+  }
+  const start = arc.start ?? 0
+  const end = arc.end ?? 360
+  const inner = arc.inner ?? 0
+  if (typeof start !== 'number' || !Number.isFinite(start)) return '.start must be a number of degrees'
+  if (typeof end !== 'number' || !Number.isFinite(end)) return '.end must be a number of degrees'
+  if (typeof inner !== 'number' || inner < 0 || inner > 1) return '.inner must be between 0 and 1'
+  return { startingAngle: start * DEGREES, endingAngle: end * DEGREES, innerRadius: inner }
+}
+
+/** The arc back in the words `arc` takes, or nothing for a plain full ellipse. */
+export function readArc(data: ArcData): { start?: number; end?: number; inner?: number } | null {
+  const round = (value: number) => Math.round(value * 100) / 100
+  const start = round(data.startingAngle / DEGREES)
+  const end = round(data.endingAngle / DEGREES)
+  const inner = round(data.innerRadius)
+  const whole = Math.abs(end - start - 360) < 0.01
+  if (whole && inner === 0) return null
+  return { ...(start !== 0 ? { start } : {}), ...(end !== 360 ? { end } : {}), ...(inner !== 0 ? { inner } : {}) }
+}
+
+const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF']
+const EXPORT_KEYS = ['format', 'scale', 'width', 'height', 'suffix', 'contentsOnly', 'useAbsoluteBounds', 'colorProfile', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']
+
+/**
+ * Export presets, refused key by key rather than handed to Figma, whose validation names its own
+ * internals ("Expected 'SCALE' | 'WIDTH' | 'HEIGHT'") instead of the word the caller wrote.
+ */
+export function planExports(raw: unknown): ExportSettings[] | string {
+  if (!Array.isArray(raw)) return ' must be a list of presets — "SVG", or { format: "PNG", scale: 2, suffix: "@2x" }'
+  const out: ExportSettings[] = []
+  for (const [index, one] of raw.entries()) {
+    const at = `[${index}]`
+    const spec = (typeof one === 'string' ? { format: one } : one) as Record<string, unknown> | null
+    if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) return `${at} must be a format or { format, … }`
+    for (const key of Object.keys(spec)) if (!EXPORT_KEYS.includes(key)) return `${at}: unknown key "${key}" — accepted: ${EXPORT_KEYS.join(', ')}`
+    const format = typeof spec.format === 'string' ? spec.format.toUpperCase().replace('JPEG', 'JPG') : ''
+    if (!EXPORT_FORMATS.includes(format)) return `${at}.format must be one of: ${EXPORT_FORMATS.join(', ')}`
+    const sizing = (['scale', 'width', 'height'] as const).filter((key) => spec[key] !== undefined)
+    if (sizing.length > 1) return `${at}: give one of scale, width or height, not ${sizing.join(' and ')}`
+    if (sizing.length === 1 && (format === 'SVG' || format === 'PDF')) return `${at}: a ${format} is vector — it takes no ${sizing[0]}`
+    const amount = sizing.length === 1 ? spec[sizing[0]] : undefined
+    if (amount !== undefined && (typeof amount !== 'number' || amount <= 0)) return `${at}.${sizing[0]} must be a number > 0`
+    for (const flag of ['contentsOnly', 'useAbsoluteBounds', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']) {
+      if (spec[flag] !== undefined && typeof spec[flag] !== 'boolean') return `${at}.${flag} must be true or false`
+      if (spec[flag] !== undefined && flag.startsWith('svg') && format !== 'SVG') return `${at}.${flag} is an SVG setting`
+    }
+    if (spec.suffix !== undefined && typeof spec.suffix !== 'string') return `${at}.suffix must be text`
+    if (spec.colorProfile !== undefined && !['DOCUMENT', 'SRGB', 'DISPLAY_P3_V4'].includes(String(spec.colorProfile))) {
+      return `${at}.colorProfile must be DOCUMENT, SRGB or DISPLAY_P3_V4`
+    }
+    const preset: Record<string, unknown> = { format }
+    if (amount !== undefined) preset.constraint = { type: sizing[0].toUpperCase(), value: amount }
+    for (const key of ['suffix', 'contentsOnly', 'useAbsoluteBounds', 'colorProfile', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']) {
+      if (spec[key] !== undefined) preset[key] = spec[key]
+    }
+    out.push(preset as unknown as ExportSettings)
+  }
+  return out
+}
+
+/** What Figma puts in a preset when nobody said otherwise — only a departure from it is news. */
+const EXPORT_DEFAULTS: Readonly<Record<string, unknown>> = {
+  suffix: '',
+  contentsOnly: true,
+  useAbsoluteBounds: false,
+  colorProfile: 'DOCUMENT',
+  svgOutlineText: true,
+  svgIdAttribute: false,
+  svgSimplifyStroke: true,
+}
+
+/** Export presets back in the words `exports` takes: a bare format when that is all there is. */
+export function readExports(settings: ReadonlyArray<ExportSettings>): Array<string | Record<string, unknown>> {
+  return settings.map((setting) => {
+    const bag = setting as unknown as Record<string, unknown>
+    const out: Record<string, unknown> = { format: setting.format }
+    const constraint = bag.constraint as { type: string; value: number } | undefined
+    if (constraint && !(constraint.type === 'SCALE' && constraint.value === 1)) out[constraint.type.toLowerCase()] = constraint.value
+    for (const [key, fallback] of Object.entries(EXPORT_DEFAULTS)) {
+      if (bag[key] !== undefined && bag[key] !== fallback) out[key] = bag[key]
+    }
+    return Object.keys(out).length === 1 ? setting.format : out
+  })
+}
+
+/** Past this, a network is reported as a count: a read is for reading, and an icon is not 200 points. */
+export const NETWORK_READ_LIMIT = 200
+
+/**
+ * A vector network in the words `network` takes — the short forms where they say everything, so a
+ * triangle reads as `[[0,0],[80,0],[40,70]]` and not as three objects of defaults. It used to read
+ * as "13 point(s), 13 segment(s)" only, and a copied vector came out empty.
+ */
+export function readNetwork(network: VectorNetwork): Record<string, unknown> {
+  const round = (value: number) => Math.round(value * 1000) / 1000
+  const vertices = network.vertices.map((vertex) => {
+    const extra = {
+      ...(vertex.strokeCap && vertex.strokeCap !== 'NONE' ? { cap: vertex.strokeCap } : {}),
+      ...(vertex.strokeJoin && vertex.strokeJoin !== 'MITER' ? { join: vertex.strokeJoin } : {}),
+      ...(vertex.cornerRadius ? { cornerRadius: round(vertex.cornerRadius) } : {}),
+      ...(vertex.handleMirroring && vertex.handleMirroring !== 'NONE' ? { mirror: vertex.handleMirroring } : {}),
+    }
+    return Object.keys(extra).length === 0 ? [round(vertex.x), round(vertex.y)] : { x: round(vertex.x), y: round(vertex.y), ...extra }
+  })
+  const segments = network.segments.map((segment) => {
+    const bent = [segment.tangentStart, segment.tangentEnd].some((tangent) => tangent && (tangent.x !== 0 || tangent.y !== 0))
+    if (!bent) return [segment.start, segment.end]
+    return {
+      start: segment.start,
+      end: segment.end,
+      curve: [
+        round(segment.tangentStart?.x ?? 0),
+        round(segment.tangentStart?.y ?? 0),
+        round(segment.tangentEnd?.x ?? 0),
+        round(segment.tangentEnd?.y ?? 0),
+      ],
+    }
+  })
+  const regions = (network.regions ?? []).map((region) => ({
+    loops: region.loops.map((loop) => [...loop]),
+    ...(region.windingRule === 'EVENODD' ? { windingRule: 'EVENODD' } : {}),
+  }))
+  return { vertices, segments, ...(regions.length > 0 ? { regions } : {}) }
+}
+
 const DECORATIONS = ['NONE', 'UNDERLINE', 'STRIKETHROUGH']
 const TEXT_CASES = ['ORIGINAL', 'UPPER', 'LOWER', 'TITLE']
 const RUN_KEYS = [
@@ -3477,12 +3910,17 @@ function planNetwork(raw: unknown, where: string, problems: string[]): PropStep 
       problems.push(`${at}.cornerRadius must be a number >= 0`)
       continue
     }
+    if (point.mirror !== undefined && (typeof point.mirror !== 'string' || !SHAPE_ENUMS.handleMirroring.includes(point.mirror))) {
+      problems.push(`${at}.mirror must be one of: ${SHAPE_ENUMS.handleMirroring.join(', ')}`)
+      continue
+    }
     vertices.push({
       x: point.x,
       y: point.y,
       ...(point.cap ? { strokeCap: point.cap as StrokeCap } : {}),
       ...(point.join ? { strokeJoin: point.join as StrokeJoin } : {}),
       ...(point.cornerRadius === undefined ? {} : { cornerRadius: point.cornerRadius }),
+      ...(point.mirror ? { handleMirroring: point.mirror as HandleMirroring } : {}),
     })
   }
 
@@ -3779,6 +4217,10 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
   if (value.autoTracks !== undefined) {
     if (value.autoTracks !== 'NONE' && value.autoTracks !== 'ROWS') fail('autoTracks must be NONE or ROWS')
     else layout.autoTracks = value.autoTracks
+  }
+  if (value.alignContent !== undefined) {
+    if (value.alignContent !== 'AUTO' && value.alignContent !== 'SPACE_BETWEEN') fail('alignContent must be AUTO or SPACE_BETWEEN')
+    else layout.alignContent = value.alignContent
   }
   for (const gap of ['rowGap', 'columnGap'] as const) {
     if (value[gap] === undefined) continue

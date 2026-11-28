@@ -134,7 +134,7 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { formatGridTrack, gridSpecsOf, planFont, planProps, repeatModifier, repeatWords } from './canvas/props.ts'
+import { formatGridTrack, gridSpecsOf, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
@@ -152,6 +152,7 @@ import {
   describeEffects,
   describeGrids,
   describePaints,
+  readModes,
   variableName,
 } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
@@ -2102,6 +2103,70 @@ const variableNameOf = async (id: string): Promise<string | null> => {
   return variable?.name ?? null
 }
 
+/**
+ * The rest of what a layer IS, beyond paints and layout — each said only when it departs from
+ * Figma's default, so an ordinary rectangle still reads in a few lines. Every word here is one
+ * `NODE_SET` takes back.
+ */
+async function readShape(node: SceneNode, props: Record<string, unknown>): Promise<void> {
+  const bag = node as unknown as Record<string, unknown>
+  const round = (value: number, places = 2) => Math.round(value * 10 ** places) / 10 ** places
+  // A turn is the rotation; anything else the matrix holds — a mirror, a skew — only the matrix can say.
+  const matrix = bag.relativeTransform as Transform | undefined
+  if (matrix) {
+    const [[a, b], [c, d]] = matrix
+    const turned = Math.abs(a - d) < 1e-6 && Math.abs(b + c) < 1e-6 && Math.abs(a * a + c * c - 1) < 1e-6
+    if (!turned) props.transform = matrix.map((row) => row.map((value) => round(value, 6)))
+    else if (typeof bag.rotation === 'number' && Math.abs(bag.rotation) > 0.001) props.rotation = round(bag.rotation)
+  }
+  if (bag.isMask === true) {
+    props.isMask = true
+    if (bag.maskType !== 'ALPHA') props.maskType = bag.maskType
+  }
+  if (typeof bag.cornerSmoothing === 'number' && bag.cornerSmoothing > 0) props.cornerSmoothing = round(bag.cornerSmoothing)
+  if (
+    typeof bag.strokeMiterLimit === 'number' &&
+    Array.isArray(bag.strokes) &&
+    bag.strokes.length > 0 &&
+    Math.abs(bag.strokeMiterLimit - 4) > 0.001
+  ) {
+    props.strokeMiterLimit = round(bag.strokeMiterLimit)
+  }
+  if (node.type === 'STAR' || node.type === 'POLYGON') props.pointCount = bag.pointCount
+  if (node.type === 'STAR') props.innerRadius = round(bag.innerRadius as number)
+  if (node.type === 'ELLIPSE') {
+    const arc = readArc(bag.arcData as ArcData)
+    if (arc) props.arc = arc
+  }
+  if (node.type === 'BOOLEAN_OPERATION') props.booleanOperation = bag.booleanOperation
+  if (node.type === 'VECTOR' && typeof bag.handleMirroring === 'string' && bag.handleMirroring !== 'NONE') {
+    props.handleMirroring = bag.handleMirroring
+  }
+  if (bag.targetAspectRatio) props.aspectLock = true
+  if (Array.isArray(bag.exportSettings) && bag.exportSettings.length > 0) {
+    props.exports = readExports(bag.exportSettings as ExportSettings[])
+  }
+  if (bag.devStatus && typeof bag.devStatus === 'object') {
+    const status = bag.devStatus as { type: string; description?: string }
+    props.devStatus = status.description ? { type: status.type, description: status.description } : status.type
+  }
+  if (bag.sectionContentsHidden === true) props.contentsHidden = true
+  if (bag.isExposedInstance === true) props.exposed = true
+  if (Array.isArray(bag.guides) && bag.guides.length > 0) {
+    props.guides = (bag.guides as Guide[]).map((guide) => ({ axis: guide.axis, offset: round(guide.offset) }))
+  }
+  if (Object.keys((bag.explicitVariableModes as Record<string, string> | undefined) ?? {}).length > 0) {
+    const modes = await readModes(node).catch(() => ({}))
+    if (Object.keys(modes).length > 0) props.modes = modes
+  }
+  try {
+    const relaunch = node.getRelaunchData()
+    if (Object.keys(relaunch).length > 0) props.relaunch = relaunch
+  } catch {
+    /* a node inside an instance answers with a throw; it has none of its own */
+  }
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -2198,6 +2263,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
       ...(bag.layoutWrap === 'WRAP' ? { wrap: true, wrapGap: round(bag.counterAxisSpacing) } : {}),
+      ...(bag.layoutWrap === 'WRAP' && bag.counterAxisAlignContent === 'SPACE_BETWEEN' ? { alignContent: 'SPACE_BETWEEN' } : {}),
       ...(bag.layoutMode === 'GRID' ? readGridLayout(bag) : {}),
     }
   }
@@ -2270,10 +2336,15 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   }
   const shape = bag.vectorNetwork as VectorNetwork | undefined
   if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
-    props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
-      shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
-    }`
+    // The network itself when it is icon-sized, so a copy is the same drawing; a count past that.
+    props.network =
+      shape.vertices.length <= NETWORK_READ_LIMIT
+        ? readNetwork(shape)
+        : `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
+            shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
+          }`
   }
+  await readShape(node, props)
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
@@ -2328,8 +2399,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       (definitions ?? {}) as Parameters<typeof describePropertyDefinitions>[0]
     )
     if (line) props.properties = line
-    const description = (owner.description || '').trim()
-    if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}…` : description
+    // Whole and in markdown, which is what the panel shows and what `description` writes back. It
+    // was cut at 200 characters when it was only something to look at.
+    const description = (owner.descriptionMarkdown || owner.description || '').trim()
+    if (description) props.description = description
     const documentation = (owner.documentationLinks ?? []).map((link) => link.uri)
     if (documentation.length > 0) props.documentation = documentation
     if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') props.variantOf = node.parent.name

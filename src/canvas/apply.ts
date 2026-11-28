@@ -200,6 +200,12 @@ const propertyOf = (step: PropStep): string => {
       return step.slot
     case 'textRange':
       return step.field
+    case 'flip':
+      return 'flip'
+    case 'rescale':
+      return 'scale'
+    case 'aspect':
+      return 'aspectLock'
     // `layout`, `constraints` and `lineHeight` are named after themselves.
     default:
       return step.step
@@ -367,6 +373,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
         // The second gap only exists once the layout wraps, so it is set after `layoutWrap`.
         if (layout.wrapGap !== undefined) frame.counterAxisSpacing = layout.wrapGap
+        if (layout.alignContent !== undefined) frame.counterAxisAlignContent = layout.alignContent
         if (layout.reverseZ !== undefined) frame.itemReverseZIndex = layout.reverseZ
         if (layout.strokesInLayout !== undefined) frame.strokesIncludedInLayout = layout.strokesInLayout
         const grid = frame as unknown as GridFrame
@@ -819,6 +826,98 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = node.hyperlink
       if (!dry) node.hyperlink = step.url === null ? null : { type: 'URL', value: step.url }
       return { property: 'hyperlink', before, after: step.url ?? 'none' }
+    }
+
+    case 'flip': {
+      if (!('relativeTransform' in bag)) throw new Error(`a ${node.type} cannot be flipped`)
+      const frame = node as SceneNode & LayoutMixin
+      const before = frame.relativeTransform
+      // A flip is a mirror in the layer's OWN space, taken across its centre so it stays where it
+      // stands: negate one column of the matrix and move the origin to the far edge.
+      const [[a, b, x], [c, d, y]] = before
+      const after: Transform =
+        step.axis === 'HORIZONTAL'
+          ? [
+              [-a, b, x + a * frame.width],
+              [-c, d, y + c * frame.width],
+            ]
+          : [
+              [a, -b, x + b * frame.height],
+              [c, -d, y + d * frame.height],
+            ]
+      if (!dry) frame.relativeTransform = after
+      return { property: 'flip', before, after }
+    }
+
+    case 'rescale': {
+      const holder = node as SceneNode & { rescale?: (scale: number) => void; width: number; height: number }
+      if (typeof holder.rescale !== 'function') throw new Error(`a ${node.type} cannot be scaled`)
+      const before = `${round(holder.width)}×${round(holder.height)}`
+      if (!dry) holder.rescale(step.factor)
+      return { property: 'scale', before, after: dry ? `×${step.factor}` : `${round(holder.width)}×${round(holder.height)}` }
+    }
+
+    case 'aspect': {
+      const holder = node as SceneNode & {
+        lockAspectRatio?: () => void
+        unlockAspectRatio?: () => void
+        targetAspectRatio?: Vector | null
+      }
+      if (typeof holder.lockAspectRatio !== 'function') throw new Error(`a ${node.type} has no aspect ratio to lock`)
+      const before = Boolean(holder.targetAspectRatio)
+      if (!dry) {
+        if (step.locked) holder.lockAspectRatio()
+        else holder.unlockAspectRatio?.()
+      }
+      return { property: 'aspectLock', before, after: step.locked }
+    }
+
+    case 'modes': {
+      const holder = node as SceneNode & {
+        setExplicitVariableModeForCollection?: (collection: VariableCollection, modeId: string) => void
+        clearExplicitVariableModeForCollection?: (collection: VariableCollection) => void
+      }
+      if (typeof holder.setExplicitVariableModeForCollection !== 'function') {
+        throw new Error(`a ${node.type} cannot be drawn in a mode of its own`)
+      }
+      const before = await readModes(node)
+      const after: Record<string, string | null> = {}
+      const failures: string[] = []
+      for (const [ref, mode] of Object.entries(step.modes)) {
+        try {
+          const collection = await collectionNear(node, ref)
+          if (mode === null) {
+            if (!dry) holder.clearExplicitVariableModeForCollection?.(collection)
+            after[collection.name] = null
+            continue
+          }
+          const [chosen] = resolveModes(collection, mode)
+          if (!dry) holder.setExplicitVariableModeForCollection(collection, chosen.modeId)
+          after[collection.name] = chosen.name
+        } catch (error) {
+          failures.push(`${ref}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      return { property: 'modes', before, after, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
+    }
+
+    case 'sharedData': {
+      const before: Record<string, Record<string, string>> = {}
+      for (const [namespace, entries] of Object.entries(step.data)) {
+        before[namespace] = {}
+        for (const key of Object.keys(entries)) before[namespace][key] = node.getSharedPluginData(namespace, key)
+        // An empty string is how Figma removes a key; null is how this vocabulary says it.
+        if (!dry) for (const [key, value] of Object.entries(entries)) node.setSharedPluginData(namespace, key, value ?? '')
+      }
+      return { property: 'sharedData', before, after: step.data }
+    }
+
+    case 'relaunch': {
+      const before = node.getRelaunchData()
+      // Figma refuses a key the manifest's relaunchButtons does not declare, naming the key — the
+      // message is better than any list kept here, which would be a second copy of the manifest.
+      if (!dry) node.setRelaunchData(step.data)
+      return { property: 'relaunch', before, after: step.data }
     }
 
     case 'textRange': {
@@ -1391,6 +1490,73 @@ function isText(node: SceneNode): node is TextNode {
 function asInstance(node: SceneNode, wanted: string): InstanceNode {
   if (node.type !== 'INSTANCE') throw new Error(`only an INSTANCE has ${wanted}, not a ${node.type}`)
   return node
+}
+
+const COLLECTION_ID = /^VariableCollectionId:/
+
+/**
+ * A collection by name, looked for where it can actually be: this file's own, the library ones
+ * the node already resolves a mode for, and — last — the enabled libraries, imported on demand.
+ *
+ * A frame in a product file is drawn in LIBRARY collections almost always, so a local-only
+ * resolver could not set the one mode anyone ever wants to set. A name two libraries share is a
+ * question, answered by id.
+ */
+async function collectionNear(node: SceneNode, ref: string): Promise<VariableCollection> {
+  if (COLLECTION_ID.test(ref)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(ref)
+    if (!collection) throw new Error(`no variable collection with id ${ref}`)
+    return collection
+  }
+  const wanted = ref.trim().toLowerCase()
+  const seen = new Map<string, VariableCollection>()
+  for (const collection of await figma.variables.getLocalVariableCollectionsAsync()) seen.set(collection.id, collection)
+  const holder = node as unknown as { resolvedVariableModes?: Record<string, string>; explicitVariableModes?: Record<string, string> }
+  for (const id of [...Object.keys(holder.resolvedVariableModes ?? {}), ...Object.keys(holder.explicitVariableModes ?? {})]) {
+    if (seen.has(id)) continue
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) seen.set(id, collection)
+  }
+  let matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  if (matches.length === 0) {
+    // Not in the file yet: a library collection becomes reachable by importing one of its
+    // variables, and the variable names the collection it lives in.
+    const libraries = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => [])
+    for (const library of libraries.filter((one) => one.name.toLowerCase() === wanted)) {
+      const [first] = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(library.key).catch(() => [])
+      if (!first) continue
+      const variable = await figma.variables.importVariableByKeyAsync(first.key).catch(() => null)
+      const collection = variable ? await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId) : null
+      if (collection) seen.set(collection.id, collection)
+    }
+    matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  }
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    throw new Error(`"${ref}" names ${matches.length} collections — use the id: ${matches.map((one) => one.id).join(', ')}`)
+  }
+  const names = [...new Set([...seen.values()].map((one) => one.name))]
+  throw new Error(`no collection called "${ref}" here — the node can reach ${names.join(', ') || 'none'}`)
+}
+
+/**
+ * The modes a node is told to use, as `{ collection: mode }` — the words `modes` takes. A name
+ * that two of the node's collections share is written as the id, so the read still goes back.
+ */
+export async function readModes(node: SceneNode): Promise<Record<string, string>> {
+  const explicit = (node as unknown as { explicitVariableModes?: Record<string, string> }).explicitVariableModes ?? {}
+  const entries: Array<{ collection: VariableCollection; modeId: string }> = []
+  for (const [id, modeId] of Object.entries(explicit)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) entries.push({ collection, modeId })
+  }
+  const out: Record<string, string> = {}
+  for (const { collection, modeId } of entries) {
+    const shared = entries.filter((one) => one.collection.name === collection.name).length > 1
+    const mode = collection.modes.find((one) => one.modeId === modeId)
+    out[shared ? collection.id : collection.name] = mode?.name ?? modeId
+  }
+  return out
 }
 
 /** The properties that a TEXT node will not let go of until its font is in memory. */
