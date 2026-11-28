@@ -294,6 +294,7 @@ type PluginMessage =
       offset?: number
       maxPixels?: number
       budgetBytes?: number
+      byteOffset?: number
     }
   | { type: 'FONT_FAMILY_AXES'; family: string }
   | { type: 'MOTION_STYLES' }
@@ -2288,6 +2289,13 @@ async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Ar
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
 const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF', 'MP4', 'GIF', 'WEBM']
+
+/**
+ * The last render that was too large for one reply, kept so its parts can be fetched without
+ * rendering again — a 16 s 1080×1920 video takes Figma tens of seconds, and three parts of it
+ * should cost one render, not three. Keyed by the node and every setting that shapes the bytes.
+ */
+let partedExport: { key: string; bytes: Uint8Array; at: number } | null = null
 
 /** The three that render time rather than a moment: a frame's animation, not its appearance. */
 const VIDEO_FORMATS = ['MP4', 'GIF', 'WEBM']
@@ -5936,6 +5944,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param offset: skip this many node ids; when the answer has nextOffset, call again from there
       // @agent param maxPixels: raster/video pixel ceiling checked before exportAsync (40 million by default)
       // @agent param budgetBytes: raw reply-byte budget, clamped below the 3 MiB transport ceiling
+      // @agent param byteOffset: one node only — a render larger than one reply (a 1080×1920 video) comes back in parts: the answer carries totalBytes and nextByteOffset; call again with that byteOffset (same node and settings, nothing is rendered twice) and join the parts in order
       // @agent cost: one render each. Replies stop before the transport cap and return remaining/nextOffset; lower scale when a node is reported too large. A video costs far more than a picture because it renders every frame.
       try {
         // `{"id": "1:2"}` is what every other node-taking command accepts, and an agent that sent
@@ -6106,8 +6115,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               continue
             }
 
+            const byteOffset = typeof msg.byteOffset === 'number' && msg.byteOffset >= 0 ? Math.floor(msg.byteOffset) : null
+            const partKey = JSON.stringify([id, format, constraint, fps, quality, msg.loop, withoutChildren, extras])
             let bytes: Uint8Array
-            if (video) {
+            if (byteOffset !== null && byteOffset > 0 && partedExport?.key === partKey) {
+              bytes = partedExport.bytes
+            } else if (video) {
               bytes = await scene.exportAsync({
                 format,
                 constraint,
@@ -6127,6 +6140,32 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                   })
                 : await scene.exportAsync({ format: format as 'PNG' | 'JPG', constraint, ...extras } as ExportSettingsImage)
             }
+            // One node whose render outgrows a reply ships in parts instead of being refused: the
+            // bytes are kept, this answer carries the first slice, and byteOffset fetches the rest.
+            if (ids.length === 1 && (byteOffset !== null || bytes.length > guard.budgetBytes - guard.spent)) {
+              const start = Math.min(byteOffset ?? 0, bytes.length)
+              const room = Math.max(1, guard.budgetBytes - guard.spent - 64 * 1024)
+              const end = Math.min(bytes.length, start + room)
+              if (end < bytes.length || start > 0) {
+                partedExport = { key: partKey, bytes, at: Date.now() }
+                const ext = format.toLowerCase()
+                const partName = exportName(`${scene.name}.part-${String(Math.floor(start / room)).padStart(3, '0')}`, ext, taken)
+                const slice = bytes.slice(start, end)
+                files.push(binaryFile(partName, EXPORT_MIME[format], slice))
+                guard.admit(slice.length, cursor)
+                reports.push({
+                  node: id,
+                  name: scene.name,
+                  ok: true,
+                  file: partName,
+                  bytes: slice.length,
+                  part: { byteOffset: start, totalBytes: bytes.length, ...(end < bytes.length ? { nextByteOffset: end } : { last: true }) },
+                })
+                if (end >= bytes.length) partedExport = null
+                cursor += 1
+                continue
+              }
+            }
             const admitted = guard.admit(bytes.length, cursor)
             if (!admitted.include) {
               stoppedOn = 'bytes'
@@ -6137,7 +6176,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
                   ok: false,
                   error:
                     `this export is ${bytes.length} bytes, too large for one transport-safe reply; ` +
-                    'lower scale or use a WIDTH/HEIGHT constraint',
+                    'export the node alone to get it in parts (byteOffset), or lower scale or use a WIDTH/HEIGHT constraint',
                 })
                 cursor += 1
               }
