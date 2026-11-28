@@ -60,6 +60,20 @@ function offsetCss(axis: Axis, base: Axis, sign: 1 | -1): string {
   return `calc(${axisCss(left)} - ${axisCss(right)})`
 }
 
+/**
+ * `functions` turned about `origin` when the element's own `transform-origin` is its top-left —
+ * the convention every layer with a 2D turn is placed by. The pivot is reached by translating to
+ * it and back; a percentage in `translate()` is of the element's own box, which is what an origin
+ * percentage means too.
+ */
+export function pivotFromTopLeft(functions: string, origin?: { x?: Axis; y?: Axis }): string {
+  const x = origin?.x ?? CENTRE
+  const y = origin?.y ?? CENTRE
+  if (isZero(x) && isZero(y)) return functions
+  const zero: Axis = { unit: 'PIXELS', value: 0 }
+  return `translate(${offsetCss(x, zero, 1)}, ${offsetCss(y, zero, 1)}) ${functions} translate(${offsetCss(x, zero, -1)}, ${offsetCss(y, zero, -1)})`
+}
+
 /** The four functions, always all four and always in Figma's order. */
 export function transform3dFunctions(value: { translateZ: number; rotateX: number; rotateY: number; rotateZ: number }): string {
   return `translateZ(${round(value.translateZ)}px) rotateX(${round(value.rotateX)}deg) rotateY(${round(value.rotateY)}deg) rotateZ(${round(value.rotateZ)}deg)`

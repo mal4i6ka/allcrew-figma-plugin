@@ -262,8 +262,10 @@ function buildPropertyTween(
   plugins: Set<GsapPluginName>,
   unit?: string
 ): TweenVars {
-  const fromVars = trackValueVars(track.baseValue, gsapKeys, `${track.field} baseValue`, unit)
   const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
+  // Figma holds the first keyframe's value back to the start of the timeline (seen in its own
+  // render); the layer's base value shows only when a track has no keyframes.
+  const fromVars = trackValueVars(sorted[0]?.value ?? track.baseValue, gsapKeys, `${track.field} start`, unit)
 
   const keyframes: Record<string, unknown> = {}
   let lastVars: Record<string, unknown> = fromVars
@@ -299,9 +301,9 @@ function renderTransform3dSetup(selector: string, tracks: readonly MotionTrack[]
 function buildTextTween(track: MotionTrack, timelineDuration: number, registry: EaseRegistry, plugins: Set<GsapPluginName>): TweenVars {
   plugins.add('TextPlugin')
 
-  const baseText = requireTextData(track.baseValue, `${track.field} baseValue`)
-  const fromVars = { text: { value: baseText } }
   const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
+  const baseText = requireTextData(sorted[0]?.value ?? track.baseValue, `${track.field} start`)
+  const fromVars = { text: { value: baseText } }
 
   const keyframes: Record<string, unknown> = {}
   let lastVars: Record<string, unknown> = fromVars
@@ -330,9 +332,11 @@ function buildTextTween(track: MotionTrack, timelineDuration: number, registry: 
 function valueAtOrBefore(track: MotionTrack | undefined, position: number, fallback: number): { value: number; easing?: MotionEasing | VariableAlias } {
   if (!track) return { value: fallback }
 
-  let value = requireFloat(track.baseValue, `${track.field} baseValue`)
+  const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
+  // Before its first keyframe a track shows that keyframe's value, not the layer's base.
+  let value = requireFloat(sorted[0]?.value ?? track.baseValue, `${track.field} start`)
   let easing: MotionEasing | VariableAlias | undefined
-  for (const keyframe of [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)) {
+  for (const keyframe of sorted) {
     if (keyframe.timelinePosition > position) break
     value = requireFloat(keyframe.value, `${track.field} keyframe ${keyframe.id}`)
     if (keyframe.timelinePosition === position) easing = keyframe.easing
@@ -355,8 +359,8 @@ function buildDrawSvgTween(
 ): TweenVars {
   plugins.add('DrawSVGPlugin')
 
-  const startBase = startTrack ? requireFloat(startTrack.baseValue, 'PATH_TRIM_START baseValue') : 0
-  const endBase = endTrack ? requireFloat(endTrack.baseValue, 'PATH_TRIM_END baseValue') : 1
+  const startBase = valueAtOrBefore(startTrack, 0, 0).value
+  const endBase = valueAtOrBefore(endTrack, 0, 1).value
   const drawSvgLabel = (start: number, end: number) => `${round(start * 100, 3)}% ${round(end * 100, 3)}%`
 
   const positions = new Set<number>()

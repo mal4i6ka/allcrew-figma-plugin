@@ -141,3 +141,23 @@ test('readMotionData invents no numbers for a transform that has none', () => {
   // An older Figma, where the property is not there at all.
   assert.ok(!('transform3d' in (readMotionData(makeMotionNode({})) ?? {})))
 })
+
+test('readMotionData carries the 2D turn and the pivot only for a layer that has a turn', () => {
+  const fixedOrder = { type: 'FIXED_ORDER', translateZ: 0, rotateX: 0, rotateY: 0, rotateZ: 0 }
+  const origin = { x: { unit: 'PIXELS', value: 0 }, y: { unit: 'PERCENT', value: 50 } }
+  assert.deepEqual(readMotionData(makeMotionNode({ transform3d: fixedOrder, rotation: 20, transformOrigin: origin }))?.transform3d, {
+    translateZ: 0,
+    rotateX: 0,
+    rotateY: 0,
+    rotateZ: 0,
+    rotation: 20,
+    origin,
+  })
+  // No turn: the static rule's own transform-origin stands, so neither is carried.
+  assert.deepEqual(readMotionData(makeMotionNode({ transform3d: fixedOrder, rotation: 0, transformOrigin: origin }))?.transform3d, {
+    translateZ: 0,
+    rotateX: 0,
+    rotateY: 0,
+    rotateZ: 0,
+  })
+})

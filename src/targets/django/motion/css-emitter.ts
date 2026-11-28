@@ -18,6 +18,7 @@
  */
 
 import { easingToCss, perceptualAngularFrequency, resolveSpringBounce, springToCssLinear } from '../easing/index.ts'
+import { pivotFromTopLeft } from '../transform3d.ts'
 import type { MotionKeyframe, MotionStaticTransform3d, MotionTrack } from './types.ts'
 
 type TransformAxisField = 'TRANSLATION_X' | 'TRANSLATION_Y' | 'TRANSLATION_XY' | 'SCALE_X' | 'SCALE_Y' | 'SCALE_XY'
@@ -60,7 +61,7 @@ type Transform3dField =
 const TRANSFORM_3D_AXES: ReadonlyArray<{
   field: Transform3dField
   fn: string
-  key: keyof MotionStaticTransform3d
+  key: 'translateZ' | 'rotateX' | 'rotateY' | 'rotateZ'
   syntax: '<length>' | '<angle>'
 }> = [
   { field: 'TRANSFORM_3D_TRANSLATION_Z', fn: 'translateZ', key: 'translateZ', syntax: '<length>' },
@@ -94,7 +95,13 @@ export function formatTransform3dDeclaration(tracks: readonly MotionTrack[], fix
     const tracked = tracks.some((track) => track.field === axis.field)
     return `${axis.fn}(${tracked ? `var(${mapping.cssProperty})` : `${formatNumber(fixed?.[axis.key] ?? 0)}${mapping.unit}`})`
   })
-  return `transform: ${parts.join(' ')}`
+  const functions = parts.join(' ')
+  // A layer also turned in 2D: the static rule is `rotate() <3D about its pivot>` with the origin
+  // at the top-left (transform3d.ts), and this declaration takes its place — so it is built the same way.
+  if (fixed?.rotation !== undefined) {
+    return `transform: rotate(${formatNumber(-fixed.rotation)}deg) ${pivotFromTopLeft(functions, fixed.origin)}`
+  }
+  return `transform: ${functions}`
 }
 
 function round(value: number, decimals: number): number {
@@ -148,17 +155,28 @@ function easingToTimingFunctionCss(easing: MotionEasing, segmentSec: number): st
   }
 }
 
-/** Figma holds `baseValue` until the first keyframe — if that isn't already at `t=0`, synthesize it. */
-function withBaseKeyframe(track: MotionTrack): readonly MotionKeyframe[] {
-  const first = track.keyframes[0]
-  if (first && first.timelinePosition === 0) return track.keyframes
-  const base: MotionKeyframe = {
-    id: '__base__',
+/**
+ * What the timeline shows at `t=0`. Figma holds the FIRST KEYFRAME's value back to the start —
+ * seen in its own render (19.11.2026): a track whose first keyframe sits at 1.5 s shows that
+ * keyframe's value from 0 s, and never the layer's base value. So a first keyframe later than 0
+ * is repeated at 0; `baseValue` stands in only for a track with no keyframes at all.
+ */
+function withStartKeyframe(track: MotionTrack): readonly MotionKeyframe[] {
+  const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
+  const first = sorted[0]
+  if (first && first.timelinePosition <= 0) return sorted
+  const start: MotionKeyframe = {
+    id: '__start__',
     timelinePosition: 0,
     easing: { type: 'LINEAR' },
-    value: track.baseValue,
+    value: first ? first.value : track.baseValue,
   }
-  return [base, ...track.keyframes]
+  return [start, ...sorted]
+}
+
+/** The value a track starts from — what the element should already show before the animation is applied. */
+export function startValue(track: MotionTrack): KeyframeValue {
+  return withStartKeyframe(track)[0].value
 }
 
 interface PercentFrame {
@@ -168,7 +186,7 @@ interface PercentFrame {
 }
 
 function buildPercentFrames(track: MotionTrack): PercentFrame[] {
-  const keyframes = withBaseKeyframe(track)
+  const keyframes = withStartKeyframe(track)
   const duration = track.timelineDuration
 
   const frames: PercentFrame[] = keyframes.map((keyframe) => ({
@@ -246,7 +264,9 @@ function formatSeconds(duration: number): string {
 export function emitNodeAnimationCss(input: NodeAnimationCssInput): string {
   const nameForTrack = input.nameForTrack ?? ((track: MotionTrack) => defaultTrackName(input.selector, track))
 
-  const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, track.baseValue)};`)
+  // The start of the timeline, not the layer's resting value: with `both` the animation would
+  // paint its 0% frame anyway, and this is what shows where animations are switched off.
+  const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, startValue(track))};`)
   const is3d = hasTransform3dTrack(input.tracks)
   if (is3d) baseDeclarations.push(`  ${formatTransform3dDeclaration(input.tracks, input.transform3d)};`)
   const animationEntries = input.tracks.map((track) => `${nameForTrack(track)} ${formatSeconds(track.timelineDuration)} linear both`)

@@ -58,6 +58,19 @@ export interface MotionStaticTransform3d {
   readonly rotateX: number
   readonly rotateY: number
   readonly rotateZ: number
+  /**
+   * The layer's own 2D rotation in degrees, as Figma reports it (counter-clockwise), when it has
+   * one. A composite `transform` replaces the static one for the length of the animation, so it
+   * has to carry the 2D turn the static rule had — or the layer straightens up while it moves.
+   */
+  readonly rotation?: number
+  /** The 3D pivot, needed with `rotation`: such a layer's `transform-origin` is its top-left. */
+  readonly origin?: { readonly x: MotionOriginAxis; readonly y: MotionOriginAxis }
+}
+
+export interface MotionOriginAxis {
+  readonly unit: 'PERCENT' | 'PIXELS'
+  readonly value: number
 }
 
 export interface MotionKeyframe {

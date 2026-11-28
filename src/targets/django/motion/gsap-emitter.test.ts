@@ -32,7 +32,10 @@ test('opacity fade with LINEAR easing uses fromTo and a terminal 100% keyframe',
           makeTrack({
             field: 'OPACITY',
             baseValue: { type: 'FLOAT', value: 0 },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } },
+            ],
           }),
         ],
       }),
@@ -243,6 +246,7 @@ test('VECTOR field (TRANSLATION_XY) splits into x and y in the same keyframe', (
             field: 'TRANSLATION_XY',
             baseValue: { type: 'VECTOR', value: { x: 0, y: 0 } },
             keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'VECTOR', value: { x: 0, y: 0 } } },
               { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'VECTOR', value: { x: 10, y: 20 } } },
             ],
           }),
@@ -265,7 +269,10 @@ test('PATH_TRIM_START and PATH_TRIM_END merge into a single DrawSVGPlugin tween'
           makeTrack({
             field: 'PATH_TRIM_START',
             baseValue: { type: 'FLOAT', value: 0 },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 1 } },
+            ],
           }),
           makeTrack({
             field: 'PATH_TRIM_END',
@@ -295,7 +302,10 @@ test('TEXT_DATA track uses TextPlugin with text: {value}', () => {
           makeTrack({
             field: 'OPACITY',
             baseValue: { type: 'TEXT_DATA', value: 'Hello' },
-            keyframes: [{ id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'World' } }],
+            keyframes: [
+              { id: 'kf-start', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'Hello' } },
+              { id: 'kf-0', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'TEXT_DATA', value: 'World' } },
+            ],
           }),
         ],
       }),
@@ -357,7 +367,10 @@ const turn3d = (field: MotionTrack['field'], from: number, to: number): MotionTr
   makeTrack({
     field,
     baseValue: { type: 'FLOAT', value: from },
-    keyframes: [{ id: 'kf-1', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: to } }],
+    keyframes: [
+      { id: 'kf-0', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: from } },
+      { id: 'kf-1', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: to } },
+    ],
   })
 
 test('a 3D track tweens a custom property with its unit, not GSAP’s own rotationY', () => {
@@ -419,4 +432,70 @@ test('a perspective track is a plain tween on the container', () => {
   })
   assert.match(result.js, /tl\.fromTo\(q\("\.scene"\), \{"perspective":800\}/)
   assert.doesNotMatch(result.js, /el\.style\.transform/)
+})
+
+test('the inline composite transform keeps a layer’s 2D turn as well', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [makeNode({ selector: '.card', tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)], transform3d: { translateZ: 0, rotateX: 0, rotateY: 0, rotateZ: 0, rotation: 20 } })],
+  })
+  assert.match(result.js, /el\.style\.transform = "rotate\(-20deg\) translate\(50%, 50%\) translateZ\(0px\) rotateX\(0deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\) translate\(-50%, -50%\)"/)
+})
+
+/* ------------------------------------------------ where a track starts (Figma's own render) */
+
+// Rendered by Figma on 19.11.2026: a track whose first keyframe is at 1.5 s shows that keyframe's
+// value from 0 s, and a keyframe at 0 s that differs from the layer's base value is what shows at
+// 0 s. The layer's base value is never on screen while the timeline runs.
+
+test('a tween starts from the keyframe at 0, not from the layer’s base value', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'slide',
+    duration: 3,
+    nodes: [
+      makeNode({
+        selector: '.box',
+        tracks: [
+          makeTrack({
+            field: 'TRANSLATION_X',
+            baseValue: { type: 'FLOAT', value: 0 },
+            timelineDuration: 3,
+            keyframes: [
+              { id: 'a', timelinePosition: 0, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 300 } },
+              { id: 'b', timelinePosition: 3, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+            ],
+          }),
+        ],
+      }),
+    ],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.box"\), \{"x":300\}/)
+  assert.match(result.js, /"100%":\{"x":0,"ease":"none"\}/)
+})
+
+test('a first keyframe later than 0 is held from the start, then the movement begins', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'slide',
+    duration: 3,
+    nodes: [
+      makeNode({
+        selector: '.box',
+        tracks: [
+          makeTrack({
+            field: 'TRANSLATION_X',
+            baseValue: { type: 'FLOAT', value: 0 },
+            timelineDuration: 3,
+            keyframes: [
+              { id: 'a', timelinePosition: 1.5, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 300 } },
+              { id: 'b', timelinePosition: 3, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 0 } },
+            ],
+          }),
+        ],
+      }),
+    ],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.box"\), \{"x":300\}/)
+  assert.match(result.js, /"50%":\{"x":300,"ease":"none"\}/)
+  assert.match(result.js, /"100%":\{"x":0,"ease":"none"\}/)
 })

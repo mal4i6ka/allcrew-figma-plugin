@@ -39,7 +39,19 @@ function readStaticTransform3d(node: SceneNode): MotionStaticTransform3d | undef
   if (!('transform3d' in node)) return undefined
   const held = (node as { transform3d?: Transform3d }).transform3d
   if (!held || held.type !== 'FIXED_ORDER') return undefined
-  return { translateZ: held.translateZ, rotateX: held.rotateX, rotateY: held.rotateY, rotateZ: held.rotateZ }
+  const rotation = (node as { rotation?: unknown }).rotation
+  const origin = (node as { transformOrigin?: TransformOrigin }).transformOrigin
+  const turned = typeof rotation === 'number' && Math.abs(rotation) > 0.001
+  return {
+    translateZ: held.translateZ,
+    rotateX: held.rotateX,
+    rotateY: held.rotateY,
+    rotateZ: held.rotateZ,
+    // Only a layer turned in 2D needs these: without the turn, the static rule's own
+    // `transform-origin` keeps standing under the animated transform.
+    ...(turned ? { rotation: rotation as number } : {}),
+    ...(turned && origin ? { origin: { x: origin.x, y: origin.y } } : {}),
+  }
 }
 
 export function readMotionData(node: SceneNode): MotionSnapshot | null {
