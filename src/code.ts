@@ -2297,6 +2297,51 @@ async function readSpecTree(
   return { spec: await build(original, depth) }
 }
 
+/**
+ * The step a node read is on, so a read that never comes back can say where it stopped.
+ *
+ * Some Figma calls never settle in some sessions (a library lookup that wedges, a server-backed
+ * read while the app is offline), and from outside that is only silence — 150 s of it, with the
+ * session's queue held. NODE_QUERY caps each node and names the step it was waiting on.
+ */
+let readTrace: { node: string; step: string; at: number } | null = null
+
+async function traced<T>(node: SceneNode, step: string, work: () => Promise<T>): Promise<T> {
+  readTrace = { node: `${node.name} (${node.id})`, step, at: Date.now() }
+  return work()
+}
+
+/**
+ * A node's Dev Mode links, or null when Figma will not say.
+ *
+ * Links live on Figma's servers, and when the app has lost its connection the call never settles
+ * (seen live upstream: every NODE_QUERY with props hung 150 s on this one step). So it gets five
+ * seconds, and a miss turns it off for a minute — one stalled lookup per read, not one per node
+ * of a hundred-node query.
+ */
+let devLinksDownUntil = 0
+
+async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | null> {
+  if (Date.now() < devLinksDownUntil) return null
+  try {
+    return await withCeiling(node.getDevResourcesAsync(), 5_000, 'Dev Mode links')
+  } catch (error) {
+    if (/did not answer/.test(String((error as Error)?.message))) devLinksDownUntil = Date.now() + 60_000
+    return null
+  }
+}
+
+/** A node read with a ceiling: what it could not finish is named, not waited on forever. */
+async function describeNodeCapped(node: SceneNode, withProps: boolean, ms = 30_000): Promise<Record<string, unknown>> {
+  if (!withProps) return describeNode(node, false)
+  try {
+    return await withCeiling(describeNode(node, true), ms, `reading ${node.name}`)
+  } catch (error) {
+    const stuck = readTrace ? `${readTrace.step} of ${readTrace.node}` : 'an unknown step'
+    return { ...(await describeNode(node, false)), unreadable: `${String((error as Error)?.message || error)} — stuck on ${stuck}` }
+  }
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -2319,7 +2364,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // 3D (beta): the same shape the transform3d / transformOrigin / scene3d props take, so a tilted
     // card read and sent back stays tilted. Nothing when the layer is flat.
     ...(describe3d(bag) ?? {}),
-    ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
+    ...('fills' in bag ? { fill: await traced(node, 'fills', () => readPaintsForWrite(bag.fills, variableNameOf, figma.mixed)) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
     ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
@@ -2331,7 +2376,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(node.type === 'INSTANCE' && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: 'none' } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
-          stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed),
+          stroke: await traced(node, 'strokes', () => readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)),
           // Only when it is one: a stroke of mixed weights reads as nothing here, and `null` was
           // being sent back as a weight and refused.
           ...(typeof bag.strokeWeight === 'number' ? { strokeWeight: round(bag.strokeWeight) } : {}),
@@ -2358,10 +2403,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // The array the write takes, not the sentence it used to be: an elevation that reads as
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
-    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await traced(node, 'effects', () => readEffects(bag.effects)) } : {}),
     ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
-      ? { animation: await describeAnimation(bag.animationStyles) }
+      ? { animation: await traced(node, 'animation styles', () => describeAnimation(bag.animationStyles)) }
       : {}),
     // The length of the timeline, in the word the write takes. The ids beside it were the read
     // naming Figma's own bookkeeping — a caller can neither use them nor send them back.
@@ -2371,7 +2416,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       ? { timeline: (bag.timelines as Timeline[])[0].duration }
       : {}),
     ...(readKeyframes(bag.manualKeyframeTracks)),
-    ...(await describeBindings(bag.boundVariables)),
+    ...(await traced(node, 'variable bindings', () => describeBindings(bag.boundVariables))),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
       : {}),
@@ -2469,7 +2514,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
-    const main = await node.getMainComponentAsync().catch(() => null)
+    const main = await traced(node, 'the main component', () => node.getMainComponentAsync().catch(() => null))
     // The SET's name when there is one: that is what the catalogue calls it, and a variant's own
     // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
     const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
@@ -2492,7 +2537,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
 
     // What the designer changed INSIDE this instance. Without it a copy comes back with every
     // row at its default height — the missing tenth that makes a screen look wrong.
-    const overrides = await readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    const overrides = await traced(node, 'instance overrides', () =>
+      readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    )
     if (overrides.length > 0) props.overrides = overrides
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
@@ -2500,11 +2547,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   // Dev resources are a Design and Dev Mode notion; elsewhere the method is not there to call.
   // Measured live: in FigJam and Slides the method exists and takes tens of seconds to say nothing.
   const devEditor = figma.editorType === 'figma' || figma.editorType === 'dev'
-  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await node.getDevResourcesAsync().catch(() => []) : []
-  const own = links.filter((link) => link.nodeId === node.id)
+  // And they live on Figma's servers: offline, the call never settles, so it is capped (devLinksOf).
+  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await traced(node, 'Dev Mode links', () => devLinksOf(node)) : []
+  if (links === null) props.unread = 'Dev Mode links — Figma did not answer, so they are left out of this read'
+  const own = (links ?? []).filter((link) => link.nodeId === node.id)
   if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
   const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
-  if (notes.length > 0) props.annotations = await describeAnnotations(notes)
+  if (notes.length > 0) props.annotations = await traced(node, 'annotations', () => describeAnnotations(notes))
   if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
     // Read by id, a component was indistinguishable from a frame: what it can be told, what it is
     // for and where its documentation lives were all things only COMPONENT_CATALOG knew. An agent
@@ -2596,10 +2645,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const runs = await styledRuns(node)
+    const runs = await traced(node, 'text runs', () => styledRuns(node))
     if (runs.length > 1) props.runs = runs
   }
-  Object.assign(props, await boardProps(node))
+  Object.assign(props, await traced(node, 'board properties', () => boardProps(node)))
   // A FigJam shape's and a connector's corner is the shape's own business: read-only, and sending
   // it back is refused with "object is not extensible" (measured live).
   if (node.type === 'SHAPE_WITH_TEXT' || node.type === 'CONNECTOR') delete props.cornerRadius
@@ -4504,7 +4553,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             refuse('NODE_QUERY', `no node with id ${msg.nodeId}`)
             break
           }
-          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNode(node as SceneNode, wantProps)] })
+          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNodeCapped(node as SceneNode, wantProps)] })
           break
         }
 
@@ -4545,7 +4594,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           type: 'NODES_FOUND',
           total: found.length,
           truncated: found.length >= limit,
-          nodes: await Promise.all(found.map((node) => describeNode(node, wantProps))),
+          // One after another, not all at once: each read is capped on its own, and a hundred
+          // parallel reads of a wedged lookup would share one ceiling and all miss it.
+          nodes: await (async () => {
+            const out = []
+            for (const node of found) out.push(await describeNodeCapped(node, wantProps))
+            return out
+          })(),
         })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })

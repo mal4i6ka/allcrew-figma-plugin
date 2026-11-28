@@ -79,6 +79,9 @@ const NOT_PROPERTIES = new Set([
   'timelines',
   'devLinks',
   'annotations',
+  // What a read could not finish, said in words.
+  'unread',
+  'unreadable',
   // A slot is a fact about the component, not a value this instance can be told.
   'slots',
   // Which limits a slot's content breaks: a verdict about the children, not a property.
