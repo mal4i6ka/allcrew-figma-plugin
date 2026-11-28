@@ -319,6 +319,7 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
+  | { type: 'TRANSFER_STATUS' }
   | { type: 'NODE_SPEC'; nodes: unknown; depth?: number; budgetBytes?: number; localComponents?: string }
   | { type: 'NODE_BUILD'; nodes: unknown; images?: unknown; parent?: string; ignore?: unknown; dryRun?: boolean }
   | {
@@ -2169,6 +2170,33 @@ function imagesBlind(props: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(props).map(([key, value]) => [key, blank(value)]))
 }
 
+/**
+ * Where a portable read is right now — the layer and the step. A library call that never answers
+ * wedges every later read of names in the session, and from outside that looks like silence; this
+ * is what TRANSFER_STATUS hands back while the read is stuck, so the stuck step has a name.
+ */
+let specTrace: { command: string; startedAt: number; node?: string; step?: string; at?: number } | null = null
+
+function traceSpec(step: string, node?: string): void {
+  if (specTrace) specTrace = { ...specTrace, step, node, at: Date.now() }
+}
+
+/** An await with a ceiling. The call it guards may never settle — the promise is left behind and
+ * the read moves on, reporting the step as unfinished instead of hanging the whole command. */
+async function withCeiling<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)}s`)), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** What becomes of an instance in a spec: made from a component (`of` — an id here, a library
  * key in another file), rebuilt as a plain frame from what it shows (`detach`), or left out. */
 type InstancePlan = { of: string } | { detach: true; why: string } | null
@@ -2189,7 +2217,14 @@ async function readSpecTree(
   detached: string[] = []
 ): Promise<{ spec: CreateSpec | null }> {
   const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
-    const reading = await describeNode(one, true)
+    traceSpec('reading the layer', `${one.name} (${one.id})`)
+    let reading: Record<string, unknown>
+    try {
+      reading = specTrace ? await withCeiling(describeNode(one, true), 30_000, `reading ${one.name}`) : await describeNode(one, true)
+    } catch (error) {
+      dropped.push({ property: `${one.name}`, why: String((error as Error)?.message || error) })
+      return null
+    }
     let asFrame = false
     let of: string | null = null
     if (one.type === 'INSTANCE') {
@@ -6561,6 +6596,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param localComponents: "frame" (default) brings an instance of a component that lives in this file across as the frame it shows; "key" sends the component's key, for a file that uses this one as a library
       // @agent cost: reads the subtree and the bytes of every picture in it
       try {
+        specTrace = { command: 'NODE_SPEC', startedAt: Date.now() }
         const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
         const depth = Math.min(Math.max(msg.depth ?? 6, 0), 12)
         const budget = Math.min(Math.max(msg.budgetBytes ?? 2_000_000, 0), 2_500_000)
@@ -6585,7 +6621,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           // this file comes across as the frame it shows unless the caller vouches that the other
           // file has this one as a library (`localComponents: "key"`).
           const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
-            const main = await one.getMainComponentAsync().catch(() => null)
+            traceSpec('finding the main component', `${one.name} (${one.id})`)
+            let main: ComponentNode | null
+            try {
+              main = await withCeiling(one.getMainComponentAsync(), 20_000, `the main component of ${one.name}`)
+            } catch (error) {
+              return { detach: true, why: String((error as Error)?.message || error) }
+            }
             if (!main) return { detach: true, why: 'its main component is gone' }
             if (main.remote || msg.localComponents === 'key') return { of: main.key }
             return { detach: true, why: `its main "${main.name}" lives in this file — pass localComponents: "key" if the other file uses this one as a library` }
@@ -6614,9 +6656,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         const skipped: Array<{ hash: string; why: string }> = []
         let spent = 0
         for (const hash of hashes) {
-          const bytes = await figma.getImageByHash(hash)?.getBytesAsync().catch(() => null)
+          traceSpec('reading picture bytes', hash)
+          const image = figma.getImageByHash(hash)
+          let bytes: Uint8Array | null = null
+          let why = 'the picture could not be read'
+          try {
+            bytes = image ? await withCeiling(image.getBytesAsync(), 30_000, 'the picture bytes') : null
+          } catch (error) {
+            why = String((error as Error)?.message || error)
+          }
           if (!bytes) {
-            skipped.push({ hash, why: 'the picture could not be read' })
+            skipped.push({ hash, why })
             continue
           }
           if (spent + bytes.length > budget) {
@@ -6626,10 +6676,23 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           images[hash] = figma.base64Encode(bytes)
           spent += bytes.length
         }
-        postToUi({ type: 'NODE_SPECS', nodes: out, images, ...(skipped.length > 0 ? { imagesSkipped: skipped } : {}) })
+        const took = Date.now() - (specTrace?.startedAt ?? Date.now())
+        specTrace = null
+        postToUi({ type: 'NODE_SPECS', ms: took, nodes: out, images, ...(skipped.length > 0 ? { imagesSkipped: skipped } : {}) })
       } catch (error) {
+        specTrace = null
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_SPEC', message: String((error as Error)?.message || error) })
       }
+      break
+    }
+    case 'TRANSFER_STATUS': {
+      // @agent read: where a portable read (NODE_SPEC) is right now — the layer and the step it is waiting on, and for how long; idle when none is running
+      postToUi({
+        type: 'TRANSFER_STATUS',
+        ...(specTrace
+          ? { running: specTrace.command, step: specTrace.step ?? 'starting', node: specTrace.node ?? null, elapsedMs: Date.now() - specTrace.startedAt, stepMs: specTrace.at ? Date.now() - specTrace.at : null }
+          : { running: null }),
+      })
       break
     }
     case 'NODE_BUILD': {
