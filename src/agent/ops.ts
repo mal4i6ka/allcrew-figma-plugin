@@ -48,6 +48,8 @@ import { PLUGIN_OPS } from './plugin-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
 import { DATA_OPS } from './data-ops.ts'
+import { LISTEN_OPS } from './listen-ops.ts'
+import { REACH_OPS } from './reach-ops.ts'
 import { INBOX_OPS } from './inbox-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
@@ -2743,6 +2745,10 @@ export const READ_OPS: readonly OpDef[] = [
       return {
         apiVersion: figma.apiVersion,
         editorType: figma.editorType,
+        // default, inspect (Dev Mode's Plugins tab), codegen (Dev Mode's code view, panel hidden)
+        mode: figma.mode,
+        // The unit a developer picked in Dev Mode's code settings — only there to be read.
+        ...(figma.mode === 'codegen' ? { codegenPreferences: figma.codegen.preferences } : {}),
         fileName: figma.root.name,
         fileKey: figma.fileKey ?? null,
         ...probe('eval', () => (0, eval)('1 + 1')),
@@ -2826,6 +2832,8 @@ export const ALL_OPS: readonly OpDef[] = [
   ...MODULE_OPS,
   ...EDITOR_OPS,
   ...DATA_OPS,
+  ...LISTEN_OPS,
+  ...REACH_OPS,
   ...INBOX_OPS,
   ...PLUGIN_OPS,
 ]

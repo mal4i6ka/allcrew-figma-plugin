@@ -362,6 +362,17 @@ export const EDITOR_OPS: readonly OpDef[] = [
     },
   },
   {
+    name: 'figjam.colors',
+    summary: "FigJam's own colour palette by name — the swatches its stickies, shapes and connectors offer, base and light.",
+    agent: "Paint a board in FigJam's colours rather than guessed ones: each name maps to a hex the fill vocabulary takes.",
+    mutates: false,
+    params: {},
+    async run() {
+      const palettes = figma.constants.colors
+      return { base: { ...palettes.figJamBase }, light: { ...palettes.figJamBaseLight } }
+    },
+  },
+  {
     name: 'node.probe',
     summary: 'Every property and method a node actually has, with the plain values — for node types the typings do not describe.',
     agent:
