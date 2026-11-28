@@ -25,10 +25,6 @@ All notable changes to AllCrew Figma Workspace are documented here.
 - `NODE_EXPORT` returns a render that is too large for one reply in parts, so a full-size 1080×1920 MP4 or WEBM can be exported. When one node is exported on its own, the answer carries the first slice and `part: { byteOffset, totalBytes, nextByteOffset }`. Each call with `byteOffset` returns the next slice from the render the plugin kept, without rendering again. Join the parts in order.
 - `docs/demo/allcrew-1.16-vertical.mp4`: a 26-second vertical video about 1.16. It was built in Figma through the plugin: seven Motion scenes with keyframe and 3D tracks, exported in parts.
 
-### Fixed
-
-- **Dev Mode links on node reads.** A file that refuses them reads as having no links: the refusal is cached for ten minutes instead of a 403 on every node. Only a call silent for 5 s marks the read as unfinished.
-
 ## 1.16.0 — 2026-11-28
 
 Upstream design-system work from 2026-10-15 to 2026-11-27 that this product did not have yet, adapted to AllCrew names and merged into AllCrew's own designs (FigJam/Slides/Buzz, docs on the canvas, file mail).
