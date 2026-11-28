@@ -2155,6 +2155,31 @@ function withImages(spec: CreateSpec, resolve: (hash: string) => { hash: string 
   } as CreateSpec
 }
 
+/** Library component keys a spec makes instances of, through its children. */
+function instanceKeysIn(spec: CreateSpec): string[] {
+  const keys: string[] = []
+  const visit = (one: CreateSpec) => {
+    if (one.kind === 'instance' && typeof one.of === 'string' && /^[0-9a-f]{40}$/.test(one.of)) keys.push(one.of)
+    for (const child of (Array.isArray(one.children) ? one.children : []) as CreateSpec[]) visit(child)
+  }
+  visit(spec)
+  return [...new Set(keys)]
+}
+
+/** The spec without the instances whose component `why` says is not here — each one named. */
+function withoutInstances(spec: CreateSpec, why: (key: string) => string | null, out: Array<{ name: string; key: string; why: string }>): CreateSpec {
+  const keep = (one: CreateSpec): boolean => {
+    if (one.kind !== 'instance' || typeof one.of !== 'string') return true
+    const reason = why(one.of)
+    if (reason === null) return true
+    out.push({ name: String((one.props as Record<string, unknown> | undefined)?.name ?? one.of), key: one.of, why: reason })
+    return false
+  }
+  const walk = (one: CreateSpec): CreateSpec =>
+    Array.isArray(one.children) ? ({ ...one, children: (one.children as CreateSpec[]).filter(keep).map(walk) } as CreateSpec) : one
+  return walk(spec)
+}
+
 /** A reading with picture hashes blanked: a picture carried as bytes gets a new hash, and that is
  * not a difference anyone looking at the two would see. */
 function imagesBlind(props: Record<string, unknown>): Record<string, unknown> {
@@ -6713,6 +6738,8 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent cost: one subtree made per node; one call is one undo step
       try {
         const rows = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]) as Array<{ source?: unknown; spec?: unknown; before?: unknown }>
+        /** Key → null when it imported, or why it did not — asked once per call, not once per copy. */
+        const componentImports = new Map<string, string | null>()
         const images = (msg.images && typeof msg.images === 'object' ? msg.images : {}) as Record<string, string>
         const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)))
         const dry = msg.dryRun === true
@@ -6736,7 +6763,21 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           // A picture travels as bytes and gets a new hash here; one already in this file keeps
           // its own. What did not travel is named rather than painted grey.
           const missing: string[] = []
-          const spec = withImages(row.spec as CreateSpec, (hash) => (figma.getImageByHash(hash) ? { hash } : images[hash] ? { bytes: images[hash] } : (missing.push(hash), null)))
+          let spec = withImages(row.spec as CreateSpec, (hash) => (figma.getImageByHash(hash) ? { hash } : images[hash] ? { bytes: images[hash] } : (missing.push(hash), null)))
+          // A component this file cannot import — a library it does not have enabled — would
+          // fail the whole subtree from deep inside it. Each key is tried once, with a ceiling, and
+          // an instance of one that is not here is taken out and named rather than sinking the rest.
+          const unavailable: Array<{ name: string; key: string; why: string }> = []
+          for (const key of instanceKeysIn(spec)) {
+            if (componentImports.has(key)) continue
+            try {
+              await withCeiling(figma.importComponentByKeyAsync(key), 20_000, `importing component ${key.slice(0, 8)}…`)
+              componentImports.set(key, null)
+            } catch (error) {
+              componentImports.set(key, String((error as Error)?.message || error))
+            }
+          }
+          spec = withoutInstances(spec, (key) => componentImports.get(key) ?? null, unavailable)
           const problems: string[] = []
           const plan = planCreate(spec, 'spec', problems)
           if (!plan || problems.length > 0) {
@@ -6744,10 +6785,16 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             continue
           }
           if (dry) {
-            reports.push({ source, ok: true, dryRun: true, ...(missing.length > 0 ? { imagesMissing: missing } : {}) })
+            reports.push({ source, ok: true, dryRun: true, ...(missing.length > 0 ? { imagesMissing: missing } : {}), ...(unavailable.length > 0 ? { unavailable } : {}) })
             continue
           }
-          const made = await createNode(plan, parent, false)
+          let made: Awaited<ReturnType<typeof createNode>>
+          try {
+            made = await createNode(plan, parent, false)
+          } catch (error) {
+            reports.push({ source, ok: false, error: String((error as Error)?.message || error), ...(unavailable.length > 0 ? { unavailable } : {}) })
+            continue
+          }
           const copy = await figma.getNodeByIdAsync(made.id)
           if (!copy || !('type' in copy)) {
             reports.push({ source, ok: false, error: 'the copy was not made' })
@@ -6761,11 +6808,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             source,
             node: copy.id,
             name: (copy as SceneNode).name,
-            ok: diverged.length === 0 && failed.length === 0 && missing.length === 0,
+            ok: diverged.length === 0 && failed.length === 0 && missing.length === 0 && unavailable.length === 0,
             same: same.length,
             ...(diverged.length > 0 ? { diverged } : {}),
             ...(failed.length > 0 ? { failed } : {}),
             ...(missing.length > 0 ? { imagesMissing: missing } : {}),
+            ...(unavailable.length > 0 ? { unavailable } : {}),
           })
         }
         if (!dry && reports.some((one) => 'node' in one)) figma.commitUndo()
