@@ -53,7 +53,38 @@ export interface AppliedProp {
   after?: unknown
   /** Present when this one property could not be applied — the rest still were. */
   error?: string
+  /** Present when the write was left out because the style the layer follows already gives it. */
+  kept?: string
 }
+
+/**
+ * Whether a write would only repeat what a followed style already gives.
+ *
+ * Figma detaches a layer from its style the moment a property the style governs is assigned —
+ * even to the value it already has. A read says both things (`textStyle: "H1"` and the font size
+ * H1 gives), so a read sent straight back used to arrive with every style link cut. Same value,
+ * style held: the write is left out and the report says why.
+ */
+async function keptByStyle(node: SceneNode, slot: string, same: boolean): Promise<string | null> {
+  if (!same) return null
+  const id = (node as unknown as Record<string, unknown>)[slot]
+  if (typeof id !== 'string' || id === '') return null
+  const style = await figma.getStyleByIdAsync(id).catch(() => null)
+  return style ? `follows ${style.name}` : null
+}
+
+/** The text properties a text style governs — assigning any of them cuts the link. */
+const TEXT_STYLE_FIELDS = new Set([
+  'fontSize',
+  'textCase',
+  'textDecoration',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'listSpacing',
+  'leadingTrim',
+  'hangingPunctuation',
+  'hangingList',
+])
 
 export interface ApplyReport {
   applied: AppliedProp[]
@@ -167,6 +198,8 @@ const propertyOf = (step: PropStep): string => {
     // them nothing about which of the five they got wrong.
     case 'style':
       return step.slot
+    case 'textRange':
+      return step.field
     // `layout`, `constraints` and `lineHeight` are named after themselves.
     default:
       return step.step
@@ -189,6 +222,10 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
+      const kept = TEXT_STYLE_FIELDS.has(step.property)
+        ? await keptByStyle(node, 'textStyleId', JSON.stringify(before) === JSON.stringify(step.value))
+        : null
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
       return { property: step.property, before, after: step.value }
     }
@@ -211,6 +248,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       // Loading a family without a style loads every named instance, which is what variable-font
       // axis selection needs before Figma can choose the closest instance.
       await figma.loadFontAsync(font)
+      const kept = await keptByStyle(node, 'textStyleId', before === describeFont(font))
+      if (kept) return { property: 'fontName', before, after: before, kept }
       // The 1.141 docs explicitly accept FontNameInput here, but the generated property type
       // still says FontName. Keep the cast at this one upstream mismatch rather than requiring
       // a fake style and defeating variable-font instance selection.
@@ -232,6 +271,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = node.lineHeight
       const after: LineHeight =
         step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: step.unit ?? 'PIXELS' }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.lineHeight = after
       return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -241,6 +282,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       await loadNodeFont(node)
       const before = node.letterSpacing
       const after: LetterSpacing = { value: step.value, unit: step.unit }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.letterSpacing = after
       return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -476,6 +519,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
       const before = await describePaints(bag[step.property])
       const paints = await buildPaints(step.ref)
+      const after = await describePaints(paints)
+      const kept = await keptByStyle(node, step.property === 'fills' ? 'fillStyleId' : 'strokeStyleId', before === after)
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) {
         // A pattern can only go on through the async setter, which waits for its source node to
         // load; everything else takes the plain assignment it always did.
@@ -485,7 +531,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           await (bag[setter] as (paints: Paint[]) => Promise<void>).call(node, paints)
         } else bag[step.property] = paints
       }
-      return { property: step.property, before, after: await describePaints(paints) }
+      return { property: step.property, before, after }
     }
 
     case 'reset': {
@@ -644,6 +690,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         }
       }
 
+      const kept = await keptByStyle(node, 'effectStyleId', failures.length === 0 && before === (await describeEffects(effects)))
+      if (kept) return { property: 'effects', before, after: before, kept }
       if (!dry) bag.effects = effects
       return {
         property: 'effects',
@@ -734,6 +782,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'grid': {
       if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
       const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
+      const kept = await keptByStyle(node, 'gridStyleId', describeGrids(bag.layoutGrids) === describeGrids(step.grids))
+      if (kept) return { property: 'grid', before, after: before, kept }
       if (!dry) bag.layoutGrids = step.grids
       return { property: 'grid', before, after: step.summary }
     }
@@ -769,6 +819,25 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = node.hyperlink
       if (!dry) node.hyperlink = step.url === null ? null : { type: 'URL', value: step.url }
       return { property: 'hyperlink', before, after: step.url ?? 'none' }
+    }
+
+    case 'textRange': {
+      // A list and its depth are not properties of the layer in Figma — there is no
+      // `node.listOptions` — only of ranges. Asked of the whole layer, they are its whole range.
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT holds lists, not a ${node.type}`)
+      await loadNodeFont(node)
+      const end = node.characters.length
+      if (end === 0) throw new Error(`there are no characters to make ${step.field === 'list' ? 'a list' : 'an indent'} of — set text first`)
+      const before = step.field === 'list' ? node.getRangeListOptions(0, end) : node.getRangeIndentation(0, end)
+      if (!dry) {
+        if (step.field === 'list') node.setRangeListOptions(0, end, { type: step.value as TextListOptions['type'] })
+        else node.setRangeIndentation(0, end, step.value as number)
+      }
+      return {
+        property: step.field,
+        before: before === figma.mixed ? 'mixed' : typeof before === 'object' ? before.type : before,
+        after: step.value,
+      }
     }
 
     case 'runs': {

@@ -81,6 +81,8 @@ const NOT_PROPERTIES = new Set([
   'annotations',
   // A slot is a fact about the component, not a value this instance can be told.
   'slots',
+  // The human names of library styles, beside the keys the write actually takes.
+  'styleNames',
   // Which limits a slot's content breaks: a verdict about the children, not a property.
   'slotViolations',
   // What kind of live element a slide holds — a poll, an embed — which no write can change.

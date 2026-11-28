@@ -15,6 +15,7 @@
 import { decorationWords } from './decoration.ts'
 import { readPaintsForWrite } from './paint-reader.ts'
 import type { FontSpec } from './props.ts'
+import { styleRef } from './styles.ts'
 
 /** The fields a run can carry in the write vocabulary, under the names Figma gives them. */
 export const RUN_FIELDS = [
@@ -49,23 +50,63 @@ export interface StyledRun {
   [field: string]: unknown
 }
 
+/** The fields above that a TEXT_PATH does not answer for — it is one line, with no paragraphs. */
+const PARAGRAPH_FIELDS = new Set(['listOptions', 'indentation', 'paragraphSpacing', 'paragraphIndent', 'listSpacing'])
+
+/**
+ * A list and its depth, when the whole text shares them.
+ *
+ * Figma keeps neither on the layer — there is no `node.listOptions` — so the layer-level read is
+ * worked out from the runs: a bulleted paragraph block is ONE segment, and `runs` is only printed
+ * when there are two, so without this a list read back as plain text.
+ */
+export interface Paragraphs {
+  list?: 'ORDERED' | 'UNORDERED'
+  indent?: number
+}
+
 export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
+  return (await textRuns(node)).runs
+}
+
+/** The runs, and what the whole text shares that Figma only stores per range. */
+export async function textRuns(node: TextLike): Promise<{ runs: StyledRun[]; paragraphs: Paragraphs }> {
+  const fields = RUN_FIELDS.filter((field) => node.type === 'TEXT' || !PARAGRAPH_FIELDS.has(field))
   let segments: ReadonlyArray<Record<string, unknown>>
   try {
     segments = node.getStyledTextSegments(
-      RUN_FIELDS as unknown as ['fontName']
+      fields as unknown as ['fontName']
     ) as unknown as ReadonlyArray<Record<string, unknown>>
   } catch {
     // A font that will not load makes the call throw. The layer-level read still stands, and an
     // empty list says "nothing to add" rather than inventing a run.
-    return []
+    return { runs: [], paragraphs: {} }
+  }
+
+  // What every segment agrees on is the layer's; a run then reports only where it departs.
+  const shared = (field: string): unknown => {
+    const first = JSON.stringify(segments[0]?.[field])
+    return segments.every((segment) => JSON.stringify(segment[field]) === first) ? segments[0]?.[field] : undefined
+  }
+  const listType = (shared('listOptions') as { type?: string } | undefined)?.type ?? 'NONE'
+  const depth = shared('indentation')
+  const paragraphs: Paragraphs = {
+    ...(listType === 'ORDERED' || listType === 'UNORDERED' ? { list: listType } : {}),
+    ...(typeof depth === 'number' && depth > 0 ? { indent: depth } : {}),
+  }
+  // The layer's view of the two, as the baseline a run is compared against: what they all share,
+  // or — when they differ — no list at the outer level, which is what a write starts from.
+  const baseline: Record<string, unknown> = {
+    listOptions: { type: listType },
+    indentation: typeof depth === 'number' ? depth : 0,
   }
 
   const bag = node as unknown as Record<string, unknown>
   const runs: StyledRun[] = []
   for (const segment of segments) {
     const run: StyledRun = { from: segment.start as number, to: segment.end as number }
-    const differs = (field: string, value: unknown) => JSON.stringify(bag[field]) !== JSON.stringify(value)
+    const differs = (field: string, value: unknown) =>
+      JSON.stringify(field in baseline ? baseline[field] : bag[field]) !== JSON.stringify(value)
 
     if (differs('fontName', segment.fontName)) run.fontName = writableFont(segment.fontName)
     if (differs('fontSize', segment.fontSize)) run.fontSize = segment.fontSize
@@ -84,26 +125,25 @@ export async function styledRuns(node: TextLike): Promise<StyledRun[]> {
       const link = segment.hyperlink as { value?: string } | null
       run.link = link?.value ?? null
     }
-    // A style on part of the text, by the name a write looks it up by. An empty id is "no
-    // style" — the run left the node's style — and has no word to be sent back with.
+    // A style on part of the text, by the word a write looks it up by — a local style's name, a
+    // library style's key. An empty id is "no style" — the run left the node's style — and has no
+    // word to be sent back with.
     for (const [field, word] of [['textStyleId', 'textStyle'], ['fillStyleId', 'fillStyle']] as const) {
       const id = segment[field]
-      if (typeof id === 'string' && id !== '' && differs(field, id)) {
-        run[word] = (await figma.getStyleByIdAsync(id).catch(() => null))?.name ?? id
-      }
+      if (typeof id === 'string' && id !== '' && differs(field, id)) run[word] = (await styleRef(id)) ?? id
     }
     // The look of the line, when this run draws it differently from the node it sits in.
     const decoration = decorationWords(segment)
     if (decoration && JSON.stringify(decoration) !== JSON.stringify(decorationWords(bag))) run.decoration = decoration
     const list = (segment.listOptions as { type?: string } | undefined)?.type
-    if (list && list !== 'NONE') run.list = list
-    if (typeof segment.indentation === 'number' && segment.indentation > 0) run.indent = segment.indentation
+    if (list && differs('listOptions', segment.listOptions)) run.list = list
+    if (typeof segment.indentation === 'number' && differs('indentation', segment.indentation)) run.indent = segment.indentation
     for (const field of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
       if (typeof segment[field] === 'number' && differs(field, segment[field])) run[field] = segment[field]
     }
     runs.push(run)
   }
-  return runs
+  return { runs, paragraphs }
 }
 
 /**

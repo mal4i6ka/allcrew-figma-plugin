@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planProps, resolveRanges } from './props.ts'
-import { styledRuns, writableFont } from './text-runs.ts'
+import { styledRuns, textRuns, writableFont } from './text-runs.ts'
 
 const runsOf = (runs: unknown) => {
   const plan = planProps({ runs })
@@ -125,4 +125,46 @@ test('an axis that is not a four-letter tag is refused, because Figma throws on 
   )
   assert.match(planProps({ fontName: { family: 'Inter', weight: 700 } }).problems[0], /unknown key "weight"/)
   assert.match(planProps({ fontName: 'Inter Bold' }).problems[0], /must be \{ family, style\?, variationSettings\? \}/)
+})
+
+/* ------------------------------------------------------------ whole-text lists */
+
+test('a whole text becomes a list after its characters, whichever order it was asked in', () => {
+  const steps = planProps({ list: 'unordered', indent: 1, text: 'One\nTwo' }).steps
+  assert.deepEqual(
+    steps.map((step) => step.step),
+    ['text', 'textRange', 'textRange']
+  )
+  assert.deepEqual(steps.slice(1), [
+    { step: 'textRange', field: 'list', value: 'UNORDERED' },
+    { step: 'textRange', field: 'indent', value: 1 },
+  ])
+})
+
+test('a list type and a depth outside what Figma has are refused by name', () => {
+  assert.match(planProps({ list: 'BULLETS' }).problems[0], /list must be one of: ORDERED, UNORDERED, NONE/)
+  assert.match(planProps({ indent: 1.5 }).problems[0], /indent must be a whole number >= 0/)
+  assert.match(planProps({ listOptions: { type: 'ORDERED' } }).problems[0], /here it is "list"/)
+})
+
+test("a list the whole text shares is the layer's, and runs say only where a paragraph departs", async () => {
+  const segment = (start: number, end: number, type: string, indentation: number) => ({
+    start,
+    end,
+    listOptions: { type },
+    indentation,
+  })
+  const whole = { type: 'TEXT', getStyledTextSegments: () => [segment(0, 7, 'UNORDERED', 1)] }
+  assert.deepEqual(await textRuns(whole as never), {
+    runs: [{ from: 0, to: 7 }],
+    paragraphs: { list: 'UNORDERED', indent: 1 },
+  })
+  const mixed = { type: 'TEXT', getStyledTextSegments: () => [segment(0, 4, 'NONE', 0), segment(4, 9, 'ORDERED', 0)] }
+  assert.deepEqual(await textRuns(mixed as never), {
+    runs: [
+      { from: 0, to: 4 },
+      { from: 4, to: 9, list: 'ORDERED' },
+    ],
+    paragraphs: {},
+  })
 })

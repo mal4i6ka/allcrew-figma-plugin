@@ -86,6 +86,42 @@ export async function styleFor(ref: string, kind: StyleKind): Promise<BaseStyle>
   )
 }
 
+/**
+ * A style as the write names it: a local one by its name, a library one by its published key.
+ *
+ * The name is what `styleFor` tries first and what a person recognises; a library style's name
+ * means nothing in a file that has not imported it, while its key imports it anywhere the library
+ * is enabled.
+ */
+export async function styleRef(id: string): Promise<string | null> {
+  const style = await figma.getStyleByIdAsync(id).catch(() => null)
+  if (!style) return null
+  return style.remote ? style.key : style.name
+}
+
+/**
+ * Each style slot a layer follows, under the word the write takes it by.
+ *
+ * A library style travels as its key, which is what imports it — and which tells a reader
+ * nothing. So its name rides beside it in `styleNames`, a reading for people that no write takes.
+ */
+export async function styleLinks(node: SceneNode): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {}
+  const names: Record<string, string> = {}
+  const bag = node as unknown as Record<string, unknown>
+  for (const slot of ['fillStyle', 'strokeStyle', 'textStyle', 'effectStyle', 'gridStyle']) {
+    const id = bag[`${slot}Id`]
+    // A text with two styles answers `figma.mixed`; its runs say which goes where.
+    if (typeof id !== 'string' || id === '') continue
+    const style = await figma.getStyleByIdAsync(id).catch(() => null)
+    if (!style) continue
+    out[slot] = style.remote ? style.key : style.name
+    if (style.remote) names[slot] = style.name
+  }
+  if (Object.keys(names).length > 0) out.styleNames = names
+  return out
+}
+
 /** What a style holds, on one line — the same shape every other read in this plugin answers with. */
 export async function describeStyle(
   style: BaseStyle,

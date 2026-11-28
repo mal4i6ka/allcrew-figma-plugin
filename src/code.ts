@@ -155,7 +155,7 @@ import {
   variableName,
 } from './canvas/apply.ts'
 import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
-import { styledRuns, writableFont } from './canvas/text-runs.ts'
+import { textRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
@@ -175,7 +175,7 @@ import {
   type PropertyType,
 } from './canvas/components.ts'
 import { binaryFile, slugify, textFile } from './agent/files.ts'
-import { describeStyle, localStyles, styleFor, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
+import { describeStyle, localStyles, styleFor, styleLinks, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 import { identity, mayDecide, type MailItem } from './mail/mailbox.ts'
@@ -2186,6 +2186,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL'
       ? { blendMode: bag.blendMode }
       : {}),
+    // The styles the layer follows. Written and never read until now, so a heading in "H1" came
+    // back as loose numbers and its copy followed nothing.
+    ...(await styleLinks(node)),
   }
   if ('layoutMode' in bag && bag.layoutMode !== 'NONE') {
     props.layout = {
@@ -2401,7 +2404,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const runs = await styledRuns(node)
+    const { runs, paragraphs } = await textRuns(node)
+    // A list the whole text shares is the layer's — one bulleted block is ONE run, never printed.
+    Object.assign(props, paragraphs)
     if (runs.length > 1) props.runs = runs
   }
   Object.assign(props, await boardProps(node))

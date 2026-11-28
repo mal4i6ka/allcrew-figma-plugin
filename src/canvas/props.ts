@@ -566,6 +566,10 @@ export interface NodeProps {
   truncate?: boolean
   /** Stop after this many lines. `null` lets it run on. */
   maxLines?: number | null
+  /** The whole text as a bulleted (`UNORDERED`) or numbered (`ORDERED`) list, or not (`NONE`). */
+  list?: 'ORDERED' | 'UNORDERED' | 'NONE'
+  /** How deep in a list the whole text sits — 0 is the outermost level. */
+  indent?: number
   /** A link on the whole layer. `null` removes it. */
   link?: string | null
   /** Space between list items. */
@@ -805,6 +809,7 @@ export type PropStep =
   | { step: 'brush'; brush: ComplexStrokeProperties; loads: 'STRETCH' | 'SCATTER' | null; summary: string }
   | { step: 'bound'; property: string; value: number | null }
   | { step: 'runs'; runs: TextRun[] }
+  | { step: 'textRange'; field: 'list' | 'indent'; value: string | number }
   | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -1126,6 +1131,10 @@ const ORDER = [
   // and was gone by the time anyone looked.
   'truncate',
   'maxLines',
+  // After the characters: a list is a range of them, and there is no range in an empty box. Before
+  // the runs, which may make one paragraph of the list something else.
+  'list',
+  'indent',
   'runs',
   'bind',
   'scroll',
@@ -1181,6 +1190,8 @@ const FIGMA_NAMES: Record<string, string> = {
   connectorStart: 'connector.start',
   connectorEnd: 'connector.end',
   connectorLineType: 'connector.line',
+  listOptions: 'list',
+  indentation: 'indent',
 }
 
 /** What to tell a caller about a key we do not know: the one it meant, or what there is. */
@@ -1589,6 +1600,18 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           const lines = number('maxLines', 1)
           if (lines !== null) steps.push({ step: 'bound', property: 'maxLines', value: lines })
         }
+        break
+      }
+      case 'list': {
+        const value = typeof props.list === 'string' ? props.list.toUpperCase() : props.list
+        if (typeof value !== 'string' || !LIST_TYPES.includes(value)) fail(`list must be one of: ${LIST_TYPES.join(', ')}`)
+        else steps.push({ step: 'textRange', field: 'list', value })
+        break
+      }
+      case 'indent': {
+        const value = props.indent
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) fail('indent must be a whole number >= 0')
+        else steps.push({ step: 'textRange', field: 'indent', value })
         break
       }
       case 'link': {
