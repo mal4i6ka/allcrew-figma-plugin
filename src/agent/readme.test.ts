@@ -24,6 +24,7 @@ import {
   COMMENT_REFUSALS,
   HISTORY_MANIFEST,
   HISTORY_REFUSALS,
+  TRANSFER_MANIFEST,
 } from '../../agent/bridge.mjs'
 import { ANALYTICS_MANIFEST, ORG_MANIFEST } from '../../agent/figma-org.mjs'
 import { CODE_CONNECT_MANIFEST } from '../../agent/code-connect.mjs'
@@ -55,6 +56,7 @@ test('every registered op has a row in the README', () => {
  * official CLI on this machine, and `figma.mcp` relays Figma's own desktop MCP server. */
 const BRIDGE_OPS = [
   ...COMMENT_MANIFEST,
+  ...TRANSFER_MANIFEST,
   ...HISTORY_MANIFEST,
   ...ORG_MANIFEST,
   ...ANALYTICS_MANIFEST,
@@ -101,6 +103,21 @@ test('the stated write count is the real one', () => {
     32: 'thirty-two',
     33: 'thirty-three',
     35: 'thirty-five',
+    36: 'thirty-six',
+    37: 'thirty-seven',
+    38: 'thirty-eight',
+    39: 'thirty-nine',
+    40: 'forty',
+    41: 'forty-one',
+    42: 'forty-two',
+    43: 'forty-three',
+    44: 'forty-four',
+    45: 'forty-five',
+    46: 'forty-six',
+    47: 'forty-seven',
+    48: 'forty-eight',
+    49: 'forty-nine',
+    50: 'fifty',
   }
   const mutating = ALL_OPS.filter((op) => op.mutates).length
   const word = WORDS[mutating]

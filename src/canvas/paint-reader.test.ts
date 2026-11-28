@@ -80,3 +80,32 @@ test('a stack reads as a list, bottom-up, and is sendable as one', async () => {
   assert.deepEqual(read, [{ image: { hash: 'abc' } }, '#000000 @0.3'])
   assert.equal(sendable(read), null)
 })
+
+test('a filtered, turned, tiled or cropped picture reads with what makes it so, filters to three places', async () => {
+  const filtered = await readPaintsForWrite(
+    [{ type: 'IMAGE', imageHash: 'abc', scaleMode: 'FILL', filters: { exposure: 0.30000001192092896, contrast: 0, shadows: -0.4 }, rotation: 90 }],
+    nameOf
+  )
+  assert.deepEqual(filtered, { image: { hash: 'abc' }, filters: { exposure: 0.3, shadows: -0.4 }, rotation: 90 })
+  assert.equal(sendable(filtered), null)
+  const tiled = await readPaintsForWrite([{ type: 'IMAGE', imageHash: 'abc', scaleMode: 'TILE', scalingFactor: 0.5 }], nameOf)
+  assert.deepEqual(tiled, { image: { hash: 'abc' }, scaleMode: 'TILE', tile: 0.5 })
+  assert.equal(sendable(tiled), null)
+  const cropped = await readPaintsForWrite(
+    [{ type: 'IMAGE', imageHash: 'abc', scaleMode: 'CROP', imageTransform: [[0.5, 0, 0.25], [0, 0.5, 0.25]] }],
+    nameOf
+  )
+  assert.deepEqual(cropped, { image: { hash: 'abc' }, scaleMode: 'CROP', crop: [[0.5, 0, 0.25], [0, 0.5, 0.25]] })
+  assert.equal(sendable(cropped), null)
+})
+
+test('an image takes the panel’s sliders, quarter turns, a tile size and a crop — each only where it means something', () => {
+  assert.equal(paintProblem({ image: { hash: 'h' }, filters: { exposure: 0.2, shadows: -0.4 }, rotation: 90 }), null)
+  assert.equal(paintProblem({ image: { hash: 'h' }, scaleMode: 'TILE', tile: 0.5 }), null)
+  assert.equal(paintProblem({ video: { hash: 'v' }, filters: { tint: 0.1 }, rotation: 180 }), null)
+  assert.match(String(paintProblem({ image: { hash: 'h' }, filters: { blur: 1 } })), /unknown "blur"/)
+  assert.match(String(paintProblem({ image: { hash: 'h' }, filters: { contrast: 2 } })), /between -1 and 1/)
+  assert.match(String(paintProblem({ image: { hash: 'h' }, rotation: 45 })), /rotation must be 0, 90, 180 or 270/)
+  assert.match(String(paintProblem({ image: { hash: 'h' }, tile: 2 })), /needs scaleMode TILE/)
+  assert.match(String(paintProblem({ image: { hash: 'h' }, scaleMode: 'FILL', crop: [[1, 0, 0], [0, 1, 0]] })), /needs scaleMode CROP/)
+})

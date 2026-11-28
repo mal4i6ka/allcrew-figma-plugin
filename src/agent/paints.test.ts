@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { describePaint, describeShader } from './paints.ts'
+import { animatedShaderProperties, describePaint, describeShader, sameShaderInCatalogue } from './paints.ts'
 
 /* `figma` is a sandbox global these functions read at CALL time, so a module-scope stub is
  * enough — this used to need `await import()` because the describer lived in `ops.ts`, whose op
@@ -302,4 +302,129 @@ test('a colour authored outside sRGB says so beside its hex projection', async (
   )
   assert.equal(gradient.stops?.[0].authored, 'hsl(200 50% 40%)')
   assert.equal('authored' in (gradient.stops?.[1] ?? {}), false)
+})
+
+/* ---------------------------------- animated shader settings (typings 1.143.0) */
+
+const track = (base: unknown, count: number) => ({ baseValue: { type: 'FLOAT', value: base }, keyframes: Array.from({ length: count }, (_, i) => ({ id: `k${i}` })) })
+
+test('animated shader settings are found in the slot they belong to, and nowhere else', () => {
+  const node = {
+    manualKeyframeTracks: {
+      OPACITY: track(1, 2),
+      fills: { 1: { properties: { '11:22': track(0.2, 3) } } },
+      effects: { 0: { RADIUS: track(4, 2), properties: { '33:44': track(1, 2) } } },
+    },
+  }
+  assert.deepEqual(Object.keys(animatedShaderProperties(node, 'fills', 1) ?? {}), ['11:22'])
+  assert.deepEqual(Object.keys(animatedShaderProperties(node, 'effects', 0) ?? {}), ['33:44'])
+  assert.equal(animatedShaderProperties(node, 'fills', 0), undefined)
+  assert.equal(animatedShaderProperties(node, 'strokes', 1), undefined)
+})
+
+test('a node without Motion, a plain style paint list and a throwing getter all read as no tracks', () => {
+  assert.equal(animatedShaderProperties({}, 'fills', 0), undefined)
+  assert.equal(animatedShaderProperties(null, 'fills', 0), undefined)
+  assert.equal(animatedShaderProperties({ manualKeyframeTracks: { fills: { 0: { baseValue: {}, keyframes: [] } } } }, 'fills', 0), undefined)
+  const throwing = Object.defineProperty({}, 'manualKeyframeTracks', {
+    get() {
+      throw new Error('Motion API unavailable')
+    },
+  })
+  assert.equal(animatedShaderProperties(throwing, 'fills', 0), undefined)
+})
+
+test('a setting Figma left out because it is animated is described from its track, not lost', async () => {
+  // What a read returns since 1.143.0: `speed` is animated, so `properties` holds only `scale`.
+  const described = await describeShader(
+    {
+      id: 'sh/1',
+      properties: { '1:1': 2 },
+      propertyMetadata: {
+        '1:1': { name: 'scale', type: 'NUMBER', defaultValue: 1 },
+        '1:2': { name: 'speed', type: 'NUMBER', defaultValue: 0.5 },
+      },
+    },
+    undefined,
+    { '1:2': track(0.1, 3) }
+  )
+  assert.deepEqual(described.properties, [
+    { id: '1:1', name: 'scale', type: 'NUMBER', default: 1, value: 2 },
+    // The base value the track starts from — not the author's default of 0.5.
+    { id: '1:2', name: 'speed', type: 'NUMBER', default: 0.5, value: 0.1, animated: true, keyframes: 3 },
+  ])
+})
+
+test('a runtime that still lists an animated setting describes it once, and marks it', async () => {
+  const described = await describeShader({ id: 'sh/1', properties: { '1:2': 0.7 } }, undefined, { '1:2': track(0.1, 2) })
+  assert.deepEqual(described.properties, [{ id: '1:2', value: 0.7, animated: true, keyframes: 2 }])
+})
+
+test('a shader whose every setting is animated still has settings', async () => {
+  const described = await describeShader({ id: 'sh/1', properties: {} }, undefined, { '9:9': track(1, 2) })
+  assert.deepEqual(described.properties, [{ id: '9:9', value: 1, animated: true, keyframes: 2 }])
+  // And with no tracks, nothing changed from before.
+  assert.equal((await describeShader({ id: 'sh/1', properties: {} })).properties, undefined)
+})
+
+test('a shader paint takes its slot’s tracks through describePaint', async () => {
+  const described = await describePaint({ type: 'SHADER', id: 'sh/1', properties: {} }, 0, undefined, undefined, { '9:9': track(1, 2) })
+  assert.deepEqual(described.shader?.properties, [{ id: '9:9', value: 1, animated: true, keyframes: 2 }])
+})
+
+/* ------------------------- naming an animated setting from the catalogue (read live) */
+
+// Read live on 19.11.2026 from a Water caustic fill whose `scale` was keyframed: the paint id is
+// `40f03f78…/8370`, the catalogue's is `published:1650660549837923423/8370`, and the animated
+// setting is gone from the paint's `propertyMetadata` as well as from its `properties`.
+const waterCatalogue = new Map([
+  [
+    'published:1650660549837923423/8370',
+    {
+      id: 'published:1650660549837923423/8370',
+      name: '',
+      type: 'fill',
+      propertyDefinitions: {
+        '2793279086:389096460': { name: 'scale', type: 'NUMBER', defaultValue: 1 },
+        '3753036810:3652539474': { name: 'intensity', type: 'NUMBER', defaultValue: 0.5 },
+        '3071380467:4236873122': { name: 'playhead', type: 'NUMBER', defaultValue: 0 },
+      },
+    },
+  ],
+  ['other/1', { id: 'other/1', name: 'Other', type: 'fill', propertyDefinitions: { '9:9': { name: 'unrelated', type: 'NUMBER' } } }],
+])
+
+test('an animated setting the paint no longer names is named from the catalogue shader with the same settings', async () => {
+  const described = await describeShader(
+    {
+      id: '40f03f78407c1c973fc891fbca9ff3d0387485e6/8370',
+      properties: { '3753036810:3652539474': 0.5, '3071380467:4236873122': 0 },
+      propertyMetadata: {
+        '3753036810:3652539474': { name: 'intensity', type: 'NUMBER', defaultValue: 0.5 },
+        '3071380467:4236873122': { name: 'playhead', type: 'NUMBER', defaultValue: 0 },
+      },
+    },
+    waterCatalogue as never,
+    { '2793279086:389096460': track(1, 2) }
+  )
+  assert.deepEqual(described.properties?.at(-1), {
+    id: '2793279086:389096460',
+    name: 'scale',
+    type: 'NUMBER',
+    default: 1,
+    value: 1,
+    animated: true,
+    keyframes: 2,
+  })
+})
+
+test('a catalogue is only believed when exactly one shader defines every setting', () => {
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460', '3753036810:3652539474'], waterCatalogue as never)?.['2793279086:389096460']?.name, 'scale')
+  // One id the candidate does not define: not the same shader.
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460', '1:1'], waterCatalogue as never), undefined)
+  // Two shaders that both define the ids: no way to tell which.
+  const twins = new Map([...waterCatalogue, ['twin/1', { ...waterCatalogue.get('published:1650660549837923423/8370')!, id: 'twin/1' }]])
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460'], twins as never), undefined)
+  assert.equal(sameShaderInCatalogue([], waterCatalogue as never), undefined)
+  assert.equal(sameShaderInCatalogue(['2793279086:389096460']), undefined)
 })

@@ -238,3 +238,67 @@ test('lintScopeAsync also skips export-marked graphics', async () => {
   const graphic = frame({ id: 'graphic', exportSettings: [{ format: 'PNG' }], children: [dirtyChild] })
   assert.deepEqual(await lintScopeAsync([graphic]), [])
 })
+
+/* ------------------------------------------------- 3D transforms (typings 1.143.0, beta) */
+
+const scene = (overrides: Record<string, unknown> = {}) =>
+  frame({ layoutMode: 'HORIZONTAL', scene3d: { perspective: 800, preserve3d: true }, opacity: 1, blendMode: 'PASS_THROUGH', effects: [], clipsContent: false, ...overrides })
+
+test('a preserve3d container with nothing dead on it is not flagged', () => {
+  assert.equal(findingsFor(lintScope([scene()]), 'preserve3d-dead-property').length, 0)
+  // NORMAL is what any layer has; it is not a blend someone chose.
+  assert.equal(findingsFor(lintScope([scene({ blendMode: 'NORMAL' })]), 'preserve3d-dead-property').length, 0)
+  // A hidden effect draws nothing anywhere.
+  assert.equal(findingsFor(lintScope([scene({ effects: [{ type: 'DROP_SHADOW', visible: false }] })]), 'preserve3d-dead-property').length, 0)
+})
+
+test('opacity, a blend mode, effects and clipping on a preserve3d container are flagged in one finding that names each', () => {
+  const [finding, ...rest] = findingsFor(
+    lintScope([scene({ opacity: 0.5, blendMode: 'MULTIPLY', effects: [{ type: 'DROP_SHADOW' }, { type: 'LAYER_BLUR' }], clipsContent: true })]),
+    'preserve3d-dead-property'
+  )
+  assert.equal(rest.length, 0)
+  assert.match(finding.message, /opacity 50%, blend mode MULTIPLY, 2 effects, clip content/)
+  assert.match(finding.message, /Figma does not render them there/)
+  assert.match(finding.message, /parent frame that does not preserve 3D/)
+})
+
+test('each dead property is enough on its own, and an effect style counts when its effects cannot be read', () => {
+  for (const [over, said] of [
+    [{ opacity: 0.99 }, /opacity 99%/],
+    [{ blendMode: 'SCREEN' }, /blend mode SCREEN/],
+    [{ effects: [{ type: 'INNER_SHADOW', visible: true }] }, /1 effect on/],
+    [{ effectStyleId: 'S:abc,' }, /an effect style/],
+    [{ clipsContent: true }, /clip content/],
+  ] as Array<[Record<string, unknown>, RegExp]>) {
+    const found = findingsFor(lintScope([scene(over)]), 'preserve3d-dead-property')
+    assert.equal(found.length, 1, JSON.stringify(over))
+    assert.match(found[0].message, said)
+    assert.match(found[0].message, /does not render it there/)
+  }
+})
+
+test('the same properties on a flat scene, or with no scene, are ordinary', () => {
+  const dead = { opacity: 0.5, blendMode: 'MULTIPLY', effects: [{ type: 'DROP_SHADOW' }], clipsContent: true }
+  assert.equal(findingsFor(lintScope([scene({ ...dead, scene3d: { perspective: 800, preserve3d: false } })]), 'preserve3d-dead-property').length, 0)
+  assert.equal(findingsFor(lintScope([scene({ ...dead, scene3d: null })]), 'preserve3d-dead-property').length, 0)
+  assert.equal(findingsFor(lintScope([frame(dead)]), 'preserve3d-dead-property').length, 0)
+})
+
+test('a nested preserve3d container is found where it is', () => {
+  const inner = scene({ id: 'inner', name: 'Inner', opacity: 0.3 })
+  const found = findingsFor(lintScope([frame({ layoutMode: 'VERTICAL', children: [inner] })]), 'preserve3d-dead-property')
+  assert.deepEqual(found.map((finding) => finding.nodeId), ['inner'])
+})
+
+test('an imported FREEFORM transform is flagged, a FIXED_ORDER one and a switched-off one are not', () => {
+  const freeform = frame({ layoutMode: 'HORIZONTAL', transform3d: { type: 'FREEFORM', backfaceVisible: true } })
+  const [finding] = findingsFor(lintScope([freeform]), 'transform3d-freeform')
+  assert.match(finding.message, /exports flat/)
+
+  const fixedOrder = frame({ layoutMode: 'HORIZONTAL', transform3d: { type: 'FIXED_ORDER', translateZ: 0, rotateX: 0, rotateY: 30, rotateZ: 0 } })
+  assert.equal(findingsFor(lintScope([fixedOrder]), 'transform3d-freeform').length, 0)
+  const off = frame({ layoutMode: 'HORIZONTAL', transform3d: { type: 'FREEFORM', backfaceVisible: true, visible: false } })
+  assert.equal(findingsFor(lintScope([off]), 'transform3d-freeform').length, 0)
+  assert.equal(findingsFor(lintScope([text({ transform3d: { type: 'FREEFORM', backfaceVisible: true } })]), 'transform3d-freeform').length, 1)
+})

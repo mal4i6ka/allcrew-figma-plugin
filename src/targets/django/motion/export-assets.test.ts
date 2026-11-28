@@ -79,3 +79,24 @@ test('emitMotionExportArtifacts chooses GSAP for three-node orchestration', () =
   assert.match(result.animation.js, /\.n1-2/)
   assert.match(result.animation.js, /\.n1-3/)
 })
+
+test('3D tracks on the CSS backend register their custom properties once per stylesheet', () => {
+  const track = (field: string) => ({
+    field,
+    baseValue: { type: 'FLOAT', value: 0 },
+    timelineDuration: 1,
+    keyframes: [{ id: 'k', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: 90 } }],
+  })
+  const node = (nodeId: string, transform3d?: unknown) => ({
+    nodeId,
+    snapshot: { animationStyles: [], timelines: [{ id: 'tl', duration: 1 }], tracks: [track('TRANSFORM_3D_ROTATION_Y')], ...(transform3d ? { transform3d } : {}) },
+  })
+  const { animation } = emitMotionExportArtifacts([node('1:1', { translateZ: 25, rotateX: 0, rotateY: 0, rotateZ: 0 }), node('1:2')] as never)
+
+  assert.equal(animation.js, '')
+  assert.equal(animation.css.match(/@property --motion-rotate-y/g)?.length, 1)
+  assert.ok(animation.css.startsWith('@property'))
+  // Each node's own static depth reaches its composite transform.
+  assert.match(animation.css, /translateZ\(25px\) rotateX\(0deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\)/)
+  assert.match(animation.css, /translateZ\(0px\) rotateX\(0deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\)/)
+})

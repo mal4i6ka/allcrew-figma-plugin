@@ -18,6 +18,32 @@ All notable changes to AllCrew Figma Workspace are documented here.
 
 - The plugin is built against `@figma/plugin-typings` 1.143.0.
 
+## 1.16.0 — 2026-11-28
+
+Upstream design-system work from 2026-10-15 to 2026-11-27 that this product did not have yet, adapted to AllCrew names and merged into AllCrew's own designs (FigJam/Slides/Buzz, docs on the canvas, file mail).
+
+### Added
+
+- **A file carries its own guidelines.** `docs.write` / `docs.read` / `docs.configure` store DESIGN.md, a skill and brand rules in the file; `document.info` hands them to agents; the token package ships them under `guidelines/`; a file can pin its documentation settings, and Settings → Documentation shows what it pins.
+- **Tokens screen, rebuilt.** Sets, themes and what ships; the export structure editor; themes from modes, collection names or a marker in the names; a layered `tokens.css` (common, each theme, each product); a Figma → code mapping a person declares; `tokens.configure` pins it in the file; `collections.merge` makes product themes modes of one collection.
+- **3D transforms** (typings 1.143.0) reach motion export, static CSS, SVG and the IR; lint for what a preserve-3D container does not render; a shader's settings can be keyframed and keep their names.
+- **Ops:** `node.move`, `node.duplicate`, `node.transfer` (copy layers between open files; `node.spec` / `node.build`), `events.read`, `text.review` / `text.review.set`, `figjam.colors`, `node.fromJsx`, `widgets.find`, `plugin.notify` / `openUrl` / `close`; commands `PAGE_SET`, `VIEWPORT` / `VIEWPORT_SET`, `STORAGE_KEYS` / `STORAGE_REMOVE`, `UI_POSITION`, `CHANGES_WATCH` / `CHANGES_READ`, `SELECTION_SET`, `VARIABLE_SUGGEST`.
+- Any panel command runs from Figma's command bar (quick actions with parameters); Dev Mode's code view carries the agent channel; Dev Mode codegen offers rem and the React output follows it.
+- Vocabulary: masks, corner smoothing, star/polygon, arcs, boolean ops, transforms and flips, exports, dev status, guides, `exposed`, descriptions, modes, relaunch data, `alignContent`; image filters, rotation, tiles and crops; text `replace`, layer-level lists, variables on part of a text, annotations and Dev Mode links in the round trip; instance properties that follow variables; layout grids bound to variables; relative keyframe tracks read and refused on write.
+
+### Fixed
+
+- Node reads have ceilings and name the step they are stuck on; Dev Mode links cannot hang a read; `node.spec` never asks for publish status; `node.build` names a component it cannot import instead of failing.
+- Component docs survive a background window and ship partial, naming the pages they did not read; the token package bounds its walk into other files and stops waiting on docs.
+- Opacity tokens are fractions in CSS, Swift and Kotlin by scope; aliased FLOATs reach native code as numbers.
+- Slides keep Figma's slide grid in step; Buzz assets land on the grid with their type set before their size; FigJam table cells are not walked as layers.
+- Library variables import eight at a time; the React export waits 30 s for library variables.
+- Several sandbox paths read the export options from the wrong storage key.
+
+### Changed
+
+- The panel opens on Figma's `run` event (or after one second), so quick actions can start it with parameters.
+
 ## 1.15.1 — 2026-11-01
 
 ### Changed

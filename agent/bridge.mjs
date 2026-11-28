@@ -968,6 +968,96 @@ export const ANCHOR_POINT_NAMES = [
 ]
 
 /**
+ * The one op that needs two files at once. A plugin sees only the file it runs in, so a copy
+ * between files is two plugin ops — node.spec where the layer is, node.build where it goes —
+ * and this is the only place that can hold both ends.
+ */
+export const TRANSFER_MANIFEST = [
+  {
+    name: 'node.transfer',
+    summary: 'Copy layers from one open file into another, and report what did not survive the trip.',
+    mutates: true,
+    agent:
+      'Cross-file copy and paste. `from` and `to` are two connected files (handles from allcrew_channel_status); `nodes` are ids in ' +
+      '`from`; `parent` is a frame, section or page id in `to` (its current page when omitted). Tokens travel BY NAME and ' +
+      'bind in `to` if it has them locally or through an enabled library — so a copy between files on the same design ' +
+      'system keeps its tokens, and one between unrelated files keeps the values with the bindings listed as failed. A ' +
+      'library component travels as itself (an instance, by key); one whose main lives in `from`, or is gone, arrives as ' +
+      'the frame it shows, named in `detached` — `localComponents: "key"` when `to` uses `from` as a library. Pictures travel as bytes up to 2 MB per call. Each node reports `node` (its new id ' +
+      'in `to`), `diverged`, `failed`, `dropped`, `unavailable` and `imagesMissing` — read them before saying the copy is faithful. ' +
+      '`dryRun` reads `from` and checks that every spec plans in `to`, building nothing. Writes need the gate on in `to` only.',
+    params: {
+      from: { type: 'string', required: true, description: 'The file the layers are in — a handle or part of its name.' },
+      to: { type: 'string', required: true, description: 'The file they go to — a handle or part of its name.' },
+      nodes: { type: 'string[]', required: true, description: 'Ids of the layers in `from`.' },
+      parent: { type: 'string', description: 'Frame, section or page id in `to`. Its current page when omitted.' },
+      depth: { type: 'number', default: 6, min: 0, max: 12, description: 'Levels of children to carry.' },
+      localComponents: { type: 'string', enum: ['frame', 'key'], default: 'frame', description: 'Instances of components that live in `from`: as frames, or by key when `to` has `from` as a library.' },
+      ignore: { type: 'string[]', description: 'Properties to leave out of the comparison.' },
+      dryRun: { type: 'boolean', default: false, description: 'Read and plan both ends, build nothing.' },
+    },
+  },
+]
+
+/** node.transfer: node.spec in one file, node.build in the other, one report out of the two. */
+async function runTransfer(body) {
+  const params = body.params || {}
+  const missing = ['from', 'to'].filter((key) => typeof params[key] !== 'string' || params[key] === '')
+  if (missing.length > 0 || !Array.isArray(params.nodes) || params.nodes.length === 0) {
+    return { code: 400, body: fail('bad_request', 'node.transfer needs from, to and a non-empty nodes array') }
+  }
+  const read = await runCall({ op: 'node.spec', target: params.from, params: { nodes: params.nodes, depth: params.depth ?? 6, ...(params.localComponents ? { localComponents: params.localComponents } : {}) } })
+  if (!read.body.ok) return { code: read.code, body: { ...read.body, op: 'node.transfer', stage: `reading in ${params.from}` } }
+  const spec = read.body.result
+  const sendable = (spec.nodes || []).filter((row) => row.ok).map(({ source, spec: one, before }) => ({ source, spec: one, before }))
+
+  let built = { nodes: [] }
+  let toFile = null
+  if (sendable.length > 0) {
+    const write = await runCall({
+      op: 'node.build',
+      target: params.to,
+      params: {
+        nodes: sendable,
+        images: spec.images || {},
+        ...(params.parent ? { parent: params.parent } : {}),
+        ...(params.ignore ? { ignore: params.ignore } : {}),
+        dryRun: params.dryRun === true,
+      },
+    })
+    if (!write.body.ok) return { code: write.code, body: { ...write.body, op: 'node.transfer', stage: `building in ${params.to}`, read: spec.nodes } }
+    built = write.body.result
+    toFile = write.body.file
+  }
+
+  // One row per source layer: what the reading could not carry, then what the building made of it.
+  const byId = new Map((built.nodes || []).map((row) => [row.source, row]))
+  const nodes = (spec.nodes || []).map((row) => {
+    const made = byId.get(row.source) || {}
+    const { spec: _spec, before: _before, ...readSide } = row
+    return { ...readSide, ...made, ok: row.ok === true && made.ok === true }
+  })
+  return {
+    code: 200,
+    body: {
+      ok: true,
+      op: 'node.transfer',
+      from: read.body.file,
+      to: toFile,
+      result: {
+        dryRun: params.dryRun === true,
+        parent: built.parent || null,
+        total: nodes.length,
+        copied: params.dryRun === true ? 0 : nodes.filter((row) => row.node).length,
+        faithful: nodes.filter((row) => row.ok).length,
+        nodes,
+        ...(spec.imagesSkipped ? { imagesSkipped: spec.imagesSkipped } : {}),
+      },
+    },
+  }
+}
+
+/**
  * The manifest for the comment ops, in the same shape a plugin publishes so the CLI, the MCP
  * front and `checkParams` all treat them like any other op. Declared here rather than in the
  * plugin because the plugin cannot run them.
@@ -2670,6 +2760,9 @@ export async function runCall(body, signal) {
   }
   if (COMMENT_OPS.includes(op)) return runComments(op, body)
 
+  /* The one op that spans two files: the bridge is the only party that can see both. */
+  if (op === 'node.transfer') return runTransfer(body)
+
   /* History is the same shape as comments: REST-only, so the bridge answers it. Reads only —
    * `history.mark` is a PLUGIN op, because writing a version is `figma.saveVersionHistoryAsync`
    * and REST has no equivalent. */
@@ -3023,6 +3116,7 @@ const ROUTES = {
     const withBridgeOps = (ops) => [
       ...ops,
       ...COMMENT_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
+      ...TRANSFER_MANIFEST.map((op) => ({ ...op, source: 'bridge' })),
       ...HISTORY_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
       ...ORG_MANIFEST.map((op) => ({ ...op, source: 'rest' })),
       ...ANALYTICS_MANIFEST.map((op) => ({ ...op, source: 'rest' })),

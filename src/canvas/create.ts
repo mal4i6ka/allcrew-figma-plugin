@@ -11,7 +11,7 @@
  * change, and a node created inside an auto-layout parent gets laid out twice.
  */
 
-import { applyProps, type AppliedProp } from './apply.ts'
+import { applyProps, ensureFont, type AppliedProp } from './apply.ts'
 import { editorProblem, gridPlace } from './board.ts'
 import { componentFor } from './components.ts'
 import { dependsOnChildren, dependsOnPlacement, movesToAnotherParent, planProps, type PropStep } from './props.ts'
@@ -215,6 +215,16 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   }
 
   const node = await make(plan)
+
+  // In Buzz a top-level frame is only an asset once it is on the canvas grid: left on the page it
+  // is invisible in the grid view and its format is refused ("Can only set asset type on Buzz Asset
+  // Node"). Seen building 22 templates upstream — every one landed off the grid. So it goes onto
+  // the grid at once, at the end, before its properties, which lets `assetType` apply in the same
+  // call. `kind: "asset"` is the way to name a cell.
+  const buzzFrame =
+    figma.editorType === 'buzz' && plan.kind === 'frame' && fallbackParent.type === 'PAGE' && !plan.steps.some(movesToAnotherParent)
+  if (buzzFrame) figma.moveNodesToCoord([node.id])
+
   // Everything except what describes children the node does not have yet, and what describes its
   // place in a parent it is not in yet.
   const later = plan.steps.filter((step) => dependsOnChildren(step) || dependsOnPlacement(step))
@@ -249,10 +259,24 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
   const moves = plan.steps.some(movesToAnotherParent)
   // A slide or a Buzz asset is put on its grid by the call that made it; appending it to the page
   // would lift it out of the deck. Inside a row the caller named, it goes where it was told.
-  const gridded = GRID_PLACED.includes(plan.kind) && fallbackParent.type === 'PAGE'
+  const gridded = (GRID_PLACED.includes(plan.kind) && fallbackParent.type === 'PAGE') || buzzFrame
   if (!moves && !gridded && node.parent !== fallbackParent) {
-    fallbackParent.appendChild(node)
+    // Into a GRID at a named cell in one call — Figma's `appendChildAt` — rather than appended
+    // to the next free cell and moved, which in a full grid first grows a row nobody asked for.
+    const cell = later.find((step) => step.step === 'gridCell')
+    const grid = fallbackParent as BaseNode & ChildrenMixin & {
+      layoutMode?: string
+      gridItemsPositioning?: string
+      appendChildAt?: (child: SceneNode, row: number, column: number) => void
+    }
+    if (cell && cell.step === 'gridCell' && grid.layoutMode === 'GRID' && grid.gridItemsPositioning !== 'ROW_AUTO_FLOW' && typeof grid.appendChildAt === 'function') {
+      grid.appendChildAt(node, cell.row, cell.column)
+    } else fallbackParent.appendChild(node)
   }
+
+  // A slide `createSlide` makes sits in the tree but not in `getSlideGrid` until the grid is set
+  // (seen live) — so the grid is set from the tree, in the tree's own order, which registers it.
+  if (plan.kind === 'slide' || plan.kind === 'slideRow') syncSlideGrid()
 
   // Now that the children are in and the node is placed, the rest can be set.
   const late = later.length > 0 ? await applyProps(node, later, false) : { applied: [], failed: 0 }
@@ -271,6 +295,28 @@ export async function createNode(plan: CreatePlan, fallbackParent: BaseNode & Ch
     children,
     failed: report.failed + late.failed + children.reduce((total, child) => total + child.failed, 0),
     ...(failures.length > 0 ? { failures } : {}),
+  }
+}
+
+/**
+ * The deck's grid, re-stated from the tree: every row under the slide grid, every slide in it.
+ *
+ * Figma's grid lags its tree both ways (seen live): a slide `createSlide` made is missing until the
+ * grid is set, and a slide a plugin removes stays listed — after which `getSlideGrid` itself throws
+ * "node does not exist". Reads already go by the tree (`canvas.grid`); setting the grid from it
+ * keeps Figma's own presentation order in step too.
+ */
+export function syncSlideGrid(): void {
+  if (figma.editorType !== 'slides') return
+  const grid = figma.currentPage.children.find((child) => child.type === 'SLIDE_GRID') as SlideGridNode | undefined
+  if (!grid) return
+  const rows = grid.children
+    .filter((row): row is SlideRowNode => row.type === 'SLIDE_ROW')
+    .map((row) => row.children.filter((slide): slide is SlideNode => slide.type === 'SLIDE'))
+  try {
+    figma.setSlideGrid(rows)
+  } catch {
+    /* a Slides build that refuses an empty row keeps its own grid; the slide is in the tree regardless */
   }
 }
 
@@ -297,7 +343,7 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       // is missing hands back a node nothing can be written into — so the font it claims is
       // loaded before anyone tries.
       const font = text.fontName
-      if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
+      if (font !== figma.mixed) await ensureFont(font as FontName)
       return text
     }
     case 'vector':
@@ -324,7 +370,7 @@ async function make(plan: CreatePlan): Promise<SceneNode> {
       const [segment, position] = (plan.at ?? [0, 0]) as [number, number]
       const path = figma.createTextPath(outline, segment, position)
       const font = path.fontName
-      if (font !== figma.mixed) await figma.loadFontAsync(font as FontName)
+      if (font !== figma.mixed) await ensureFont(font as FontName)
       return path
     }
     case 'instance': {

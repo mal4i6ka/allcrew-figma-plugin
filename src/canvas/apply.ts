@@ -17,6 +17,9 @@ import { componentFor, humanPropertyName, resolveProperties } from './components
 import {
   colourFrom,
   describeLinks,
+  GRID_TOKEN_FIELDS,
+  gridSpecsOf,
+  RANGE_BINDABLE,
   formatGridTrack,
   gradientHandles,
   gradientTransform,
@@ -27,6 +30,7 @@ import {
   solidColourOf,
 } from './props.ts'
 import { addressIn } from './overrides.ts'
+import { SHADER_SETTING_NAMES_KEY, shaderSettingNames } from './keyframes.ts'
 import { styleFor } from './styles.ts'
 import { decorationWords, planDecoration } from './decoration.ts'
 import { connectorWords, pageIdOf, tableWords, transitionWords, type SlideTransitionValue } from './board.ts'
@@ -35,6 +39,7 @@ import type {
   ColourInput,
   FontSpec,
   GradientRef,
+  GridSpec,
   ImageRef,
   PaintRef,
   PlannedAction,
@@ -53,7 +58,67 @@ export interface AppliedProp {
   after?: unknown
   /** Present when this one property could not be applied — the rest still were. */
   error?: string
+  /** Present when the write landed and will not show — an opacity on a preserve-3D container. */
+  note?: string
+  /** Present when the write changed something nobody named — a Buzz format resizing its asset. */
+  sideEffect?: string
+  /** Present when the write was left out because the style the layer follows already gives it. */
+  kept?: string
+  /** Present when the step took half a second or more. */
+  ms?: number
 }
+
+/** A step that took long enough to notice says how long — a 27 s create used to say nothing. */
+function withTime(result: AppliedProp, started: number): AppliedProp {
+  const ms = Date.now() - started
+  return ms >= 500 ? { ...result, ms } : result
+}
+
+/**
+ * A font once per plugin session.
+ *
+ * Figma documents a repeat `loadFontAsync` as returning at once. Measured live it does not: on a
+ * fresh bulleted, underlined text the SECOND load of a font loaded a moment earlier to make the
+ * node took 11 s, then 60 s, growing with the text on the page. A loaded font stays loaded for
+ * the run, so a font this session has loaded is not awaited again.
+ */
+const LOADED_FONTS = new Set<string>()
+
+export async function ensureFont(font: FontName | FontNameInput | { family: string; style?: string }): Promise<void> {
+  const key = `${font.family}|${font.style ?? ''}|${JSON.stringify((font as { variationSettings?: unknown }).variationSettings ?? null)}`
+  if (LOADED_FONTS.has(key)) return
+  await figma.loadFontAsync(font as FontName)
+  LOADED_FONTS.add(key)
+}
+
+/**
+ * Whether a write would only repeat what a followed style already gives.
+ *
+ * Figma detaches a layer from its style the moment a property the style governs is assigned —
+ * even to the value it already has. A read says both things (`textStyle: "H1"` and the font size
+ * H1 gives), so a read sent straight back used to arrive with every style link cut. Same value,
+ * style held: the write is left out and the report says why.
+ */
+async function keptByStyle(node: SceneNode, slot: string, same: boolean): Promise<string | null> {
+  if (!same) return null
+  const id = (node as unknown as Record<string, unknown>)[slot]
+  if (typeof id !== 'string' || id === '') return null
+  const style = await figma.getStyleByIdAsync(id).catch(() => null)
+  return style ? `follows ${style.name}` : null
+}
+
+/** The text properties a text style governs — assigning any of them cuts the link. */
+const TEXT_STYLE_FIELDS = new Set([
+  'fontSize',
+  'textCase',
+  'textDecoration',
+  'paragraphSpacing',
+  'paragraphIndent',
+  'listSpacing',
+  'leadingTrim',
+  'hangingPunctuation',
+  'hangingList',
+])
 
 export interface ApplyReport {
   applied: AppliedProp[]
@@ -125,19 +190,109 @@ export async function applyProps(node: SceneNode, steps: readonly PropStep[], dr
   let failed = 0
 
   for (const step of steps) {
+    const started = Date.now()
     try {
       // A step can also fail in part — `properties` sets four of five and names the fifth — so
       // the report is what decides, not only whether something was thrown.
       const result = await applyStep(node, step, dry)
       if (result.error) failed++
-      applied.push(result)
+      const unseen = result.error ? null : notRenderedNote(node, result.property, dry ? step : null)
+      const timed = withTime(result, started)
+      applied.push(unseen ? { ...timed, note: unseen } : timed)
     } catch (error) {
       failed++
-      applied.push({ property: propertyOf(step), error: String((error as Error)?.message || error) })
+      applied.push(withTime({ property: propertyOf(step), error: String((error as Error)?.message || error) }, started))
     }
   }
   return { applied, failed }
 }
+
+function rememberShaderSettingName(node: SceneNode, id: string, name: string): void {
+  try {
+    node.setPluginData(SHADER_SETTING_NAMES_KEY, JSON.stringify({ ...shaderSettingNames(node), [id]: name }))
+  } catch {
+    /* a node that keeps no plugin data still has its track; only the name is not remembered */
+  }
+}
+
+/**
+ * Which shader, and which of its settings, a planned track means.
+ *
+ * The stack and the place may be left out: the first shader in the stack is then the one. The
+ * setting is matched by the author's name against the definitions the applied shader carries, and
+ * — for a setting that is already animated, which Figma no longer names — against the names kept
+ * from the last time. An id is taken as it is.
+ */
+function resolveShaderSetting(
+  node: SceneNode,
+  plan: { collection: 'fills' | 'strokes' | 'effects'; index?: number; setting: string }
+): { collection: 'fills' | 'strokes' | 'effects'; index: number; id: string; name?: string } {
+  const what = plan.collection === 'fills' ? 'fill' : plan.collection === 'strokes' ? 'stroke' : 'effect'
+  const stack = (node as unknown as Record<string, unknown>)[plan.collection]
+  if (!Array.isArray(stack)) throw new Error(`a ${node.type} has no ${plan.collection}`)
+  const isShader = (entry: unknown) => (entry as { type?: string } | null)?.type === 'SHADER'
+  const index = plan.index ?? stack.findIndex(isShader)
+  if (index < 0) throw new Error(`this layer has no shader ${what} — put one on it first (fill: { shader })`)
+  const shader = stack[index] as { type?: string; propertyMetadata?: Record<string, { name?: string } | undefined> } | undefined
+  if (!isShader(shader)) throw new Error(`${plan.collection}[${index}] is not a shader — it is ${shader ? String(shader.type) : 'not there'}`)
+
+  const names: Record<string, string> = { ...shaderSettingNames(node) }
+  for (const [id, definition] of Object.entries(shader?.propertyMetadata ?? {})) if (definition?.name) names[id] = definition.name
+  const wanted = plan.setting.trim()
+  if (/^\d+:\d+$/.test(wanted)) return { collection: plan.collection, index, id: wanted, ...(names[wanted] ? { name: names[wanted] } : {}) }
+  const match = Object.entries(names).find(([, name]) => name.toLowerCase() === wanted.toLowerCase())
+  if (!match) {
+    const offered = Object.values(names)
+    throw new Error(
+      `this shader has no setting called "${wanted}" — ` +
+        (offered.length > 0 ? `it has: ${offered.join(', ')}` : 'and it names none of its settings here; give the setting id instead')
+    )
+  }
+  return { collection: plan.collection, index, id: match[0], name: match[1] }
+}
+
+/** The properties a preserve-3D container keeps and does not draw, by the name a report gives them. */
+const UNSEEN_UNDER_PRESERVE_3D: readonly string[] = ['opacity', 'blendMode', 'effects', 'effectStyle', 'clipsContent', 'scene3d']
+
+/**
+ * What a preserve-3D container is set to and Figma does not draw: its opacity, blend mode,
+ * effects and clip. Figma takes the write and keeps the value (seen live upstream), so the report
+ * would otherwise read as a change that happened on the canvas.
+ */
+export function unseenUnderPreserve3d(node: unknown, planned?: { preserve3d?: boolean } | null): string[] {
+  const bag = (node ?? {}) as Record<string, unknown>
+  const preserve = planned?.preserve3d ?? (bag.scene3d as { preserve3d?: boolean } | null | undefined)?.preserve3d
+  if (preserve !== true) return []
+  const unseen: string[] = []
+  if (typeof bag.opacity === 'number' && bag.opacity < 1) unseen.push('opacity')
+  if (typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL') unseen.push('blend mode')
+  if (Array.isArray(bag.effects) && bag.effects.some((effect) => (effect as { visible?: boolean })?.visible !== false)) unseen.push('effects')
+  if (bag.clipsContent === true) unseen.push('clip')
+  return unseen
+}
+
+function notRenderedNote(node: SceneNode, property: string, dryStep: PropStep | null): string | null {
+  if (!UNSEEN_UNDER_PRESERVE_3D.includes(property)) return null
+  // A dry run has not switched preserve-3D on yet; the step it is previewing says whether it would.
+  const planned =
+    dryStep?.step === 'space3d' && dryStep.property === 'scene3d' && dryStep.value.kind === 'scene' && dryStep.value.fields.preserve3d !== undefined
+      ? { preserve3d: dryStep.value.fields.preserve3d }
+      : null
+  const unseen = unseenUnderPreserve3d(node, planned)
+  if (unseen.length === 0) return null
+  return `Figma does not draw ${unseen.join(', ')} on a preserve-3D container — the value is kept, the canvas does not change; put ${unseen.length === 1 ? 'it' : 'them'} on a parent frame that does not preserve 3D`
+}
+
+/** The node types Figma gives a `scene3d` (typings 1.143.0, beta). */
+const SCENE_3D_HOLDERS: readonly string[] = ['FRAME', 'COMPONENT', 'INSTANCE']
+
+/** Figma's names for the four tracks that animate a layer's own 3D transform. */
+const TRANSFORM_3D_TRACKS: readonly string[] = [
+  'TRANSFORM_3D_TRANSLATION_Z',
+  'TRANSFORM_3D_ROTATION_X',
+  'TRANSFORM_3D_ROTATION_Y',
+  'TRANSFORM_3D_ROTATION_Z',
+]
 
 const propertyOf = (step: PropStep): string => {
   switch (step.step) {
@@ -167,6 +322,14 @@ const propertyOf = (step: PropStep): string => {
     // them nothing about which of the five they got wrong.
     case 'style':
       return step.slot
+    case 'textRange':
+      return step.field
+    case 'flip':
+      return 'flip'
+    case 'rescale':
+      return 'scale'
+    case 'aspect':
+      return 'aspectLock'
     // `layout`, `constraints` and `lineHeight` are named after themselves.
     default:
       return step.step
@@ -185,15 +348,34 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
   switch (step.step) {
     case 'assign': {
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
+      // Figma Slides numbers slides by position and names rows itself; a name set here is taken
+      // and dropped (seen live: "Coverage" became "2", "Row two" stayed "Section").
+      if (step.property === 'name' && (node.type === 'SLIDE' || node.type === 'SLIDE_ROW')) {
+        throw new Error(`Figma Slides names a ${node.type === 'SLIDE' ? 'slide by its position' : 'slide row itself'} — a name given here does not stay`)
+      }
       const before = bag[step.property]
       // Text properties refuse to move until the font is loaded, whatever they are — a size
       // change on a text node whose font is unavailable throws the same way characters do.
       if (isText(node) && TEXT_PROPERTIES.includes(step.property)) await loadNodeFont(node)
+      const kept = TEXT_STYLE_FIELDS.has(step.property)
+        ? await keptByStyle(node, 'textStyleId', JSON.stringify(before) === JSON.stringify(step.value))
+        : null
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) await withNamedFont(() => (bag[step.property] = step.value))
+      // A name is read back: a node Figma names itself takes the assignment and keeps its own,
+      // and a report of the request would say a rename happened that did not.
+      if (!dry && step.property === 'name' && bag.name !== step.value) {
+        return { property: 'name', before, after: bag.name, error: `Figma kept "${String(bag.name)}"` }
+      }
       return { property: step.property, before, after: step.value }
     }
 
     case 'space3d': {
+      // The scene exists on exactly these three; a group or a shape has depth of its own but no
+      // scene to put children in.
+      if (step.property === 'scene3d' && !SCENE_3D_HOLDERS.includes(node.type)) {
+        throw new Error(`a ${node.type} has no 3D scene — only a FRAME, COMPONENT or INSTANCE does`)
+      }
       // Beta in Figma: a build or a node type without it says so by name, not with a TypeError.
       if (!(step.property in bag)) {
         throw new Error(`a ${node.type} has no ${step.property} — 3D transforms are beta, on frames, shapes and text; scene3d only on frames, components and instances`)
@@ -210,7 +392,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const font: FontNameInput = step.font
       // Loading a family without a style loads every named instance, which is what variable-font
       // axis selection needs before Figma can choose the closest instance.
-      await figma.loadFontAsync(font)
+      await ensureFont(font)
+      const kept = await keptByStyle(node, 'textStyleId', before === describeFont(font))
+      if (kept) return { property: 'fontName', before, after: before, kept }
       // The 1.141 docs explicitly accept FontNameInput here, but the generated property type
       // still says FontName. Keep the cast at this one upstream mismatch rather than requiring
       // a fake style and defeating variable-font instance selection.
@@ -232,6 +416,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before = node.lineHeight
       const after: LineHeight =
         step.value === 'AUTO' ? { unit: 'AUTO' } : { value: step.value, unit: step.unit ?? 'PIXELS' }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.lineHeight = after
       return { property: 'lineHeight', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -241,6 +427,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       await loadNodeFont(node)
       const before = node.letterSpacing
       const after: LetterSpacing = { value: step.value, unit: step.unit }
+      const kept = await keptByStyle(node, 'textStyleId', describeMeasure(before) === describeMeasure(after))
+      if (kept) return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(before), kept }
       if (!dry) node.letterSpacing = after
       return { property: 'letterSpacing', before: describeMeasure(before), after: describeMeasure(after) }
     }
@@ -324,6 +512,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         if (layout.wrap !== undefined) frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
         // The second gap only exists once the layout wraps, so it is set after `layoutWrap`.
         if (layout.wrapGap !== undefined) frame.counterAxisSpacing = layout.wrapGap
+        if (layout.alignContent !== undefined) frame.counterAxisAlignContent = layout.alignContent
         if (layout.reverseZ !== undefined) frame.itemReverseZIndex = layout.reverseZ
         if (layout.strokesInLayout !== undefined) frame.strokesIncludedInLayout = layout.strokesInLayout
         const grid = frame as unknown as GridFrame
@@ -399,7 +588,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
             if (words === null || row >= node.numRows || column >= node.numColumns) continue
             const text = node.cellAt(row, column).text
             const font = text.fontName
-            if (font !== figma.mixed) await figma.loadFontAsync(font)
+            if (font !== figma.mixed) await ensureFont(font)
             else await loadNodeFont(text as unknown as TextNode)
             text.characters = words
           }
@@ -444,9 +633,38 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (figma.editorType !== 'buzz' || !buzz) {
         throw new Error(`assetType is a Figma Buzz property — this file is open in ${figma.editorType}`)
       }
-      const before = buzz.getBuzzAssetTypeForNode(node)
-      if (!dry) buzz.setBuzzAssetTypeForNode(node, step.assetType as BuzzAssetType)
-      return { property: 'assetType', before, after: step.assetType }
+      const sized = node as SceneNode & { width: number; height: number }
+      const size = () => `${round(sized.width)}×${round(sized.height)}`
+      const was = size()
+      let before: unknown = null
+      try {
+        before = buzz.getBuzzAssetTypeForNode(node)
+      } catch {
+        /* not an asset yet — the set below says so in words */
+      }
+      if (!dry) {
+        try {
+          buzz.setBuzzAssetTypeForNode(node, step.assetType as BuzzAssetType)
+        } catch (error) {
+          // Figma's own words are "Can only set asset type on Buzz Asset Node", which names a node
+          // type the Plugin API does not have. What it means: the node is not on the canvas grid.
+          if (/Buzz Asset Node/i.test(String((error as Error)?.message ?? error))) {
+            throw new Error(
+              `${node.name} is not on the Buzz canvas grid, and only an asset there has a format — node.create kind "asset" (or a top-level frame) lands on the grid; anything else goes there with canvas.arrange { move }`
+            )
+          }
+          throw error
+        }
+      }
+      const now = size()
+      return {
+        property: 'assetType',
+        before,
+        after: step.assetType,
+        // Buzz resizes the asset to the format's preset. Within one call a width/height runs after
+        // this and wins; on its own the preset is what the asset now measures, and it says so.
+        ...(now !== was ? { sideEffect: `Buzz resized it to the ${step.assetType} preset: ${was} → ${now}` } : {}),
+      }
     }
 
     case 'textStart': {
@@ -476,6 +694,9 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       if (!(step.property in bag)) throw new Error(`a ${node.type} has no ${step.property}`)
       const before = await describePaints(bag[step.property])
       const paints = await buildPaints(step.ref)
+      const after = await describePaints(paints)
+      const kept = await keptByStyle(node, step.property === 'fills' ? 'fillStyleId' : 'strokeStyleId', before === after)
+      if (kept) return { property: step.property, before, after: before, kept }
       if (!dry) {
         // A pattern can only go on through the async setter, which waits for its source node to
         // load; everything else takes the plain assignment it always did.
@@ -485,7 +706,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           await (bag[setter] as (paints: Paint[]) => Promise<void>).call(node, paints)
         } else bag[step.property] = paints
       }
-      return { property: step.property, before, after: await describePaints(paints) }
+      return { property: step.property, before, after }
     }
 
     case 'reset': {
@@ -531,14 +752,37 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const before: Record<string, unknown> = {}
       for (const key of Object.keys(resolved)) before[humanPropertyName(key)] = defined[key]?.value
 
-      if (!dry && Object.keys(resolved).length > 0) {
+      // A token in place of a value becomes an alias. A library variable that only an id names —
+      // what a suggestion hands back for one the file has not imported — goes through
+      // `createVariableAliasByIdAsync`, which needs no Variable object in hand.
+      const values: Record<string, string | boolean | VariableAlias> = {}
+      for (const [key, value] of Object.entries(resolved)) {
+        if (typeof value !== 'object') {
+          values[key] = value
+          continue
+        }
         try {
-          instance.setProperties(resolved)
+          const variable = await resolveVariableRef(value.variable).catch(() => null)
+          if (variable) {
+            const wants = defined[key].type === 'BOOLEAN' ? 'BOOLEAN' : 'STRING'
+            if (variable.resolvedType !== wants) throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and ${humanPropertyName(key)} wants a ${wants}`)
+            values[key] = figma.variables.createVariableAlias(variable)
+          } else if (/^VariableID:/.test(value.variable)) {
+            values[key] = await figma.variables.createVariableAliasByIdAsync(value.variable)
+          } else throw new Error(`no variable "${value.variable}"`)
+        } catch (error) {
+          problems.push(`${humanPropertyName(key)}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+
+      if (!dry && Object.keys(values).length > 0) {
+        try {
+          instance.setProperties(values)
         } catch {
           // One at a time, so the caller learns WHICH property Figma refused instead of losing
           // the four that were fine. A sparse variant set is the usual reason: not every
           // combination of axes exists.
-          for (const [key, value] of Object.entries(resolved)) {
+          for (const [key, value] of Object.entries(values)) {
             try {
               instance.setProperties({ [key]: value })
             } catch (one) {
@@ -556,7 +800,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       const after: Record<string, unknown> = {}
       for (const [key, value] of Object.entries(resolved)) {
         const name = humanPropertyName(key)
-        after[name] = now && name in now ? now[name] : value
+        after[name] = now && name in now ? now[name] : typeof value === 'object' ? `var:${value.variable}` : value
       }
 
       return {
@@ -644,6 +888,8 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         }
       }
 
+      const kept = await keptByStyle(node, 'effectStyleId', failures.length === 0 && before === (await describeEffects(effects)))
+      if (kept) return { property: 'effects', before, after: before, kept }
       if (!dry) bag.effects = effects
       return {
         property: 'effects',
@@ -734,8 +980,27 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
     case 'grid': {
       if (!('layoutGrids' in bag)) throw new Error(`a ${node.type} takes no layout grids`)
       const before = Array.isArray(bag.layoutGrids) ? `${(bag.layoutGrids as unknown[]).length} grid(s)` : 'none'
-      if (!dry) bag.layoutGrids = step.grids
-      return { property: 'grid', before, after: step.summary }
+      // Bound on the grid object, the way an effect's numbers are: each binding hands back a NEW grid.
+      let grids = step.grids
+      const failures: string[] = []
+      for (const binding of step.bind ?? []) {
+        try {
+          const variable = await resolveVariableRef(binding.variable)
+          if (variable.resolvedType !== 'FLOAT') throw new Error(`"${variable.name}" is a ${variable.resolvedType}, and a grid wants a FLOAT`)
+          const bound = figma.variables.setBoundVariableForLayoutGrid(grids[binding.index], binding.field, variable)
+          grids = grids.map((grid, index) => (index === binding.index ? bound : grid))
+        } catch (error) {
+          failures.push(`${binding.field}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      const kept = await keptByStyle(
+        node,
+        'gridStyleId',
+        failures.length === 0 && !step.bind?.length && describeGrids(bag.layoutGrids) === describeGrids(grids)
+      )
+      if (kept) return { property: 'grid', before, after: before, kept }
+      if (!dry) bag.layoutGrids = grids
+      return { property: 'grid', before, after: step.summary, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
     }
 
     case 'brush': {
@@ -771,6 +1036,211 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
       return { property: 'hyperlink', before, after: step.url ?? 'none' }
     }
 
+    case 'flip': {
+      if (!('relativeTransform' in bag)) throw new Error(`a ${node.type} cannot be flipped`)
+      const frame = node as SceneNode & LayoutMixin
+      const before = frame.relativeTransform
+      // A flip is a mirror in the layer's OWN space, taken across its centre so it stays where it
+      // stands: negate one column of the matrix and move the origin to the far edge.
+      const [[a, b, x], [c, d, y]] = before
+      const after: Transform =
+        step.axis === 'HORIZONTAL'
+          ? [
+              [-a, b, x + a * frame.width],
+              [-c, d, y + c * frame.width],
+            ]
+          : [
+              [a, -b, x + b * frame.height],
+              [c, -d, y + d * frame.height],
+            ]
+      if (!dry) frame.relativeTransform = after
+      return { property: 'flip', before, after }
+    }
+
+    case 'rescale': {
+      const holder = node as SceneNode & { rescale?: (scale: number) => void; width: number; height: number }
+      if (typeof holder.rescale !== 'function') throw new Error(`a ${node.type} cannot be scaled`)
+      const before = `${round(holder.width)}×${round(holder.height)}`
+      if (!dry) holder.rescale(step.factor)
+      return { property: 'scale', before, after: dry ? `×${step.factor}` : `${round(holder.width)}×${round(holder.height)}` }
+    }
+
+    case 'aspect': {
+      const holder = node as SceneNode & {
+        lockAspectRatio?: () => void
+        unlockAspectRatio?: () => void
+        targetAspectRatio?: Vector | null
+      }
+      if (typeof holder.lockAspectRatio !== 'function') throw new Error(`a ${node.type} has no aspect ratio to lock`)
+      const before = Boolean(holder.targetAspectRatio)
+      if (!dry) {
+        if (step.locked) holder.lockAspectRatio()
+        else holder.unlockAspectRatio?.()
+      }
+      return { property: 'aspectLock', before, after: step.locked }
+    }
+
+    case 'modes': {
+      const holder = node as SceneNode & {
+        setExplicitVariableModeForCollection?: (collection: VariableCollection, modeId: string) => void
+        clearExplicitVariableModeForCollection?: (collection: VariableCollection) => void
+      }
+      if (typeof holder.setExplicitVariableModeForCollection !== 'function') {
+        throw new Error(`a ${node.type} cannot be drawn in a mode of its own`)
+      }
+      const before = await readModes(node)
+      const after: Record<string, string | null> = {}
+      const failures: string[] = []
+      for (const [ref, mode] of Object.entries(step.modes)) {
+        try {
+          const collection = await collectionNear(node, ref)
+          if (mode === null) {
+            if (!dry) holder.clearExplicitVariableModeForCollection?.(collection)
+            after[collection.name] = null
+            continue
+          }
+          const [chosen] = resolveModes(collection, mode)
+          if (!dry) holder.setExplicitVariableModeForCollection(collection, chosen.modeId)
+          after[collection.name] = chosen.name
+        } catch (error) {
+          failures.push(`${ref}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      return { property: 'modes', before, after, ...(failures.length > 0 ? { error: failures.join(' · ') } : {}) }
+    }
+
+    case 'sharedData': {
+      const before: Record<string, Record<string, string>> = {}
+      for (const [namespace, entries] of Object.entries(step.data)) {
+        before[namespace] = {}
+        for (const key of Object.keys(entries)) before[namespace][key] = node.getSharedPluginData(namespace, key)
+        // An empty string is how Figma removes a key; null is how this vocabulary says it.
+        if (!dry) for (const [key, value] of Object.entries(entries)) node.setSharedPluginData(namespace, key, value ?? '')
+      }
+      return { property: 'sharedData', before, after: step.data }
+    }
+
+    case 'relaunch': {
+      const before = node.getRelaunchData()
+      // Figma refuses a key the manifest's relaunchButtons does not declare, naming the key — the
+      // message is better than any list kept here, which would be a second copy of the manifest.
+      if (!dry) node.setRelaunchData(step.data)
+      return { property: 'relaunch', before, after: step.data }
+    }
+
+    case 'annotations': {
+      const holder = node as SceneNode & { annotations?: ReadonlyArray<Annotation> }
+      if (!('annotations' in holder)) throw new Error(`a ${node.type} cannot hold annotations`)
+      const categories = step.notes.some((note) => note.category) ? await figma.annotations.getAnnotationCategoriesAsync() : []
+      const notes: Annotation[] = []
+      for (const note of step.notes) {
+        let categoryId: string | undefined
+        if (note.category) {
+          const wanted = note.category.trim()
+          // An id goes straight to Figma; a label is matched against the list.
+          const byId = /^\d+:\d+$/.test(wanted) ? await figma.annotations.getAnnotationCategoryByIdAsync(wanted).catch(() => null) : null
+          const found =
+            byId ?? categories.find((one) => one.id === wanted) ?? categories.find((one) => one.label.toLowerCase() === wanted.toLowerCase())
+          if (!found) throw new Error(`no annotation category "${wanted}" — this file has: ${categories.map((one) => one.label).join(', ') || '(none)'}`)
+          categoryId = found.id
+        }
+        notes.push({
+          ...(note.label ? { labelMarkdown: note.label } : {}),
+          ...(note.properties ? { properties: note.properties.map((type) => ({ type: type as AnnotationPropertyType })) } : {}),
+          ...(categoryId ? { categoryId } : {}),
+        })
+      }
+      const before = `${holder.annotations?.length ?? 0} note(s)`
+      // Replaced whole, the way `links` is: a read sent back must leave what it read, not twice it.
+      if (!dry) (holder as unknown as { annotations: Annotation[] }).annotations = notes
+      return { property: 'annotations', before, after: `${notes.length} note(s)` }
+    }
+
+    case 'devLinks': {
+      const own = (await node.getDevResourcesAsync()).filter((link) => link.nodeId === node.id)
+      const wanted = new Map(step.links.map((link) => [link.url, link]))
+      const done: string[] = []
+      if (!dry) {
+        // The URL is the identity: one not asked for goes, one missing comes, one renamed is edited.
+        for (const link of own) {
+          const keep = wanted.get(link.url)
+          if (!keep) {
+            await node.deleteDevResourceAsync(link.url)
+            done.push(`-${link.url}`)
+          } else if (keep.name && keep.name !== link.name) {
+            await node.editDevResourceAsync(link.url, { name: keep.name })
+            done.push(`~${link.url}`)
+          }
+        }
+        const held = new Set(own.map((link) => link.url))
+        for (const link of step.links) {
+          if (held.has(link.url)) continue
+          await node.addDevResourceAsync(link.url, link.name)
+          done.push(`+${link.url}`)
+        }
+      }
+      return { property: 'devLinks', before: `${own.length} link(s)`, after: done.join(' ') || 'unchanged' }
+    }
+
+    case 'replace': {
+      if (!isText(node)) throw new Error(`only text has words to replace, not a ${node.type}`)
+      await loadNodeFont(node)
+      const before = node.characters
+      // Every place to change, found against the text as it stands, then edited from the END so
+      // an earlier edit never shifts a later one's indices.
+      const spots: Array<{ from: number; to: number; with: string }> = []
+      const problems: string[] = []
+      for (const edit of step.edits) {
+        const { ranges, problem } = resolveRanges(
+          before,
+          (edit.match !== undefined ? { match: edit.match } : { from: edit.from, to: edit.to }) as TextRun
+        )
+        if (problem) problems.push(problem)
+        for (const [from, to] of ranges) spots.push({ from, to, with: edit.with })
+      }
+      spots.sort((a, b) => b.from - a.from)
+      for (const [index, spot] of spots.entries()) {
+        if (index > 0 && spot.to > spots[index - 1].from) {
+          problems.push(`"${before.slice(spot.from, spot.to)}" overlaps another replacement — say each place once`)
+          spots.length = index
+          break
+        }
+      }
+      if (!dry) {
+        for (const spot of spots) {
+          // Inserted BEFORE the end of the old words, so the new ones take THEIR style — the bold
+          // price stays bold — and only then are the old ones taken out.
+          if (spot.with !== '') node.insertCharacters(spot.to, spot.with, 'BEFORE')
+          node.deleteCharacters(spot.from, spot.to)
+        }
+      }
+      return {
+        property: 'replace',
+        before,
+        after: dry ? `${spots.length} place(s)` : node.characters,
+        ...(problems.length > 0 ? { error: problems.join(' · ') } : {}),
+      }
+    }
+
+    case 'textRange': {
+      // A list and its depth are not properties of the layer in Figma — there is no
+      // `node.listOptions` — only of ranges. Asked of the whole layer, they are its whole range.
+      if (node.type !== 'TEXT') throw new Error(`only a TEXT holds lists, not a ${node.type}`)
+      await loadNodeFont(node)
+      const end = node.characters.length
+      if (end === 0) throw new Error(`there are no characters to make ${step.field === 'list' ? 'a list' : 'an indent'} of — set text first`)
+      const before = step.field === 'list' ? node.getRangeListOptions(0, end) : node.getRangeIndentation(0, end)
+      if (!dry) {
+        if (step.field === 'list') node.setRangeListOptions(0, end, { type: step.value as TextListOptions['type'] })
+        else node.setRangeIndentation(0, end, step.value as number)
+      }
+      return {
+        property: step.field,
+        before: before === figma.mixed ? 'mixed' : typeof before === 'object' ? before.type : before,
+        after: step.value,
+      }
+    }
+
     case 'runs': {
       if (!isText(node)) throw new Error(`only a text node has runs, not a ${node.type}`)
       await loadNodeFont(node)
@@ -786,14 +1256,37 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
         // The font of a run has to be in memory before the run can be written, exactly as for the
         // whole node — and it is a different font from the one already loaded, or there would be
         // no point setting it.
-        if (run.fontName) await figma.loadFontAsync(run.fontName)
-        const paints = run.fill === undefined ? null : await buildPaints(run.fill)
-        // Styles resolved once per run, before any range: a name that matches nothing is the
-        // run's problem, and the rest of the runs still go on.
-        const textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
-        const fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
-        // A text style brings its own font, which has to be loaded before it can be applied.
-        if (textStyle) await figma.loadFontAsync(textStyle.fontName)
+        // Everything the run names is resolved before any range is written, and a run that cannot
+        // resolve — a style name seven styles share, a variable that is not there — fails on its
+        // own: it used to abort the whole step and lose the runs that were fine.
+        let paints: Paint[] | null = null
+        let textStyle: TextStyle | null = null
+        let fillStyle: BaseStyle | null = null
+        const bindings: Array<{ field: string; variable: Variable | null }> = []
+        try {
+          if (run.fontName) await ensureFont(run.fontName)
+          paints = run.fill === undefined ? null : await buildPaints(run.fill)
+          textStyle = run.textStyle ? ((await styleFor(run.textStyle, 'text')) as TextStyle) : null
+          fillStyle = run.fillStyle ? await styleFor(run.fillStyle, 'paint') : null
+          // A text style brings its own font, which has to be loaded before it can be applied.
+          if (textStyle) await ensureFont(textStyle.fontName)
+          // Variables on these characters only, resolved and type-checked before anything is written.
+          for (const [field, ref] of Object.entries(run.bind ?? {})) {
+            if (ref === null) {
+              bindings.push({ field, variable: null })
+              continue
+            }
+            const variable = await resolveVariableRef(ref)
+            const wants = RANGE_BINDABLE[field]
+            if (variable.resolvedType !== wants) {
+              throw new Error(`bind.${field}: "${variable.name}" is a ${variable.resolvedType}, and ${field} wants a ${wants}`)
+            }
+            bindings.push({ field, variable })
+          }
+        } catch (error) {
+          problems.push(`${describeRun(run)}: ${String((error as Error)?.message || error)}`)
+          continue
+        }
 
         for (const [from, to] of ranges) {
           if (dry) continue
@@ -828,6 +1321,7 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           if (run.listSpacing !== undefined) paragraphs.setRangeListSpacing?.(from, to, run.listSpacing)
           if (run.paragraphSpacing !== undefined) paragraphs.setRangeParagraphSpacing?.(from, to, run.paragraphSpacing)
           if (run.paragraphIndent !== undefined) paragraphs.setRangeParagraphIndent?.(from, to, run.paragraphIndent)
+          for (const { field, variable } of bindings) node.setRangeBoundVariable(from, to, field as VariableBindableTextField, variable)
           if (run.decoration !== undefined) {
             const planned = planDecoration(run.decoration)
             if ('values' in planned) {
@@ -1007,11 +1501,42 @@ async function applyStep(node: SceneNode, step: PropStep, dry: boolean): Promise
           // take the opacity track down with it.
           if (one.track === null) remove(one.name, one.field)
           else {
+            if (TRANSFORM_3D_TRACKS.includes(one.name)) {
+              // A flat layer is fine: Figma gives it a FIXED_ORDER transform of zeros itself when the
+              // track lands (seen live). Only the two cases Figma cannot animate are refused, by name.
+              if (!('transform3d' in bag)) throw new Error(`a ${node.type} has no 3D transform to animate`)
+              if ((bag.transform3d as { type?: string } | undefined)?.type === 'FREEFORM') {
+                throw new Error('this layer has an imported (FREEFORM) 3D transform, which cannot be animated — set transform3d to replace it first')
+              }
+            }
+            if (one.name === 'SCENE_3D_PERSPECTIVE' && (!SCENE_3D_HOLDERS.includes(node.type) || !('scene3d' in bag))) {
+              throw new Error(`a ${node.type} has no perspective to animate — only a FRAME, COMPONENT or INSTANCE holds a 3D scene`)
+            }
             if (!dry) motion.applyManualKeyframeTrack(one.field, one.track)
             applied.push(one.name)
           }
         } catch (error) {
           failures.push(`${one.name}: ${String((error as Error)?.message || error)}`)
+        }
+      }
+      for (const one of step.shaderTracks ?? []) {
+        try {
+          const target = resolveShaderSetting(node, one)
+          const field = { type: 'INDEXED_ITEM', collection: target.collection, index: target.index, propertyId: target.id }
+          const label = `${target.collection}[${target.index}].${target.name ?? target.id}`
+          if (one.track === undefined) {
+            remove(label, field)
+            continue
+          }
+          if (!dry) {
+            motion.applyManualKeyframeTrack(field, one.track)
+            // Figma stops naming a setting on the layer once it is animated (seen live upstream),
+            // so the name is kept here, where a later read of this layer can find it.
+            if (target.name) rememberShaderSettingName(node, target.id, target.name)
+          }
+          applied.push(label)
+        } catch (error) {
+          failures.push(`shader ${one.setting}: ${String((error as Error)?.message || error)}`)
         }
       }
       return {
@@ -1247,6 +1772,7 @@ function describeRun(run: TextRun): string {
   if (run.paragraphSpacing !== undefined) parts.push(`paragraph spacing ${run.paragraphSpacing}`)
   if (run.paragraphIndent !== undefined) parts.push(`first-line indent ${run.paragraphIndent}`)
   if (run.decoration !== undefined) parts.push(`decoration ${JSON.stringify(run.decoration)}`)
+  for (const [field, ref] of Object.entries(run.bind ?? {})) parts.push(ref === null ? `${field} unbound` : `${field}=var:${ref}`)
   return parts.join(' ')
 }
 
@@ -1324,6 +1850,73 @@ function asInstance(node: SceneNode, wanted: string): InstanceNode {
   return node
 }
 
+const COLLECTION_ID = /^VariableCollectionId:/
+
+/**
+ * A collection by name, looked for where it can actually be: this file's own, the library ones
+ * the node already resolves a mode for, and — last — the enabled libraries, imported on demand.
+ *
+ * A frame in a product file is drawn in LIBRARY collections almost always, so a local-only
+ * resolver could not set the one mode anyone ever wants to set. A name two libraries share is a
+ * question, answered by id.
+ */
+async function collectionNear(node: SceneNode, ref: string): Promise<VariableCollection> {
+  if (COLLECTION_ID.test(ref)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(ref)
+    if (!collection) throw new Error(`no variable collection with id ${ref}`)
+    return collection
+  }
+  const wanted = ref.trim().toLowerCase()
+  const seen = new Map<string, VariableCollection>()
+  for (const collection of await figma.variables.getLocalVariableCollectionsAsync()) seen.set(collection.id, collection)
+  const holder = node as unknown as { resolvedVariableModes?: Record<string, string>; explicitVariableModes?: Record<string, string> }
+  for (const id of [...Object.keys(holder.resolvedVariableModes ?? {}), ...Object.keys(holder.explicitVariableModes ?? {})]) {
+    if (seen.has(id)) continue
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) seen.set(id, collection)
+  }
+  let matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  if (matches.length === 0) {
+    // Not in the file yet: a library collection becomes reachable by importing one of its
+    // variables, and the variable names the collection it lives in.
+    const libraries = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync().catch(() => [])
+    for (const library of libraries.filter((one) => one.name.toLowerCase() === wanted)) {
+      const [first] = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(library.key).catch(() => [])
+      if (!first) continue
+      const variable = await figma.variables.importVariableByKeyAsync(first.key).catch(() => null)
+      const collection = variable ? await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId) : null
+      if (collection) seen.set(collection.id, collection)
+    }
+    matches = [...seen.values()].filter((collection) => collection.name.toLowerCase() === wanted)
+  }
+  if (matches.length === 1) return matches[0]
+  if (matches.length > 1) {
+    throw new Error(`"${ref}" names ${matches.length} collections — use the id: ${matches.map((one) => one.id).join(', ')}`)
+  }
+  const names = [...new Set([...seen.values()].map((one) => one.name))]
+  throw new Error(`no collection called "${ref}" here — the node can reach ${names.join(', ') || 'none'}`)
+}
+
+/**
+ * The modes a node is told to use, as `{ collection: mode }` — the words `modes` takes. A name
+ * that two of the node's collections share is written as the id, so the read still goes back.
+ */
+export async function readModes(node: SceneNode): Promise<Record<string, string>> {
+  const explicit = (node as unknown as { explicitVariableModes?: Record<string, string> }).explicitVariableModes ?? {}
+  const entries: Array<{ collection: VariableCollection; modeId: string }> = []
+  for (const [id, modeId] of Object.entries(explicit)) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(id).catch(() => null)
+    if (collection) entries.push({ collection, modeId })
+  }
+  const out: Record<string, string> = {}
+  for (const { collection, modeId } of entries) {
+    const shared = entries.filter((one) => one.collection.name === collection.name).length > 1
+    const mode = collection.modes.find((one) => one.modeId === modeId)
+    out[shared ? collection.id : collection.name] = mode?.name ?? modeId
+  }
+  return out
+}
+
 /** The properties that a TEXT node will not let go of until its font is in memory. */
 const TEXT_PROPERTIES = [
   'textWrapStyle',
@@ -1355,7 +1948,7 @@ const TEXT_PROPERTIES = [
  */
 async function loadNodeFont(node: TextNode): Promise<void> {
   if (node.fontName !== figma.mixed) {
-    await figma.loadFontAsync(node.fontName as FontName)
+    await ensureFont(node.fontName as FontName)
     return
   }
   const fonts = new Set<string>()
@@ -1368,7 +1961,7 @@ async function loadNodeFont(node: TextNode): Promise<void> {
     fonts.add(key)
     wanted.push(font as FontName)
   }
-  await Promise.all(wanted.map((font) => figma.loadFontAsync(font)))
+  await Promise.all(wanted.map((font) => ensureFont(font)))
 }
 
 function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'FIXED' | 'HUG' | 'FILL'): void {
@@ -1379,7 +1972,7 @@ function applySizing(frame: FrameNode, axis: 'horizontal' | 'vertical', mode: 'F
   ;(frame as unknown as Record<string, unknown>)[property] = mode
 }
 
-async function buildPaints(ref: PaintRef): Promise<Paint[]> {
+export async function buildPaints(ref: PaintRef): Promise<Paint[]> {
   if (ref === null) return []
   // A list is a stack of layers, bottom-up the way Figma holds them.
   if (Array.isArray(ref)) {
@@ -1518,6 +2111,10 @@ async function buildImage(ref: ImageRef): Promise<ImagePaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     imageHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
+    ...(ref.tile === undefined ? {} : { scalingFactor: ref.tile }),
+    ...(ref.crop ? { imageTransform: ref.crop } : {}),
   }
 }
 
@@ -1529,6 +2126,8 @@ async function buildVideo(ref: VideoRef): Promise<VideoPaint> {
     scaleMode: ref.scaleMode ?? 'FILL',
     videoHash,
     ...(ref.opacity === undefined ? {} : { opacity: ref.opacity }),
+    ...(ref.filters ? { filters: ref.filters } : {}),
+    ...(ref.rotation ? { rotation: ref.rotation } : {}),
   } as VideoPaint
 }
 
@@ -1617,7 +2216,8 @@ export async function describePaints(value: unknown): Promise<string | null> {
       .map((channel) => Math.round(channel * 255).toString(16).padStart(2, '0'))
       .join('')
       .toUpperCase()}`
-    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${flat.opacity}` : hex)
+    // To three places: paint opacity is a 32-bit float, so 0.1 reads back as 0.10000000149011612.
+    parts.push(flat.opacity !== undefined && flat.opacity < 1 ? `${hex} @${Math.round(flat.opacity * 1000) / 1000}` : hex)
   }
   return parts.join(' + ')
 }
@@ -1709,17 +2309,27 @@ function animationStyleWord(key: string | undefined): string | null {
  * exactly as Figma holds them: what comes out of a read goes straight back into `properties` on
  * a write.
  */
-export function describeShaderPaints(value: unknown): Array<{ id: string; properties?: Record<string, unknown> }> {
+export function describeShaderPaints(
+  value: unknown,
+  /** The node's `manualKeyframeTracks.fills` — where an animated setting lives once Figma has
+   * left it out of `properties` (typings 1.143.0). */
+  tracks?: unknown
+): Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> {
   if (!Array.isArray(value)) return []
-  const shaders: Array<{ id: string; properties?: Record<string, unknown> }> = []
-  for (const paint of value) {
+  const shaders: Array<{ id: string; properties?: Record<string, unknown>; animated?: string[] }> = []
+  for (const [index, paint] of value.entries()) {
     if ((paint as { type?: string })?.type !== 'SHADER') continue
     const shader = paint as ShaderPaint
+    const moving = (tracks as Record<number, { properties?: Record<string, unknown> } | undefined> | undefined)?.[index]?.properties
+    const animated = moving && typeof moving === 'object' ? Object.keys(moving) : []
     shaders.push({
       id: shader.id,
       ...(shader.properties && Object.keys(shader.properties).length > 0
         ? { properties: shader.properties as Record<string, unknown> }
         : {}),
+      // Named so a reader does not take a missing setting for a default one. A write that leaves
+      // these out of `properties` keeps their keyframes.
+      ...(animated.length > 0 ? { animated } : {}),
     })
   }
   return shaders
@@ -1762,6 +2372,42 @@ export function describeGrids(value: unknown): string {
     )
   }
   return parts.join(' · ')
+}
+
+/**
+ * Layout grids in the words `grid` takes, a token-driven number as `{ variable }` — the plain
+ * reading of `gridSpecsOf` with each bound field named by the variable it follows, so a grid that
+ * follows the breakpoint tokens copies as one that still does.
+ */
+export async function readGrids(value: unknown): Promise<GridSpec[]> {
+  const specs = gridSpecsOf(value)
+  if (!Array.isArray(value)) return specs
+  const out: GridSpec[] = []
+  for (const [index, spec] of specs.entries()) {
+    const grid = value[index] as LayoutGrid & { boundVariables?: Record<string, { id?: string }> }
+    const bound = grid.boundVariables ?? {}
+    const words: Record<string, unknown> = { ...spec }
+    // The word each bound field goes by on THIS grid: a count is columns or rows, a size is the
+    // square, the width or the height.
+    const wordOf: Record<string, string | undefined> =
+      grid.pattern === 'GRID'
+        ? { sectionSize: 'square' }
+        : {
+            count: grid.pattern === 'COLUMNS' ? 'columns' : 'rows',
+            gutterSize: 'gutter',
+            offset: 'margin',
+            sectionSize: grid.pattern === 'COLUMNS' ? 'width' : 'height',
+          }
+    for (const field of new Set(Object.values(GRID_TOKEN_FIELDS))) {
+      const id = bound[field]?.id
+      const word = wordOf[field]
+      if (!id || !word) continue
+      const variable = await figma.variables.getVariableByIdAsync(id).catch(() => null)
+      if (variable) words[word] = { variable: variable.name }
+    }
+    out.push(words as GridSpec)
+  }
+  return out
 }
 
 /** Effects as one readable line, for the same reason paints are: this lands deep in a report. */

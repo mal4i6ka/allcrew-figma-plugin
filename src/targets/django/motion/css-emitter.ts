@@ -7,10 +7,19 @@
  * (`TRANSLATION_*`/`SCALE_*`/`ROTATION`) emit the standalone `translate`/`scale`/`rotate`
  * properties rather than a combined `transform`, so independently-tracked axes never clobber
  * each other when their tracks are emitted as separate `@keyframes` rules.
+ *
+ * The 3D transform tracks (typings 1.143.0, beta) cannot go that way: Figma applies them in one
+ * fixed order — translateZ → rotateX → rotateY → rotateZ — and CSS has no standalone property per
+ * axis that keeps it. So each 3D track animates a registered custom property of its own
+ * (`@property`, which is what makes a custom property interpolate), and the node carries one
+ * composite `transform` that reads them in Figma's order. Tracks stay independent, each with its
+ * own easing, and none clobbers another. `SCENE_3D_PERSPECTIVE` lives on the container that holds
+ * the scene and is plain CSS `perspective` there.
  */
 
 import { easingToCss, perceptualAngularFrequency, resolveSpringBounce, springToCssLinear } from '../easing/index.ts'
-import type { MotionKeyframe, MotionTrack } from './types.ts'
+import { pivotFromTopLeft } from '../transform3d.ts'
+import type { MotionKeyframe, MotionStaticTransform3d, MotionTrack } from './types.ts'
 
 type TransformAxisField = 'TRANSLATION_X' | 'TRANSLATION_Y' | 'TRANSLATION_XY' | 'SCALE_X' | 'SCALE_Y' | 'SCALE_XY'
 
@@ -34,6 +43,65 @@ const TRANSFORM_FIELD_MAPPING: Record<TransformAxisField, TransformMapping> = {
 const SCALAR_FIELD_MAPPING: Partial<Record<KeyframePropertyFieldName, { cssProperty: string; unit: string }>> = {
   ROTATION: { cssProperty: 'rotate', unit: 'deg' },
   OPACITY: { cssProperty: 'opacity', unit: '' },
+  TRANSFORM_3D_TRANSLATION_Z: { cssProperty: '--motion-translate-z', unit: 'px' },
+  TRANSFORM_3D_ROTATION_X: { cssProperty: '--motion-rotate-x', unit: 'deg' },
+  TRANSFORM_3D_ROTATION_Y: { cssProperty: '--motion-rotate-y', unit: 'deg' },
+  TRANSFORM_3D_ROTATION_Z: { cssProperty: '--motion-rotate-z', unit: 'deg' },
+  // On the container itself — the node that holds `scene3d` is the node the track is on.
+  SCENE_3D_PERSPECTIVE: { cssProperty: 'perspective', unit: 'px' },
+}
+
+type Transform3dField =
+  | 'TRANSFORM_3D_TRANSLATION_Z'
+  | 'TRANSFORM_3D_ROTATION_X'
+  | 'TRANSFORM_3D_ROTATION_Y'
+  | 'TRANSFORM_3D_ROTATION_Z'
+
+/** Figma's order, which is also the order the functions are written in the composite `transform`. */
+const TRANSFORM_3D_AXES: ReadonlyArray<{
+  field: Transform3dField
+  fn: string
+  key: 'translateZ' | 'rotateX' | 'rotateY' | 'rotateZ'
+  syntax: '<length>' | '<angle>'
+}> = [
+  { field: 'TRANSFORM_3D_TRANSLATION_Z', fn: 'translateZ', key: 'translateZ', syntax: '<length>' },
+  { field: 'TRANSFORM_3D_ROTATION_X', fn: 'rotateX', key: 'rotateX', syntax: '<angle>' },
+  { field: 'TRANSFORM_3D_ROTATION_Y', fn: 'rotateY', key: 'rotateY', syntax: '<angle>' },
+  { field: 'TRANSFORM_3D_ROTATION_Z', fn: 'rotateZ', key: 'rotateZ', syntax: '<angle>' },
+]
+
+export function hasTransform3dTrack(tracks: readonly MotionTrack[]): boolean {
+  return tracks.some((track) => TRANSFORM_3D_AXES.some((axis) => axis.field === track.field))
+}
+
+/**
+ * The `@property` rules the 3D tracks animate. Global by nature and identical for every node, so
+ * a stylesheet needs them once; `inherits: false` keeps a parent's turn out of its children.
+ */
+export function emitTransform3dPropertyRules(): string {
+  return TRANSFORM_3D_AXES.map((axis) => {
+    const mapping = SCALAR_FIELD_MAPPING[axis.field]!
+    return `@property ${mapping.cssProperty} { syntax: '${axis.syntax}'; inherits: false; initial-value: 0${mapping.unit}; }`
+  }).join('\n')
+}
+
+/**
+ * The composite `transform` of a node with 3D tracks: a tracked axis reads its custom property,
+ * an untracked one is the node's own static number (zero when the caller has no transform to give).
+ */
+export function formatTransform3dDeclaration(tracks: readonly MotionTrack[], fixed?: MotionStaticTransform3d): string {
+  const parts = TRANSFORM_3D_AXES.map((axis) => {
+    const mapping = SCALAR_FIELD_MAPPING[axis.field]!
+    const tracked = tracks.some((track) => track.field === axis.field)
+    return `${axis.fn}(${tracked ? `var(${mapping.cssProperty})` : `${formatNumber(fixed?.[axis.key] ?? 0)}${mapping.unit}`})`
+  })
+  const functions = parts.join(' ')
+  // A layer also turned in 2D: the static rule is `rotate() <3D about its pivot>` with the origin
+  // at the top-left (transform3d.ts), and this declaration takes its place — so it is built the same way.
+  if (fixed?.rotation !== undefined) {
+    return `transform: rotate(${formatNumber(-fixed.rotation)}deg) ${pivotFromTopLeft(functions, fixed.origin)}`
+  }
+  return `transform: ${functions}`
 }
 
 function round(value: number, decimals: number): number {
@@ -87,17 +155,28 @@ function easingToTimingFunctionCss(easing: MotionEasing, segmentSec: number): st
   }
 }
 
-/** Figma holds `baseValue` until the first keyframe — if that isn't already at `t=0`, synthesize it. */
-function withBaseKeyframe(track: MotionTrack): readonly MotionKeyframe[] {
-  const first = track.keyframes[0]
-  if (first && first.timelinePosition === 0) return track.keyframes
-  const base: MotionKeyframe = {
-    id: '__base__',
+/**
+ * What the timeline shows at `t=0`. Figma holds the FIRST KEYFRAME's value back to the start —
+ * seen in its own render (19.11.2026): a track whose first keyframe sits at 1.5 s shows that
+ * keyframe's value from 0 s, and never the layer's base value. So a first keyframe later than 0
+ * is repeated at 0; `baseValue` stands in only for a track with no keyframes at all.
+ */
+function withStartKeyframe(track: MotionTrack): readonly MotionKeyframe[] {
+  const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
+  const first = sorted[0]
+  if (first && first.timelinePosition <= 0) return sorted
+  const start: MotionKeyframe = {
+    id: '__start__',
     timelinePosition: 0,
     easing: { type: 'LINEAR' },
-    value: track.baseValue,
+    value: first ? first.value : track.baseValue,
   }
-  return [base, ...track.keyframes]
+  return [start, ...sorted]
+}
+
+/** The value a track starts from — what the element should already show before the animation is applied. */
+export function startValue(track: MotionTrack): KeyframeValue {
+  return withStartKeyframe(track)[0].value
 }
 
 interface PercentFrame {
@@ -107,7 +186,7 @@ interface PercentFrame {
 }
 
 function buildPercentFrames(track: MotionTrack): PercentFrame[] {
-  const keyframes = withBaseKeyframe(track)
+  const keyframes = withStartKeyframe(track)
   const duration = track.timelineDuration
 
   const frames: PercentFrame[] = keyframes.map((keyframe) => ({
@@ -157,6 +236,10 @@ export interface NodeAnimationCssInput {
   readonly tracks: readonly MotionTrack[]
   /** Names each track's `@keyframes` rule; defaults to `<sanitized-selector>-<field-kebab>`. */
   readonly nameForTrack?: (track: MotionTrack) => string
+  /** The node's static FIXED_ORDER transform — the untracked axes of the composite `transform`. */
+  readonly transform3d?: MotionStaticTransform3d
+  /** `false` leaves the `@property` rules out, for a caller that writes them once per stylesheet. */
+  readonly registerProperties?: boolean
 }
 
 function sanitizeIdentPart(value: string): string {
@@ -181,7 +264,11 @@ function formatSeconds(duration: number): string {
 export function emitNodeAnimationCss(input: NodeAnimationCssInput): string {
   const nameForTrack = input.nameForTrack ?? ((track: MotionTrack) => defaultTrackName(input.selector, track))
 
-  const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, track.baseValue)};`)
+  // The start of the timeline, not the layer's resting value: with `both` the animation would
+  // paint its 0% frame anyway, and this is what shows where animations are switched off.
+  const baseDeclarations = input.tracks.map((track) => `  ${formatDeclaration(track.field, startValue(track))};`)
+  const is3d = hasTransform3dTrack(input.tracks)
+  if (is3d) baseDeclarations.push(`  ${formatTransform3dDeclaration(input.tracks, input.transform3d)};`)
   const animationEntries = input.tracks.map((track) => `${nameForTrack(track)} ${formatSeconds(track.timelineDuration)} linear both`)
   const rule = [
     `${input.selector} {`,
@@ -200,5 +287,6 @@ export function emitNodeAnimationCss(input: NodeAnimationCssInput): string {
   ].join('\n')
 
   const keyframesBlocks = input.tracks.map((track) => emitKeyframesRule(nameForTrack(track), track))
-  return [rule, reducedMotionGuard, ...keyframesBlocks].join('\n\n')
+  const properties = is3d && input.registerProperties !== false ? [emitTransform3dPropertyRules()] : []
+  return [...properties, rule, reducedMotionGuard, ...keyframesBlocks].join('\n\n')
 }

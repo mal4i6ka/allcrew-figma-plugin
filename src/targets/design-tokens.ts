@@ -28,7 +28,9 @@ export function buildDesignTokens(
   generatedAt?: string,
   componentDocs: readonly ComponentDoc[] = [],
   /** Names a colour remap rewrote, so the export can keep the old keys resolving. */
-  renames?: RenameMap
+  renames?: RenameMap,
+  /** Files the caller adds to the package beside these (the file's guidelines) — listed in DESIGN.md. */
+  extraFiles: readonly string[] = []
 ): TargetArtifacts {
   const opts = normalizeExportOptions(options)
   const engineOptions = {
@@ -43,6 +45,8 @@ export function buildDesignTokens(
     typoNaming: opts.tokens.typoNaming,
     emitNative: opts.tokens.emitNative,
     collectionRoles: opts.tokens.collectionRoles,
+    slugThemes: opts.tokens.slugThemes,
+    themeAxes: opts.tokens.themeAxes,
   }
   const pkg: TokenPackage = buildPackage(graph, engineOptions, renames)
   const collectionRoles = parseCollectionRoles(opts.tokens.collectionRoles)
@@ -59,12 +63,14 @@ export function buildDesignTokens(
       themes: pkg.emitted.themes,
       defaultTheme: pkg.emitted.defaultTheme,
       themeAttribute: pkg.options.themeAttr,
+      ...(pkg.emitted.grid ? { themeGrid: pkg.emitted.grid } : {}),
       files: [
         ...Object.keys(pkg.files),
         'DESIGN.md',
         ...(realComponentDocs.length > 0 ? [COMPONENTS_FILE] : []),
         ...(iconDocs.length > 0 ? [ICONS_FILE] : []),
         ...(componentDocs.some((doc) => doc.preview) ? ['previews/<component>.png'] : []),
+        ...extraFiles,
       ],
       options: pkg.options,
       audit: buildTokenAudit(graph),

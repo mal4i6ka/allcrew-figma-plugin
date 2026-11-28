@@ -25,6 +25,8 @@ export type LintRule =
   | 'text-without-style'
   | 'excessive-nesting'
   | 'bootstrap-component-mismatch'
+  | 'preserve3d-dead-property'
+  | 'transform3d-freeform'
 
 export interface LintFinding {
   nodeId: string
@@ -172,6 +174,67 @@ function checkNodeShallow(node: SceneNode, depth: number, findings: LintFinding[
   }
 
   checkBootstrapComponentNaming(node, findings)
+  check3d(node, findings)
+}
+
+/**
+ * 3D transforms (@figma/plugin-typings 1.143.0, beta). Two things a designer cannot see from the
+ * canvas and the export cannot make right on its own:
+ *
+ * - A container whose scene has `preserve3d` on does not render its own opacity, blend mode,
+ *   effects or clipping — Figma keeps the values and draws none of them. The plugin API refuses to
+ *   SET them on such a frame, but the ones set before `preserve3d` was switched on stay (both seen
+ *   live), so the layer panel shows a setting that does nothing. The export leaves them out to
+ *   match the canvas; this says that it did, and where to put them instead.
+ * - An imported (`FREEFORM`) transform reads back with no numbers, so the export has nothing to
+ *   write and ships the layer flat.
+ *
+ * Jump-only, both: where the opacity should live, and what the tilt should be, are design decisions.
+ */
+function check3d(node: SceneNode, findings: LintFinding[]): void {
+  const bag = node as unknown as {
+    scene3d?: { preserve3d?: boolean } | null
+    transform3d?: { type?: string; visible?: boolean }
+    opacity?: unknown
+    blendMode?: unknown
+    effects?: unknown
+    effectStyleId?: unknown
+    clipsContent?: unknown
+  }
+
+  if (bag.scene3d?.preserve3d === true) {
+    const dead: string[] = []
+    if (typeof bag.opacity === 'number' && bag.opacity < 1) dead.push(`opacity ${Math.round(bag.opacity * 100)}%`)
+    // PASS_THROUGH is what such a frame renders with, and NORMAL is what every other layer has.
+    if (typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL') {
+      dead.push(`blend mode ${bag.blendMode}`)
+    }
+    const effects = Array.isArray(bag.effects) ? bag.effects.filter((effect) => (effect as { visible?: boolean })?.visible !== false) : []
+    if (effects.length > 0) dead.push(effects.length === 1 ? '1 effect' : `${effects.length} effects`)
+    // A style whose effects could not be read here is still a style that does nothing.
+    else if (typeof bag.effectStyleId === 'string' && bag.effectStyleId !== '') dead.push('an effect style')
+    if (bag.clipsContent === true) dead.push('clip content')
+    if (dead.length > 0) {
+      findings.push({
+        nodeId: node.id,
+        nodeName: node.name,
+        rule: 'preserve3d-dead-property',
+        message:
+          `Has ${dead.join(', ')} on a 3D container (preserve 3D) — Figma does not render ${dead.length === 1 ? 'it' : 'them'} there, ` +
+          `and the export leaves ${dead.length === 1 ? 'it' : 'them'} out to match. Move ${dead.length === 1 ? 'it' : 'them'} to a parent frame that does not preserve 3D`,
+      })
+    }
+  }
+
+  if (bag.transform3d?.type === 'FREEFORM' && bag.transform3d.visible !== false) {
+    findings.push({
+      nodeId: node.id,
+      nodeName: node.name,
+      rule: 'transform3d-freeform',
+      message:
+        'Has an imported 3D transform Figma gives no values for — it exports flat. Set depth and rotation in the 3D panel to replace it',
+    })
+  }
 }
 
 /** REFORM phase 7 / B3: a component (set) NAMED like a Bootstrap pattern whose variant prop

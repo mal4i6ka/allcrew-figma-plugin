@@ -38,7 +38,7 @@ import { fileUrlPath } from '../canvas/board.ts'
 import { readLocalVariables } from '../variables.ts'
 import { binaryFile, slugify, textFile } from './files.ts'
 import { shadersFor } from './ops.ts'
-import { describePaint, describeShader, type PaintSummary, type ShaderSummary } from './paints.ts'
+import { animatedShaderProperties, describePaint, describeShader, type PaintSummary, type ShaderSummary } from './paints.ts'
 import type { OpDef } from './protocol.ts'
 import { ExportGuard, fitScaleToPixels, MAX_REPLY_RAW_BYTES } from './export-guard.ts'
 import { openSweep, resolveSweepRoots, SWEEP_PARAMS } from './sweep.ts'
@@ -883,7 +883,7 @@ export const CONTEXT_OPS: readonly OpDef[] = [
           : undefined
         const out: PaintSummary[] = []
         for (const [index, paint] of paints.entries()) {
-          const described = await describePaint(paint, index, shaders)
+          const described = await describePaint(paint, index, shaders, undefined, animatedShaderProperties(node, field, index))
           if (described.shader) seen.set(described.shader.id, described.shader)
           out.push(described)
         }
@@ -949,11 +949,13 @@ export const CONTEXT_OPS: readonly OpDef[] = [
       const effects = (root as unknown as { effects?: readonly unknown[] }).effects
       const shaderEffects: unknown[] = []
       if (Array.isArray(effects)) {
-        for (const effect of effects) {
+        for (const [index, effect] of effects.entries()) {
           if ((effect as { type?: string })?.type !== 'SHADER') continue
           const described = await describeShader(
             effect as { id?: unknown; properties?: unknown; propertyMetadata?: unknown },
-            await shadersFor(catalogue)
+            await shadersFor(catalogue),
+            // An animated setting is not in `properties` any more (typings 1.143.0) — it is here.
+            animatedShaderProperties(root, 'effects', index)
           )
           seen.set(described.id, described)
           shaderEffects.push({

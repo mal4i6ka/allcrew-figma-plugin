@@ -706,3 +706,64 @@ test('the roster and the ops manifest are what the plugin published', async () =
     await plugin.stop()
   }
 })
+
+/* ------------------------------------------------------------- node.transfer */
+
+const SPEC_OP = { name: 'node.spec', summary: 'read', mutates: false, params: { nodes: { type: 'string[]', required: true, description: 'ids' }, depth: { type: 'number', description: 'd' }, budgetBytes: { type: 'number', description: 'b' } } }
+const BUILD_OP = { name: 'node.build', summary: 'build', mutates: true, agent: 'builds from specs', params: { nodes: { type: 'json', required: true, description: 'n' }, images: { type: 'json', description: 'i' }, parent: { type: 'string', description: 'p' }, ignore: { type: 'string[]', description: 'g' }, dryRun: { type: 'boolean', description: 'd' } } }
+
+test('node.transfer reads in one file, builds in the other, and reports both halves per layer', async () => {
+  const source = await fakePlugin({
+    file: 'Source File',
+    ops: [SPEC_OP],
+    handle: async (request) => ({
+      ok: true,
+      result: {
+        nodes: [
+          { source: '1:1', name: 'Card', type: 'FRAME', ok: true, spec: { kind: 'frame', props: { fill: 'image:abc FILL' } }, before: { width: 100 }, detached: ['Badge: its main "Badge" is not published'] },
+          { source: '1:9', ok: false, error: 'no such scene node' },
+        ],
+        images: { abc: 'AAAA' },
+      },
+    }),
+  }).connect()
+  const target = await fakePlugin({
+    file: 'Target File',
+    ops: [BUILD_OP],
+    handle: async (request) => ({
+      ok: true,
+      result: { dryRun: false, parent: { id: '0:1', name: 'Page 1' }, nodes: request.params.nodes.map((n) => ({ source: n.source, node: '77:1', ok: true, same: 12 })) },
+    }),
+  }).connect()
+  try {
+    const answer = await api('POST', '/call', { op: 'node.transfer', params: { from: 'Source', to: 'Target', nodes: ['1:1', '1:9'] } })
+    assert.equal(answer.status, 200, JSON.stringify(answer.body))
+    const result = answer.body.result
+    assert.equal(answer.body.from, 'Source File')
+    assert.equal(answer.body.to, 'Target File')
+    assert.deepEqual([result.total, result.copied, result.faithful], [2, 1, 1])
+    // Only what read cleanly crosses over, with its pictures, and without the reading's own fields.
+    const sent = target.seen.find((r) => r.op === 'node.build').params
+    assert.deepEqual(sent.nodes.map((n) => n.source), ['1:1'])
+    assert.deepEqual(sent.images, { abc: 'AAAA' })
+    const card = result.nodes.find((n) => n.source === '1:1')
+    assert.equal(card.node, '77:1')
+    assert.equal(card.detached.length, 1)
+    assert.equal(card.spec, undefined)
+    assert.equal(result.nodes.find((n) => n.source === '1:9').ok, false)
+  } finally {
+    await source.stop()
+    await target.stop()
+  }
+})
+
+test('node.transfer names the half that failed', async () => {
+  const source = await fakePlugin({ file: 'Only File', ops: [SPEC_OP], handle: async () => ({ ok: false, error: 'reads are off', code: 'gate_closed' }) }).connect()
+  try {
+    const answer = await api('POST', '/call', { op: 'node.transfer', params: { from: 'Only', to: 'Nowhere', nodes: ['1:1'] } })
+    assert.equal(answer.body.ok, false)
+    assert.match(answer.body.stage, /reading in Only/)
+  } finally {
+    await source.stop()
+  }
+})

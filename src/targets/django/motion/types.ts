@@ -6,7 +6,11 @@
  * `beta-adapter.ts` actually reads, not the full upstream shape.
  */
 
-/** The complete `KeyframePropertyFieldName` union (30 values) — every scalar property Motion can keyframe. */
+/**
+ * The complete `KeyframePropertyFieldName` union (35 values) — every scalar property Motion can
+ * keyframe. The last five arrived with 3D transforms (typings 1.143.0, beta): the rotations are in
+ * degrees, `TRANSFORM_3D_TRANSLATION_Z` and `SCENE_3D_PERSPECTIVE` in pixels, all `FLOAT`.
+ */
 export const MOTION_PROPERTY_ALLOWLIST: readonly KeyframePropertyFieldName[] = [
   'TRANSLATION_X',
   'TRANSLATION_Y',
@@ -38,7 +42,36 @@ export const MOTION_PROPERTY_ALLOWLIST: readonly KeyframePropertyFieldName[] = [
   'GRID_COLUMN_GAP',
   'PATH_TRIM_START',
   'PATH_TRIM_END',
+  'TRANSFORM_3D_TRANSLATION_Z',
+  'TRANSFORM_3D_ROTATION_X',
+  'TRANSFORM_3D_ROTATION_Y',
+  'TRANSFORM_3D_ROTATION_Z',
+  'SCENE_3D_PERSPECTIVE',
 ] as const
+
+/**
+ * The four numbers of a `FIXED_ORDER` 3D transform as they stand outside the timeline. A track
+ * animates one of them; the composite `transform` an emitter writes needs the other three too.
+ */
+export interface MotionStaticTransform3d {
+  readonly translateZ: number
+  readonly rotateX: number
+  readonly rotateY: number
+  readonly rotateZ: number
+  /**
+   * The layer's own 2D rotation in degrees, as Figma reports it (counter-clockwise), when it has
+   * one. A composite `transform` replaces the static one for the length of the animation, so it
+   * has to carry the 2D turn the static rule had — or the layer straightens up while it moves.
+   */
+  readonly rotation?: number
+  /** The 3D pivot, needed with `rotation`: such a layer's `transform-origin` is its top-left. */
+  readonly origin?: { readonly x: MotionOriginAxis; readonly y: MotionOriginAxis }
+}
+
+export interface MotionOriginAxis {
+  readonly unit: 'PERCENT' | 'PIXELS'
+  readonly value: number
+}
 
 export interface MotionKeyframe {
   readonly id: string
@@ -68,4 +101,6 @@ export interface MotionSnapshot {
   readonly animationStyles: readonly MotionAnimationStyle[]
   readonly timelines: readonly MotionTimeline[]
   readonly tracks: readonly MotionTrack[]
+  /** The node's own `FIXED_ORDER` transform, when it has one — absent for `NONE` and `FREEFORM`. */
+  readonly transform3d?: MotionStaticTransform3d
 }

@@ -110,3 +110,18 @@ test('styles.list reports a custom animation style with the animations it plays,
     },
   ])
 })
+
+test('a shader read names the settings that are keyframed, which Figma leaves out of properties', async () => {
+  // typings 1.143.0: an animated shader setting is omitted from `properties` on a read and lives
+  // in `manualKeyframeTracks.fills[index].properties`.
+  const { describeShaderPaints } = await import('./apply.ts')
+  const fills = [
+    { type: 'SOLID', color: { r: 0, g: 0, b: 0 } },
+    { type: 'SHADER', id: 'sh/1', properties: { '1:1': 2 } },
+    { type: 'SHADER', id: 'sh/2', properties: {} },
+  ]
+  const tracks = { 1: { properties: { '1:2': { keyframes: [] } } }, 0: { keyframes: [] } }
+  assert.deepEqual(describeShaderPaints(fills, tracks), [{ id: 'sh/1', properties: { '1:1': 2 }, animated: ['1:2'] }, { id: 'sh/2' }])
+  // No tracks given: the read it always was.
+  assert.deepEqual(describeShaderPaints(fills), [{ id: 'sh/1', properties: { '1:1': 2 } }, { id: 'sh/2' }])
+})

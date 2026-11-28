@@ -11,6 +11,8 @@
 
 import {
   readAliasTargets,
+  settleUnreachedAliases,
+  unreachedAliasNote,
   readAllVariables,
   readLibraryVariables,
   readLocalVariables,
@@ -19,7 +21,8 @@ import {
   type VariableSnapshot,
 } from './variables'
 import { emitMotionTokensJs } from './targets/django/tokens'
-import { emitTokenArtifacts, tokenEmitOptionsFrom } from './tokens/index'
+import { emitTokenArtifacts, previewThemeAxes, summarizeExport, tokenEmitOptionsFrom } from './tokens/index'
+import { describeMapping, mappingFileProblems, mappingFromSettings, mappingToSettings, normalizeMapping, suggestMapping, type TokenMapping } from './tokens/mapping.ts'
 import { emitBootstrapArtifacts } from './targets/django/bootstrap/map'
 import { generateDesignKit } from './targets/django/generate/kit'
 import type { BaseHtmlFrameworkLinks } from './targets/django/index'
@@ -31,8 +34,9 @@ import { collectReactionDestinationIds } from './targets/django/interactions'
 import { matchBootstrapComponent } from './targets/django/bootstrap/components'
 import { imageFillUrls, scaleBorderRadius } from './targets/django/css-emitter'
 import type { ThemableSetData, ThemableVariantData } from './targets/django/bootstrap/theme'
-import { findAllWithCriteria, loadAllPagesAsync, topLevelAncestorOrNull, walkSceneNodes } from './utils/tree'
-import { asPanelCommand, checkpoint } from './utils/budget'
+import { findAllByTypes, findAllWithCriteria, topLevelAncestorOrNull, walkSceneNodes } from './utils/tree'
+import { asPanelCommand, checkpoint, setHostHidden, timeLeft } from './utils/budget'
+import { applyFileDocsConfig, filePins, guidelinesSummary, readFileDocsConfig, readGuidelines, type SharedDataHost } from './docs/file-docs.ts'
 import { exportPlate } from './canvas/plate'
 import {
   ExportGuard,
@@ -58,7 +62,9 @@ import {
   upsertUserPreset,
   parseLanguages,
   type ExportOptions,
+  type ExportTokensOptions,
 } from './settings'
+import { MAPPING_SUPERSEDES, applyFileTokenConfig, pickFileTokenConfig, readFileTokenConfig, withMapping, writeFileTokenConfig, type FileTokenField } from './tokens/file-config.ts'
 import {
   buildExportReport,
   buildFigmaFileReference,
@@ -113,7 +119,10 @@ import { buildTokenEntries } from './targets/design-md/model'
 import { deliverPackage } from './delivery'
 import { agentManifest, cancelAgentRequest, handleAgentRequest, setGates } from './agent/listener.ts'
 import { storedGatesFor, withStoredGates, type StoredGates } from './agent/gate-storage.ts'
-import { postToUi } from './agent/ui-post.ts'
+import { postToUi, setPanelUp } from './agent/ui-post.ts'
+import { listenEverywhere, recordEvent } from './agent/events.ts'
+import { startTextReview } from './agent/listen-ops.ts'
+import { parseQuickParams, suggestCommands } from './agent/quick-action.ts'
 import { setModuleProvider, setUiMessageRunner } from './agent/plugin-ops.ts'
 import { setModuleAdminProvider } from './agent/module-ops.ts'
 import { UI_COMMANDS } from './agent/ui-commands.ts'
@@ -134,10 +143,11 @@ import {
 } from './modules/registry.ts'
 import { conditionMatches, moduleCapabilities, moduleStateValueError, parseUserModule, type ModuleProblem, type UserModule } from './modules/contract.ts'
 import { MODULE_AUTHORING_GUIDE, MODULE_JSON_SCHEMA, MODULE_SCHEMA_ID, MODULE_TEMPLATE, moduleAgentPrompt } from './modules/schema.ts'
-import { formatGridTrack, gridSpecsOf, planFont, planProps, repeatModifier, repeatWords } from './canvas/props.ts'
+import { ANNOTATION_PROPERTIES, formatGridTrack, NETWORK_READ_LIMIT, planFont, planProps, readArc, readExports, readNetwork, repeatModifier, repeatWords } from './canvas/props.ts'
 import { replaceCustomAnimationEntries, resolveFigmaAnimationStyle } from './canvas/motion-styles.ts'
 import { describe3d } from './canvas/space3d.ts'
 import { emitLibrary, emitReact, missingImports, type ReactOutput } from './targets/react/index.ts'
+import { scaleCssUnits } from './targets/react/units.ts'
 import { asCodeLayer, CODE_LAYER_EXECUTABLES } from './targets/react/code-layer.ts'
 import { fileKeyFrom } from './targets/react/code-connect.ts'
 import { componentName as reactComponentName } from './targets/react/jsx.ts'
@@ -152,15 +162,19 @@ import {
   describeEffects,
   describeGrids,
   describePaints,
+  buildPaints,
+  readGrids,
+  readModes,
   variableName,
 } from './canvas/apply.ts'
-import { createNode, planCreate, type CreatePlan, type CreateSpec } from './canvas/create.ts'
-import { styledRuns, writableFont } from './canvas/text-runs.ts'
+import { createNode, planCreate, syncSlideGrid, type CreatePlan, type CreateSpec } from './canvas/create.ts'
+import { textRuns, writableFont } from './canvas/text-runs.ts'
 import { compare, specFrom, type RoundTripFinding } from './canvas/roundtrip.ts'
 import { sendableLinks } from './canvas/link-reader.ts'
 import { docNames, placeDocs, type PlacedDocs } from './canvas/docs.ts'
 import { addressIn, readOverrides } from './canvas/overrides.ts'
 import { readKeyframes } from './canvas/keyframes.ts'
+import { animatedShaderProperties, sameShaderInCatalogue } from './agent/paints.ts'
 import { readPaintsForWrite } from './canvas/paint-reader.ts'
 import { decorationWords } from './canvas/decoration.ts'
 import { connectorWords, editorProblem, pageIdOf, tableWords, transitionWords } from './canvas/board.ts'
@@ -175,7 +189,7 @@ import {
   type PropertyType,
 } from './canvas/components.ts'
 import { binaryFile, slugify, textFile } from './agent/files.ts'
-import { describeStyle, localStyles, styleFor, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
+import { describeStyle, localStyles, styleFor, styleLinks, STYLE_KINDS, type StyleKind } from './canvas/styles.ts'
 import { runModuleCommand } from './modules/run.ts'
 import { beginRecording, endRecording } from './agent/ui-post.ts'
 import { identity, mayDecide, type MailItem } from './mail/mailbox.ts'
@@ -209,7 +223,11 @@ type PluginMessage =
   | { type: 'SAVE_UPDATE_PREFERENCES'; preferences: unknown }
   | { type: 'OPEN_EXTERNAL'; url: string }
   | { type: 'UI_RESIZE'; width: number; height: number; persist?: boolean }
+  | { type: 'HOST_VISIBILITY'; hidden: boolean }
   | { type: 'LIST_VARIABLE_COLLECTIONS' }
+  | { type: 'THEME_AXES_PREVIEW'; tokens?: Partial<ExportTokensOptions>; detect?: boolean }
+  | { type: 'TOKENS_MAPPING'; collection?: string; mapping?: unknown; suggest?: boolean; file?: string; request?: number }
+  | { type: 'TOKENS_MAPPING_SET'; mapping: unknown; collection?: string; file?: string; request?: number }
   | { type: 'SYNC_BREAKPOINT_FRAMES' }
   | { type: 'SAVE_USER_PRESET'; label: string; values: unknown }
   | { type: 'DELETE_USER_PRESET'; id: string }
@@ -310,6 +328,16 @@ type PluginMessage =
   | { type: 'FILE_THUMBNAIL' }
   | { type: 'FILE_THUMBNAIL_SET'; nodeId: string | null }
   | { type: 'UNDO' }
+  | { type: 'PAGE_SET'; pageId?: string; name?: string; background?: unknown; prototypeBackground?: unknown; guides?: unknown }
+  | { type: 'VIEWPORT' }
+  | { type: 'VIEWPORT_SET'; nodes?: unknown; center?: unknown; zoom?: number }
+  | { type: 'STORAGE_KEYS' }
+  | { type: 'STORAGE_REMOVE'; keys: unknown }
+  | { type: 'UI_POSITION'; x?: number; y?: number }
+  | { type: 'CHANGES_WATCH'; on: boolean; document?: boolean }
+  | { type: 'CHANGES_READ'; since?: number; limit?: number; origin?: string }
+  | { type: 'SELECTION_SET'; nodes?: unknown; text?: unknown }
+  | { type: 'VARIABLE_SUGGEST'; nodes?: unknown }
   // Dev Mode: the links, notes and measurements a designer leaves for the person writing the code
   | { type: 'DEV_LINK_LIST'; nodes?: unknown; includeChildren?: boolean }
   | { type: 'DEV_LINK_SET'; nodes?: unknown; add?: unknown; edit?: unknown; remove?: unknown }
@@ -319,6 +347,9 @@ type PluginMessage =
   | { type: 'MEASURE_LIST'; nodes?: unknown }
   | { type: 'MEASURE_SET'; add?: unknown; edit?: unknown; remove?: unknown }
   | { type: 'NODE_ROUNDTRIP'; nodes: unknown; depth?: number; keep?: boolean; ignore?: unknown }
+  | { type: 'TRANSFER_STATUS' }
+  | { type: 'NODE_SPEC'; nodes: unknown; depth?: number; budgetBytes?: number; localComponents?: string }
+  | { type: 'NODE_BUILD'; nodes: unknown; images?: unknown; parent?: string; ignore?: unknown; dryRun?: boolean }
   | {
       type: 'EMIT_REACT'
       scope?: ExportScope
@@ -696,18 +727,39 @@ function defaultRoots(): readonly SceneNode[] {
  * `var(--content-base, #101010)` — and losing them is worth a sentence in the report, not the
  * whole render.
  */
+/** How long the React export waits for library variables before it ships with the ones it has. */
+const LIBRARY_VARIABLES_BUDGET_MS = 30_000
+
 async function variableNamesForExport(): Promise<{
   names: Map<string, string>
   /** The same variables as a stylesheet, so the emitted `var(--token, …)` has a table to read. */
   css: string
   gaps: string[]
 }> {
-  const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+  const exportOptions = await loadExportOptions()
   const asCss = (snapshot: VariableSnapshot): string =>
     emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(exportOptions, readRenameMap())).css
   try {
-    const snapshot = await readAllVariables({ collectionMerges: exportOptions.themeMerges.groups })
-    return { names: new Map(snapshot.variables.map((one) => [one.id, one.name])), css: asCss(snapshot), gaps: [] }
+    // Bounded: every library variable is its own round trip to Figma's team-library service, and a
+    // file with a large design system enabled (412 variables in five collections, measured
+    // upstream) outran the channel before a single file came back. What is not read in time is
+    // named as a gap; the tokens the scope itself binds are resolved separately by the caller.
+    const snapshot = await readAllVariables({
+      collectionMerges: exportOptions.themeMerges.groups,
+      budgetMs: LIBRARY_VARIABLES_BUDGET_MS,
+    })
+    return {
+      names: new Map(snapshot.variables.map((one) => [one.id, one.name])),
+      css: asCss(snapshot),
+      gaps:
+        snapshot.stoppedOn === 'budgetMs'
+          ? [
+              `the enabled libraries hold more variables than could be read in ${LIBRARY_VARIABLES_BUDGET_MS / 1000} s ` +
+                `(${snapshot.nextOffset ?? 0} were) — tokens.css lists only those, and the tokens this screen binds; ` +
+                'run the token export for the whole table',
+            ]
+          : [],
+    }
   } catch (error) {
     const local = foldSplitThemeCollections(
       await readLocalVariables(),
@@ -1093,10 +1145,104 @@ async function probeFontFacts(styles: readonly TextStyle[]): Promise<Map<string,
  * in it at all. `includeLibraries` is how that file gets its own design system; `libraryNote`
  * is how the other one finds out there was something to include.
  */
+/** The person's saved export settings with the FILE's token config over them (see
+ * tokens/file-config.ts): what the tokens are is the file's to say, wherever it is opened. */
+async function loadExportOptions(): Promise<ExportOptions> {
+  return applyFileTokenConfig(normalizeExportOptions(await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)), readFileTokenConfig())
+}
+
+/**
+ * What the Tokens settings screen draws — the mapping in force and what it ships.
+ *
+ * In force means: the one pinned in the file; else the file's older settings (collection roles,
+ * theme axes) read as a mapping, so a file set up before the screen existed opens as it exports;
+ * else one suggested from what the designers set up. Only a pinned mapping is a decision — the
+ * screen says which of the three it is showing, and the first save pins it.
+ */
+/**
+ * The variables the file's aliases reach outside it, for the Tokens screen, kept for the
+ * session. Following them is a lookup per alias — in a file consuming a library, hundreds of
+ * network reads — and the screen asks on every click. Read again only when the set of aliases
+ * changes; a library edited meanwhile shows its new values on the next export, which reads afresh.
+ */
+let aliasTargetsCache: { key: string; targets: VariableSnapshot & { unresolved?: number } } | null = null
+async function screenAliasTargets(local: VariableSnapshot): Promise<VariableSnapshot & { unresolved?: number }> {
+  const known = new Set(local.variables.map((v) => v.id))
+  const outside = new Set<string>()
+  const walk = (value: unknown): void => {
+    if (value && typeof value === 'object') {
+      if ((value as { type?: string }).type === 'VARIABLE_ALIAS' && typeof (value as { id?: unknown }).id === 'string') {
+        if (!known.has((value as { id: string }).id)) outside.add((value as { id: string }).id)
+      } else for (const inner of Object.values(value as Record<string, unknown>)) walk(inner)
+    }
+  }
+  for (const v of local.variables) for (const value of Object.values(v.valuesByMode)) walk(value)
+  const key = [...outside].sort().join('|')
+  if (aliasTargetsCache?.key === key) return aliasTargetsCache.targets
+  // Bounded: the screen answers within seconds even in a file whose library stopped publishing
+  // what it points at. What it could not reach is said, and kept, like the rest, for the session.
+  const targets = await readAliasTargets(local, { lookupMs: 2000, budgetMs: 6000 }).catch(() => ({ collections: [], variables: [] }))
+  aliasTargetsCache = { key, targets }
+  return targets
+}
+
+async function mappingAnswer(collection?: string, draft?: unknown, suggest = false, file?: string) {
+  // The package follows aliases onto variables the file no longer lists (deleted ones keep their
+  // ids) and libraries by id; the screen does too, or its preview would show
+  // `var(--variableid-…)` where the download has the colour.
+  const local = await readLocalVariables()
+  const targets = await screenAliasTargets(local)
+  // Read from the file each time — local reads, unlike the walk — so an edit shows at once.
+  const settled = await settleUnreachedAliases(local.variables, new Set([...local.variables.map((v) => v.id), ...targets.variables.map((v) => v.id)]))
+  const snapshot = { ...local, collections: [...local.collections, ...targets.collections], variables: [...settled.variables, ...targets.variables] }
+  const pinned = readFileTokenConfig()
+  const options = await loadExportOptions()
+  const problems: string[] = []
+  let mapping: TokenMapping
+  let source: 'pinned' | 'settings' | 'suggested' | 'draft'
+  if (suggest) {
+    mapping = suggestMapping(local)
+    source = 'suggested'
+  } else if (draft !== undefined && draft !== null) {
+    const checked = normalizeMapping(draft)
+    problems.push(...checked.problems)
+    mapping = checked.mapping ?? suggestMapping(local)
+    source = 'draft'
+  } else if (pinned?.mapping) {
+    mapping = pinned.mapping
+    source = 'pinned'
+  } else {
+    const fromSettings = mappingFromSettings(options.tokens, local)
+    mapping = fromSettings ?? suggestMapping(local)
+    source = fromSettings ? 'settings' : 'suggested'
+  }
+  problems.push(...mappingFileProblems(local, mapping))
+  const tokens = { ...options.tokens, ...mappingToSettings(mapping) }
+  delete tokens.structure
+  const summary = summarizeExport(snapshot, tokenEmitOptionsFrom({ ...options, tokens }, readRenameMap()), file, tokens.cssModulesGlobal)
+  const aliasNote = unreachedAliasNote(settled.settled, settled.left)
+  if (aliasNote) summary.notes = [...summary.notes, aliasNote]
+  return {
+    mapping,
+    source,
+    problems,
+    view: describeMapping(local, mapping, { collection, resolve: targets }),
+    summary,
+    access: {
+      editable: figma.editorType !== 'dev',
+      // A mapping is saved in the file: a preview's "use" replaces it, and the screen says so.
+      pinned: Boolean(pinned?.mapping),
+      // An export structure an agent pinned is not something the screen can show; saving a
+      // mapping replaces it, and the screen says so before anyone does.
+      agentStructure: Boolean(pinned?.structure),
+    },
+  }
+}
+
 async function readGraph(
   includeLibraries = false,
   collectionMerges: readonly CollectionMerge[] = []
-): Promise<{ graph: TokenGraph; libraryNote?: string }> {
+): Promise<{ graph: TokenGraph; libraryNote?: string; aliasNote?: string }> {
   const [collections, variables, textStyles, effectStyles] = await Promise.all([
     figma.variables.getLocalVariableCollectionsAsync(),
     figma.variables.getLocalVariablesAsync(),
@@ -1139,11 +1285,20 @@ async function readGraph(
       })),
       ...(library?.variables ?? []),
     ],
-  }).catch(() => ({ collections: [], variables: [] }))
+    // Bounded: a library that stopped handing its variables to this file (a consumer file's aliases
+    // onto it) hangs a lookup for minutes and still answers nothing; those are settled below.
+  }, { lookupMs: 3000, budgetMs: 30_000 }).catch(() => ({ collections: [], variables: [] }))
   const outside = {
     collections: [...(library?.collections ?? []), ...aliasTargets.collections],
     variables: [...(library?.variables ?? []), ...aliasTargets.variables],
   }
+  const reached = new Set([...variables.map((v) => v.id), ...outside.variables.map((v) => v.id)])
+  const settledLocal = await settleUnreachedAliases(
+    variables.map((v) => ({ id: v.id, name: v.name, collectionId: v.variableCollectionId, valuesByMode: v.valuesByMode })),
+    reached
+  )
+  const valuesOf = new Map(settledLocal.variables.map((v) => [v.id, v.valuesByMode]))
+  const aliasNote = unreachedAliasNote(settledLocal.settled, settledLocal.left)
   const libraryNote = includeLibraries ? undefined : await libraryCollectionsNote()
   const graph = foldSplitThemeCollections({
     fileName: figma.root.name,
@@ -1172,7 +1327,7 @@ async function readGraph(
         name: v.name,
         collectionId: v.variableCollectionId,
         resolvedType: v.resolvedType,
-        valuesByMode: v.valuesByMode,
+        valuesByMode: valuesOf.get(v.id) ?? v.valuesByMode,
         // Scopes are the designer's own "where may this be applied" — DESIGN.md prefers them over
         // guessing the role from the token name.
         scopes: v.scopes,
@@ -1220,7 +1375,7 @@ async function readGraph(
       }),
     })),
   }, collectionMerges)
-  return { graph, ...(libraryNote ? { libraryNote } : {}) }
+  return { graph, ...(libraryNote ? { libraryNote } : {}), ...(aliasNote ? { aliasNote } : {}) }
 }
 
 /**
@@ -1307,7 +1462,26 @@ interface ComponentDocsResult {
   docs: ComponentDoc[]
   /** `previews/*.png` bytes to ship alongside `COMPONENTS.md`. */
   files: Record<string, Uint8Array>
+  /** Said when the walk stopped short: which pages it read, and why the rest are missing. */
+  note?: string
 }
+
+/** How long the token package waits for its component docs. Loading a large file's pages can
+ * take minutes, or never settle — and a cold 32-page design system takes 35-60 s — and the
+ * tokens must not wait on that forever. Pages are read in batches against a deadline 15 s inside
+ * this, so a slow file ships a partial COMPONENTS.md that says what is missing; this outer
+ * ceiling only catches a page that hangs. It stays under the bridge's 180 s call ceiling with
+ * room for the token build. */
+const COMPONENT_DOCS_BUDGET_MS = 100_000
+/** Held back from an agent run's own deadline for building the package after the docs. */
+const COMPONENT_DOCS_RESERVE_MS = 20_000
+
+/** The file's pinned documentation settings (docs.configure) over this person's saved ones:
+ * what the documentation half of a package is, is the file's to say, wherever it is opened. */
+function withFileDocs<T extends { docs: { componentDocs: boolean; componentPreviews: boolean; previewBudgetMb: number } }>(options: T): T {
+  return applyFileDocsConfig(options, readFileDocsConfig(figma.root as unknown as SharedDataHost))
+}
+
 
 /**
  * Reads every local component's "Component configuration": the markdown description, the
@@ -1320,7 +1494,9 @@ interface ComponentDocsResult {
 async function collectComponentDocs(
   withPreviews: boolean,
   budgetMb: number,
-  nodes?: readonly (ComponentSetNode | ComponentNode)[]
+  nodes?: readonly (ComponentSetNode | ComponentNode)[],
+  /** Stop here and ship what was read — a partial COMPONENTS.md beats none (see the note). */
+  deadline: number = Number.POSITIVE_INFINITY
 ): Promise<ComponentDocsResult> {
   const budgetBytes = Math.max(1, budgetMb) * 1024 * 1024
   const files: Record<string, Uint8Array> = {}
@@ -1328,14 +1504,59 @@ async function collectComponentDocs(
   // documentation budget is the limit, not the transport cap.
   const previewGuard = new ExportGuard({ budgetBytes, transport: false })
   let targets: (ComponentSetNode | ComponentNode)[]
+  let loadMs = 0
+  let findMs = 0
+  const unreadPages: string[] = []
+  const collectStarted = Date.now()
   if (nodes) {
     targets = [...nodes]
   } else {
-    await loadAllPagesAsync()
-    targets = figma.root
-      .findAllWithCriteria({ types: ['COMPONENT_SET', 'COMPONENT'] })
-      .filter(isDocumentableComponent)
+    // Page by page, four at a time, and collected as each batch loads — not one document-wide
+    // load and search. A plugin session starts with only the open page loaded (every rebuild or
+    // reopen is a cold start), and an all-or-nothing wait on a big file shipped no COMPONENTS.md
+    // at all. Now the pages read before the deadline are documented, the rest are named, and the
+    // session keeps them loaded — the next export finishes the job. A failing page is named too,
+    // instead of failing the whole package. Per-page search needs no document-wide gate.
+    targets = []
+    const pages = figma.root.children.slice()
+    const BATCH = 4
+    for (let start = 0; start < pages.length; start += BATCH) {
+      const batch = pages.slice(start, start + BATCH)
+      if (Date.now() > deadline) {
+        unreadPages.push(...batch.map((page) => page.name))
+        continue
+      }
+      await checkpoint()
+      const loadStarted = Date.now()
+      const loaded = await Promise.all(
+        batch.map(async (page) => {
+          try {
+            await page.loadAsync()
+            return page
+          } catch {
+            try {
+              await page.loadAsync()
+              return page
+            } catch {
+              unreadPages.push(page.name)
+              return null
+            }
+          }
+        })
+      )
+      const batchLoad = Date.now() - loadStarted
+      loadMs += batchLoad
+      const findStarted = Date.now()
+      for (const page of loaded) {
+        if (!page) continue
+        targets.push(...(await findAllByTypes<ComponentSetNode | ComponentNode>(page, ['COMPONENT_SET', 'COMPONENT'])).filter(isDocumentableComponent))
+      }
+      const batchFind = Date.now() - findStarted
+      findMs += batchFind
+      postToUi({ type: 'COMPONENT_DOCS_PROGRESS', pages: Math.min(start + BATCH, pages.length), of: pages.length, components: targets.length, loadMs: batchLoad, findMs: batchFind, elapsedMs: Date.now() - collectStarted })
+    }
   }
+  const readStarted = Date.now()
 
   const pageNameById = new Map<string, string>()
   const pageOf = (node: BaseNode): string | undefined => {
@@ -1411,6 +1632,20 @@ async function collectComponentDocs(
       postToUi({ type: 'COMPONENT_PREVIEW_PROGRESS', done: docs.length, total: targets.length })
     }
     await checkpoint()
+    if (Date.now() > deadline && docs.length < targets.length) break
+  }
+  const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`
+  const timing = `pages ${seconds(loadMs)}, search ${seconds(findMs)}, reading ${seconds(Date.now() - readStarted)}`
+  if (docs.length < targets.length || unreadPages.length > 0) {
+    const parts = [
+      docs.length < targets.length ? `${docs.length} of the ${targets.length} components found` : `${docs.length} components`,
+      unreadPages.length > 0 ? `${unreadPages.length} page(s) not read yet: ${unreadPages.slice(0, 8).join(', ')}${unreadPages.length > 8 ? ', …' : ''}` : '',
+    ].filter(Boolean)
+    return {
+      docs,
+      files,
+      note: `COMPONENTS.md is partial — ${parts.join('; ')} (${timing}). The pages read so far stay loaded in this session: export again to complete it${withPreviews ? '; previews are the slow part — lower their budget or turn them off in Settings → Documentation' : ''}`,
+    }
   }
   return { docs, files }
 }
@@ -1526,7 +1761,36 @@ function clampUiSize(raw: unknown): { width: number; height: number } {
   }
 }
 
-if (figma.mode === 'codegen') {
+/** Whether the panel is up, and a promise that settles when it is — what the startup posts wait
+ * on, since the panel may open a while after load (see `openPanel`). */
+let panelOpen = false
+let panelShown: () => void = () => undefined
+const panelReady = new Promise<void>((resolve) => {
+  panelShown = resolve
+})
+setPanelUp(false)
+
+if (figma.mode === 'textreview') {
+  // The headless reviewer Figma runs beside the open file: no panel, no channel — it answers
+  // "what is wrong with this text" from the rules in storage, and leaves a note of what it
+  // flagged for the panel's event feed.
+  startTextReview()
+} else if (figma.mode === 'codegen') {
+  // The panel stays hidden — Dev Mode has its own — but it is loaded, so the agent channel the
+  // panel hosts reaches the file in Dev Mode's code view too. `showUI` is refused only inside the
+  // generate callback, not here.
+  try {
+    figma.showUI(__html__, { visible: false, themeColors: true })
+    panelOpen = true
+    setPanelUp(true)
+    panelShown()
+    listenEverywhere()
+  } catch (error) {
+    console.warn('[codegen] no hidden panel, so no agent channel here', error)
+  }
+  figma.codegen.on('preferenceschange', async (event) => {
+    recordEvent({ kind: 'CODEGEN_PREFERENCE', data: { propertyName: event.propertyName } })
+  })
   figma.codegen.on('generate', async ({ node }) => {
     try {
       const ir = await serializeNode(node)
@@ -1540,10 +1804,15 @@ if (figma.mode === 'codegen') {
         fileName: figma.root.name,
       })
 
+      // The unit the developer picked in Dev Mode's settings — px, or rem at the scale the manifest
+      // declares (16 unless they changed it). The emitter thinks in pixels; the CSS is converted
+      // on the way out.
+      const preferences = figma.codegen.preferences
+      const scale = preferences.unit === 'SCALED' ? (preferences.scaleFactor ?? 16) : null
       const results: CodegenResult[] = []
       for (const [path, contents] of Object.entries(files)) {
         if (path.endsWith('.tsx')) results.push({ title: path, code: contents, language: 'TYPESCRIPT' })
-        else if (path.endsWith('.css')) results.push({ title: path, code: contents, language: 'CSS' })
+        else if (path.endsWith('.css')) results.push({ title: path, code: scale ? scaleCssUnits(contents, scale) : contents, language: 'CSS' })
         else if (path.endsWith('.json')) results.push({ title: path, code: contents, language: 'JSON' })
       }
       // The gaps go in the panel too, and first: this is where a developer is looking when they
@@ -1560,8 +1829,58 @@ if (figma.mode === 'codegen') {
       return [{ title: 'React', code: `// ${String((error as Error)?.message || error)}`, language: 'TYPESCRIPT' }]
     }
   })
+  // The code names styles and tokens, so a style a collaborator edits while a developer is reading
+  // it has to show up — Figma regenerates on selection and preference changes, not on this.
+  figma.on('stylechange', () => figma.codegen.refresh())
 } else {
+  listenEverywhere()
+  /* The panel opens on `run`, not at load. A Tab in quick actions runs the plugin in query mode
+   * first — reading allowed, nothing visible — and `run` is what ends it; a menu launch fires
+   * `run` at once with no parameters. A launch that sees neither `run` nor a parameter request
+   * within a second opens the panel anyway: a plugin that stays invisible because an event did
+   * not come is the one failure worse than a premature panel. */
+  let queried = false
+  const fallback = setTimeout(() => {
+    if (!queried) openPanel()
+  }, 1_000)
+  figma.parameters.on('input', ({ key, query, result }) => {
+    queried = true
+    if (key === 'command') result.setSuggestions(suggestCommands(UI_COMMANDS, query))
+    else {
+      const parsed = parseQuickParams(query)
+      if ('problem' in parsed) result.setError(parsed.problem)
+      else result.setSuggestions([])
+    }
+  })
+  figma.on('run', ({ parameters }) => {
+    clearTimeout(fallback)
+    openPanel()
+    if (parameters?.command) void runQuickAction(String(parameters.command), parameters.params)
+  })
+}
+
+function openPanel(): void {
+  if (panelOpen) return
+  panelOpen = true
   figma.showUI(__html__, { ...UI_SIZE, themeColors: true })
+  setPanelUp(true)
+  panelShown()
+}
+
+/** A panel command run from quick actions: the same handler a click reaches, then a toast. */
+async function runQuickAction(command: string, raw: unknown): Promise<void> {
+  const known = UI_COMMANDS.find((one) => one.name === command)
+  const parsed = parseQuickParams(raw)
+  if (!known || known.access === 'deny') {
+    figma.notify(`No command ${command}`, { error: true })
+    return
+  }
+  if ('problem' in parsed) {
+    figma.notify(parsed.problem, { error: true })
+    return
+  }
+  recordEvent({ kind: 'QUICK_ACTION', data: { command, params: parsed.params } })
+  await handleUiMessage({ ...parsed.params, type: command } as PluginMessage)
 }
 
 const EXPORT_OPTIONS_KEY = 'allcrewChannel.v1.exportOptions'
@@ -1662,6 +1981,10 @@ Promise.all([
   figma.clientStorage.getAsync(UPDATE_PREFERENCES_KEY),
   figma.clientStorage.getAsync(UI_SIZE_KEY),
 ]).then(async ([storedOptions, storedPresets, storedPalette, storedUpdates, storedUiSize]) => {
+  // The headless text reviewer has no panel to tell anything to.
+  if (figma.mode === 'textreview') return
+  // Before any post: the panel may open on `run`, a moment after load.
+  await panelReady
   if (figma.mode !== 'codegen') {
     const uiSize = clampUiSize(storedUiSize)
     figma.ui.resize(uiSize.width, uiSize.height)
@@ -1672,7 +1995,7 @@ Promise.all([
   // The bridge URL and secret are setup and worth persisting; so is the answer a designer has
   // already given about this file. Re-asking on every open does not strengthen consent — it
   // trains the reflex to click through it — and the switches stay in the panel either way.
-  const options = normalizeExportOptions(storedOptions)
+  const options = withFileDocs(applyFileTokenConfig(normalizeExportOptions(storedOptions), readFileTokenConfig()))
   const remembered = await gatesFor()
   // Writes cannot outlive reads, the same rule the panel enforces, applied to what was stored
   // in case the two ever drift apart.
@@ -1682,6 +2005,10 @@ Promise.all([
     options,
     presets: EXPORT_PRESETS,
     userPresets: normalizeUserPresets(storedPresets),
+    // What the FILE decides for everyone (docs settings, its guidelines) — the panel locks those switches.
+    filePins: filePins(figma.root as unknown as SharedDataHost),
+    // Dev Mode's code view loads the panel hidden, for the agent channel alone.
+    ...(figma.mode === 'codegen' ? { headless: true } : {}),
   })
   postToUi({ type: 'UPDATE_PREFERENCES', preferences: normalizeUpdatePreferences(storedUpdates) })
   const paletteSettings = normalizePaletteSettings(storedPalette)
@@ -1694,6 +2021,8 @@ Promise.all([
 
 
 function postSelectionToUi(): void {
+  // Selection changes during quick-action query mode arrive before there is a panel to tell.
+  if (!panelOpen) return
   /* A selected node can vanish under the selection - swapped, detached or deleted by an op - and
    * Figma then throws from the selection getter itself ("in get_selection: the node ... does not
    * exist"). This runs on every selectionchange, so an uncaught throw here is a crash on a click;
@@ -1717,7 +2046,7 @@ function postSelectionToUi(): void {
   })
 }
 
-figma.on('selectionchange', postSelectionToUi)
+if (figma.mode !== 'textreview') figma.on('selectionchange', postSelectionToUi)
 
 /**
  * Which variables a node's fields follow, as one line.
@@ -1955,15 +2284,6 @@ async function describeAnnotations(notes: ReadonlyArray<Annotation>): Promise<Ar
   }))
 }
 
-/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
-const ANNOTATION_PROPERTIES = [
-  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
-  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
-  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
-  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
-  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
-  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
-]
 
 const GROUPINGS = ['group', 'ungroup', 'union', 'subtract', 'intersect', 'exclude', 'flatten', 'outline', 'repeat', 'detach']
 
@@ -2102,6 +2422,327 @@ const variableNameOf = async (id: string): Promise<string | null> => {
   return variable?.name ?? null
 }
 
+/** Every image hash a spec's paints name, through its children. A read spells a picture as
+ * `{ image: { hash } }` (paint-reader); the one-line `image:<hash> FILL` is taken too. */
+function imageHashesIn(spec: CreateSpec): string[] {
+  const found: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s/.exec(value)
+      if (picture && picture[1] !== '?') found.push(picture[1])
+    } else if (Array.isArray(value)) value.forEach(visit)
+    else if (value && typeof value === 'object') {
+      const image = (value as { image?: { hash?: unknown } }).image
+      if (image && typeof image.hash === 'string') found.push(image.hash)
+      Object.values(value).forEach(visit)
+    }
+  }
+  visit(spec)
+  return [...new Set(found)]
+}
+
+/** The spec with every picture re-pointed through `resolve` — a hash this file has, or bytes. A
+ * picture `resolve` cannot answer is taken out of its paint list rather than left to fail. */
+function withImages(spec: CreateSpec, resolve: (hash: string) => { hash: string } | { bytes: string } | null): CreateSpec {
+  const paint = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      const picture = /^image:(\S+)\s+(FILL|FIT|CROP|TILE)$/.exec(value.trim())
+      if (!picture) return value
+      const image = resolve(picture[1])
+      return image ? { image, scaleMode: picture[2] } : undefined
+    }
+    if (Array.isArray(value)) {
+      const kept = value.map(paint).filter((one) => one !== undefined)
+      return kept.length === 0 && value.length > 0 ? undefined : kept
+    }
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (!entry.image || typeof entry.image.hash !== 'string') return value
+      const image = resolve(entry.image.hash)
+      return image ? { ...(value as Record<string, unknown>), image } : undefined
+    }
+    return value
+  }
+  const props = { ...(spec.props ?? {}) } as Record<string, unknown>
+  for (const key of ['fill', 'stroke']) if (key in props) props[key] = paint(props[key]) ?? null
+  return {
+    ...spec,
+    props,
+    ...(Array.isArray(spec.children) ? { children: spec.children.map((child) => withImages(child, resolve)) } : {}),
+  } as CreateSpec
+}
+
+/** Library component keys a spec makes instances of, through its children. */
+function instanceKeysIn(spec: CreateSpec): string[] {
+  const keys: string[] = []
+  const visit = (one: CreateSpec) => {
+    if (one.kind === 'instance' && typeof one.of === 'string' && /^[0-9a-f]{40}$/.test(one.of)) keys.push(one.of)
+    for (const child of (Array.isArray(one.children) ? one.children : []) as CreateSpec[]) visit(child)
+  }
+  visit(spec)
+  return [...new Set(keys)]
+}
+
+/** The spec without the instances whose component `why` says is not here — each one named. */
+function withoutInstances(spec: CreateSpec, why: (key: string) => string | null, out: Array<{ name: string; key: string; why: string }>): CreateSpec {
+  const keep = (one: CreateSpec): boolean => {
+    if (one.kind !== 'instance' || typeof one.of !== 'string') return true
+    const reason = why(one.of)
+    if (reason === null) return true
+    out.push({ name: String((one.props as Record<string, unknown> | undefined)?.name ?? one.of), key: one.of, why: reason })
+    return false
+  }
+  const walk = (one: CreateSpec): CreateSpec =>
+    Array.isArray(one.children) ? ({ ...one, children: (one.children as CreateSpec[]).filter(keep).map(walk) } as CreateSpec) : one
+  return walk(spec)
+}
+
+/** A reading with picture hashes blanked: a picture carried as bytes gets a new hash, and that is
+ * not a difference anyone looking at the two would see. */
+function imagesBlind(props: Record<string, unknown>): Record<string, unknown> {
+  const blank = (value: unknown): unknown => {
+    if (typeof value === 'string') return value.replace(/image:\S+/g, 'image:#')
+    if (Array.isArray(value)) return value.map(blank)
+    if (value && typeof value === 'object') {
+      const entry = value as { image?: { hash?: unknown } }
+      if (entry.image && typeof entry.image.hash === 'string') return { ...(value as Record<string, unknown>), image: { hash: '#' } }
+    }
+    return value
+  }
+  return Object.fromEntries(Object.entries(props).map(([key, value]) => [key, blank(value)]))
+}
+
+/**
+ * Where a portable read is right now — the layer and the step. A library call that never answers
+ * wedges every later read of names in the session, and from outside that looks like silence; this
+ * is what TRANSFER_STATUS hands back while the read is stuck, so the stuck step has a name.
+ */
+let specTrace: { command: string; startedAt: number; node?: string; step?: string; at?: number } | null = null
+
+function traceSpec(step: string, node?: string): void {
+  if (specTrace) specTrace = { ...specTrace, step, node, at: Date.now() }
+}
+
+/** An await with a ceiling. The call it guards may never settle — the promise is left behind and
+ * the read moves on, reporting the step as unfinished instead of hanging the whole command. */
+async function withCeiling<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not answer within ${Math.round(ms / 1000)}s`)), ms)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** What becomes of an instance in a spec: made from a component (`of` — an id here, a library
+ * key in another file), rebuilt as a plain frame from what it shows (`detach`), or left out. */
+type InstancePlan = { of: string } | { detach: true; why: string } | null
+
+/**
+ * A node and its children as the spec NODE_CREATE takes — the reading, and nothing but the
+ * reading. Shared by the round trip (same file) and the transfer (another file); they differ only
+ * in what an instance turns into. Anything the planner will not take is recorded in `dropped` /
+ * `notValues` on the way past rather than quietly left out; `detached` names the instances that
+ * came across as frames.
+ */
+async function readSpecTree(
+  original: SceneNode,
+  depth: number,
+  dropped: RoundTripFinding[],
+  notValues: string[],
+  planInstance: (instance: InstanceNode) => Promise<InstancePlan>,
+  detached: string[] = []
+): Promise<{ spec: CreateSpec | null }> {
+  const build = async (one: SceneNode, level: number, placedByParent = true): Promise<CreateSpec | null> => {
+    traceSpec('reading the layer', `${one.name} (${one.id})`)
+    let reading: Record<string, unknown>
+    try {
+      reading = specTrace ? await withCeiling(describeNode(one, true), 30_000, `reading ${one.name}`) : await describeNode(one, true)
+    } catch (error) {
+      dropped.push({ property: `${one.name}`, why: String((error as Error)?.message || error) })
+      return null
+    }
+    let asFrame = false
+    let of: string | null = null
+    if (one.type === 'INSTANCE') {
+      const plan = await planInstance(one as InstanceNode)
+      if (plan && 'of' in plan) of = plan.of
+      else if (plan && 'detach' in plan) {
+        asFrame = true
+        detached.push(`${one.name}: ${plan.why}`)
+      }
+    }
+    const kids: CreateSpec[] = []
+    // Not into an instance that is made from its component: what is inside it belongs to the
+    // component, and sending it again would build everything twice. A detached one IS its children.
+    // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
+    if (level > 0 && 'children' in one && (one.type !== 'INSTANCE' || asFrame) && String(one.type) !== 'TABLE') {
+      const laysOut = 'layoutMode' in one && (one as FrameNode).layoutMode !== 'NONE'
+      for (const child of (one as SceneNode & ChildrenMixin).children) {
+        const absolute = 'layoutPositioning' in child && (child as FrameNode).layoutPositioning === 'ABSOLUTE'
+        const made = await build(child, level - 1, laysOut && !absolute)
+        if (made) kids.push(made)
+      }
+    }
+    const built = specFrom(asFrame ? { ...reading, type: 'FRAME' } : reading, kids, of)
+    if (!built) {
+      dropped.push({
+        property: `${one.name}`,
+        // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
+        // not build one; its source is read, and a new one made, through Figma's own MCP.
+        why: String(one.type) === 'CODE_INSTANCE'
+          ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
+          : `a ${one.type} cannot be made by NODE_CREATE`,
+      })
+      return null
+    }
+    for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
+    for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
+    // Position is the parent's business only when the parent lays its children out. In a free
+    // frame the coordinates ARE the layout: without them every child of a copied card piled up
+    // at its top-left corner.
+    if (!placedByParent) {
+      built.spec.props = { ...(built.spec.props ?? {}), x: Math.round(one.x * 100) / 100, y: Math.round(one.y * 100) / 100 }
+    }
+    return built.spec
+  }
+  return { spec: await build(original, depth) }
+}
+
+/**
+ * The step a node read is on, so a read that never comes back can say where it stopped.
+ *
+ * Some Figma calls never settle in some sessions (a library lookup that wedges, a server-backed
+ * read while the app is offline), and from outside that is only silence — 150 s of it, with the
+ * session's queue held. NODE_QUERY caps each node and names the step it was waiting on.
+ */
+let readTrace: { node: string; step: string; at: number } | null = null
+
+async function traced<T>(node: SceneNode, step: string, work: () => Promise<T>): Promise<T> {
+  readTrace = { node: `${node.name} (${node.id})`, step, at: Date.now() }
+  return work()
+}
+
+/**
+ * A node's Dev Mode links, or null when Figma will not say.
+ *
+ * Links live on Figma's servers, and when the app has lost its connection the call never settles
+ * (seen live upstream: every NODE_QUERY with props hung 150 s on this one step). So it gets five
+ * seconds, and a miss turns it off for a minute — one stalled lookup per read, not one per node
+ * of a hundred-node query.
+ */
+let devLinksDownUntil = 0
+let devLinksRefusedUntil = 0
+
+async function devLinksOf(node: SceneNode): Promise<DevResourceWithNodeId[] | string> {
+  if (Date.now() < devLinksRefusedUntil) return []
+  if (Date.now() < devLinksDownUntil) return 'Figma did not answer a moment ago, so they are not asked again for a minute'
+  try {
+    return await withCeiling(node.getDevResourcesAsync(), 5_000, 'Dev Mode links')
+  } catch (error) {
+    const message = String((error as Error)?.message || error)
+    if (/did not answer/.test(message)) {
+      devLinksDownUntil = Date.now() + 60_000
+      return 'Figma did not answer within 5 s'
+    }
+    // A refusal is not silence and not a gap in the read: the file's links are not this
+    // session's to see (live: a 403 on related_links for every node of a file without Dev Mode
+    // access). There are none to show, and asking again per node only repeats the XHR.
+    devLinksRefusedUntil = Date.now() + 10 * 60_000
+    return []
+  }
+}
+
+/** A node read with a ceiling: what it could not finish is named, not waited on forever. */
+async function describeNodeCapped(node: SceneNode, withProps: boolean, ms = 30_000): Promise<Record<string, unknown>> {
+  if (!withProps) return describeNode(node, false)
+  try {
+    return await withCeiling(describeNode(node, true), ms, `reading ${node.name}`)
+  } catch (error) {
+    const stuck = readTrace ? `${readTrace.step} of ${readTrace.node}` : 'an unknown step'
+    return { ...(await describeNode(node, false)), unreadable: `${String((error as Error)?.message || error)} — stuck on ${stuck}` }
+  }
+}
+
+/**
+ * The rest of what a layer IS, beyond paints and layout — each said only when it departs from
+ * Figma's default, so an ordinary rectangle still reads in a few lines. Every word here is one
+ * `NODE_SET` takes back.
+ */
+async function readShape(node: SceneNode, props: Record<string, unknown>): Promise<void> {
+  const bag = node as unknown as Record<string, unknown>
+  const round = (value: number, places = 2) => Math.round(value * 10 ** places) / 10 ** places
+  // A turn is the rotation; anything else the matrix holds — a mirror, a skew — only the matrix can say.
+  const matrix = bag.relativeTransform as Transform | undefined
+  if (matrix) {
+    const [[a, b], [c, d]] = matrix
+    const turned = Math.abs(a - d) < 1e-6 && Math.abs(b + c) < 1e-6 && Math.abs(a * a + c * c - 1) < 1e-6
+    if (!turned) props.transform = matrix.map((row) => row.map((value) => round(value, 6)))
+    else if (typeof bag.rotation === 'number' && Math.abs(bag.rotation) > 0.001) props.rotation = round(bag.rotation)
+  }
+  if (bag.isMask === true) {
+    props.isMask = true
+    if (bag.maskType !== 'ALPHA') props.maskType = bag.maskType
+  }
+  if (typeof bag.cornerSmoothing === 'number' && bag.cornerSmoothing > 0) props.cornerSmoothing = round(bag.cornerSmoothing)
+  if (
+    typeof bag.strokeMiterLimit === 'number' &&
+    Array.isArray(bag.strokes) &&
+    bag.strokes.length > 0 &&
+    Math.abs(bag.strokeMiterLimit - 4) > 0.001
+  ) {
+    props.strokeMiterLimit = round(bag.strokeMiterLimit)
+  }
+  if (node.type === 'STAR' || node.type === 'POLYGON') props.pointCount = bag.pointCount
+  if (node.type === 'STAR') props.innerRadius = round(bag.innerRadius as number)
+  if (node.type === 'ELLIPSE') {
+    const arc = readArc(bag.arcData as ArcData)
+    if (arc) props.arc = arc
+  }
+  if (node.type === 'BOOLEAN_OPERATION') props.booleanOperation = bag.booleanOperation
+  if (node.type === 'VECTOR' && typeof bag.handleMirroring === 'string' && bag.handleMirroring !== 'NONE') {
+    props.handleMirroring = bag.handleMirroring
+  }
+  if (bag.targetAspectRatio) props.aspectLock = true
+  if (node.type === 'INSTANCE') {
+    if (typeof bag.scaleFactor === 'number' && Math.abs(bag.scaleFactor - 1) > 0.0001) props.scaleFactor = Math.round(bag.scaleFactor * 1000) / 1000
+    // The nested instances whose properties this one offers at its own level — what a designer
+    // sees listed under the instance's properties without opening it.
+    const exposed = (bag.exposedInstances as InstanceNode[] | undefined) ?? []
+    if (exposed.length > 0) props.exposedInstances = exposed.map((one) => ({ id: one.id, name: one.name }))
+  }
+  // Figma's own judgement that the layer is an asset — an icon, an illustration — the thing an
+  // export should ship as a file rather than rebuild.
+  if ((node as SceneNode & { isAsset?: boolean }).isAsset === true) props.asset = true
+  if (Array.isArray(bag.exportSettings) && bag.exportSettings.length > 0) {
+    props.exports = readExports(bag.exportSettings as ExportSettings[])
+  }
+  if (bag.devStatus && typeof bag.devStatus === 'object') {
+    const status = bag.devStatus as { type: string; description?: string }
+    props.devStatus = status.description ? { type: status.type, description: status.description } : status.type
+  }
+  if (bag.sectionContentsHidden === true) props.contentsHidden = true
+  if (bag.isExposedInstance === true) props.exposed = true
+  if (Array.isArray(bag.guides) && bag.guides.length > 0) {
+    props.guides = (bag.guides as Guide[]).map((guide) => ({ axis: guide.axis, offset: round(guide.offset) }))
+  }
+  if (Object.keys((bag.explicitVariableModes as Record<string, string> | undefined) ?? {}).length > 0) {
+    const modes = await readModes(node).catch(() => ({}))
+    if (Object.keys(modes).length > 0) props.modes = modes
+  }
+  try {
+    const relaunch = node.getRelaunchData()
+    if (Object.keys(relaunch).length > 0) props.relaunch = relaunch
+  } catch {
+    /* a node inside an instance answers with a throw; it has none of its own */
+  }
+}
+
 async function describeNode(node: SceneNode, withProps: boolean): Promise<Record<string, unknown>> {
   const base: Record<string, unknown> = {
     id: node.id,
@@ -2124,10 +2765,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // 3D (beta): the same shape the transform3d / transformOrigin / scene3d props take, so a tilted
     // card read and sent back stays tilted. Nothing when the layer is flat.
     ...(describe3d(bag) ?? {}),
-    ...('fills' in bag ? { fill: await readPaintsForWrite(bag.fills, variableNameOf, figma.mixed) } : {}),
+    ...('fills' in bag ? { fill: await traced(node, 'fills', () => readPaintsForWrite(bag.fills, variableNameOf, figma.mixed)) } : {}),
     // Beside the line, the settings themselves: what a read hands over is what a write takes,
     // which is the only way to put the same shader on another layer.
-    ...(describeShaderPaints(bag.fills).length > 0 ? { shader: describeShaderPaints(bag.fills) } : {}),
+    // `animated` lists the settings that are keyframed: Figma leaves those out of `properties`.
+    ...(describeShaderPaints(bag.fills).length > 0
+      ? { shader: describeShaderPaints(bag.fills, (bag.manualKeyframeTracks as { fills?: unknown } | undefined)?.fills) }
+      : {}),
     // On an INSTANCE, empty is a decision. Everywhere else a layer without a stroke is the
     // ordinary case and saying so on every read would be noise; on an instance it is the
     // designer having taken the component's line off, and a read that stays silent about it
@@ -2136,7 +2780,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(node.type === 'INSTANCE' && Array.isArray(bag.fills) && bag.fills.length === 0 ? { fill: 'none' } : {}),
     ...('strokes' in bag && Array.isArray(bag.strokes) && bag.strokes.length > 0
       ? {
-          stroke: await readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed),
+          stroke: await traced(node, 'strokes', () => readPaintsForWrite(bag.strokes, variableNameOf, figma.mixed)),
           // Only when it is one: a stroke of mixed weights reads as nothing here, and `null` was
           // being sent back as a weight and refused.
           ...(typeof bag.strokeWeight === 'number' ? { strokeWeight: round(bag.strokeWeight) } : {}),
@@ -2163,10 +2807,11 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // The array the write takes, not the sentence it used to be: an elevation that reads as
     // `"drop shadow #0A1F44 @0.2 0,4 blur 12"` cannot be sent back, and half a screen's design is
     // its shadows.
-    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await readEffects(bag.effects) } : {}),
-    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: gridSpecsOf(bag.layoutGrids) } : {}),
+    ...(Array.isArray(bag.effects) && bag.effects.length > 0 ? { effects: await traced(node, 'effects', () => readEffects(bag.effects)) } : {}),
+    // The list `grid` takes back, tokens and all — a grid that follows the breakpoint tokens copies as one that still does.
+    ...(Array.isArray(bag.layoutGrids) && bag.layoutGrids.length > 0 ? { grid: await traced(node, 'grids', () => readGrids(bag.layoutGrids)) } : {}),
     ...(Array.isArray(bag.animationStyles) && bag.animationStyles.length > 0
-      ? { animation: await describeAnimation(bag.animationStyles) }
+      ? { animation: await traced(node, 'animation styles', () => describeAnimation(bag.animationStyles)) }
       : {}),
     // The length of the timeline, in the word the write takes. The ids beside it were the read
     // naming Figma's own bookkeeping — a caller can neither use them nor send them back.
@@ -2176,7 +2821,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       ? { timeline: (bag.timelines as Timeline[])[0].duration }
       : {}),
     ...(readKeyframes(bag.manualKeyframeTracks)),
-    ...(await describeBindings(bag.boundVariables)),
+    ...(await traced(node, 'variable bindings', () => describeBindings(bag.boundVariables))),
     ...(typeof bag.overflowDirection === 'string' && bag.overflowDirection !== 'NONE'
       ? { scroll: bag.overflowDirection }
       : {}),
@@ -2186,6 +2831,9 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     ...(typeof bag.blendMode === 'string' && bag.blendMode !== 'PASS_THROUGH' && bag.blendMode !== 'NORMAL'
       ? { blendMode: bag.blendMode }
       : {}),
+    // The styles the layer follows. Written and never read until now, so a heading in "H1" came
+    // back as loose numbers and its copy followed nothing.
+    ...(await styleLinks(node)),
   }
   if ('layoutMode' in bag && bag.layoutMode !== 'NONE') {
     props.layout = {
@@ -2195,6 +2843,7 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       primaryAxis: bag.primaryAxisAlignItems,
       counterAxis: bag.counterAxisAlignItems,
       ...(bag.layoutWrap === 'WRAP' ? { wrap: true, wrapGap: round(bag.counterAxisSpacing) } : {}),
+      ...(bag.layoutWrap === 'WRAP' && bag.counterAxisAlignContent === 'SPACE_BETWEEN' ? { alignContent: 'SPACE_BETWEEN' } : {}),
       ...(bag.layoutMode === 'GRID' ? readGridLayout(bag) : {}),
     }
   }
@@ -2267,37 +2916,50 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   }
   const shape = bag.vectorNetwork as VectorNetwork | undefined
   if (shape && Array.isArray(shape.vertices) && shape.vertices.length > 0) {
-    props.network = `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
-      shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
-    }`
+    // The network itself when it is icon-sized, so a copy is the same drawing; a count past that.
+    props.network =
+      shape.vertices.length <= NETWORK_READ_LIMIT
+        ? readNetwork(shape)
+        : `${shape.vertices.length} point(s), ${shape.segments.length} segment(s)${
+            shape.regions?.length ? `, ${shape.regions.length} region(s)` : ''
+          }`
   }
+  await readShape(node, props)
   if (node.type === 'INSTANCE') {
     // What an instance IS, in the words the catalogue uses — the question anyone asks of a screen
     // they are about to build another one like.
-    const main = await node.getMainComponentAsync().catch(() => null)
+    const main = await traced(node, 'the main component', () => node.getMainComponentAsync().catch(() => null))
     // The SET's name when there is one: that is what the catalogue calls it, and a variant's own
     // name is the axis values ("Size=Large, State=Default"), which nobody can instantiate from.
     const owner = main && main.parent?.type === 'COMPONENT_SET' ? main.parent : main
     props.component = owner?.name ?? '(unavailable)'
     // `{ name: value }` — the shape `properties` takes on the way in. It used to read as
     // `"Label=Готово · Show dot=false"`, which is one readable line and could not be sent back.
-    const settings: Record<string, string | boolean> = {}
+    const settings: Record<string, string | boolean | { variable: string }> = {}
     const slots: string[] = []
     for (const [key, entry] of Object.entries(
-      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string }>
+      node.componentProperties as unknown as Record<string, { value?: unknown; type?: string; boundVariables?: { value?: VariableAlias } }>
     )) {
       const name = humanPropertyName(key)
       // A slot holds a node, not a value: there is nothing here for a write to set, so it is
       // reported as the fact it is rather than as a property that failed to travel.
-      if (entry?.type === 'SLOT' || entry?.value === undefined) slots.push(name)
-      else settings[name] = entry.value as string | boolean
+      if (entry?.type === 'SLOT' || entry?.value === undefined) {
+        slots.push(name)
+        continue
+      }
+      // A property that follows a token says so, in the words `properties` takes it back in.
+      const bound = entry.boundVariables?.value?.id
+      const variable = bound ? await figma.variables.getVariableByIdAsync(bound).catch(() => null) : null
+      settings[name] = bound ? { variable: variable?.name ?? bound } : (entry.value as string | boolean)
     }
     if (Object.keys(settings).length > 0) props.properties = settings
     if (slots.length > 0) props.slots = slots
 
     // What the designer changed INSIDE this instance. Without it a copy comes back with every
     // row at its default height — the missing tenth that makes a screen look wrong.
-    const overrides = await readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    const overrides = await traced(node, 'instance overrides', () =>
+      readOverrides(node, (child) => describeNode(child, true).then((one) => (one.props ?? {}) as Record<string, unknown>))
+    )
     if (overrides.length > 0) props.overrides = overrides
   }
   // What Dev Mode shows beside the layer: where its code lives, and what the designer wrote for
@@ -2305,11 +2967,13 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
   // Dev resources are a Design and Dev Mode notion; elsewhere the method is not there to call.
   // Measured live: in FigJam and Slides the method exists and takes tens of seconds to say nothing.
   const devEditor = figma.editorType === 'figma' || figma.editorType === 'dev'
-  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await node.getDevResourcesAsync().catch(() => []) : []
-  const own = links.filter((link) => link.nodeId === node.id)
+  // And they live on Figma's servers: offline, the call never settles, so it is capped (devLinksOf).
+  const links = devEditor && typeof node.getDevResourcesAsync === 'function' ? await traced(node, 'Dev Mode links', () => devLinksOf(node)) : []
+  if (typeof links === 'string') props.unread = `Dev Mode links — ${links}, so they are left out of this read`
+  const own = (typeof links === 'string' ? [] : links).filter((link) => link.nodeId === node.id)
   if (own.length > 0) props.devLinks = own.map((link) => ({ name: link.name, url: link.url }))
   const notes = (node as unknown as { annotations?: ReadonlyArray<Annotation> }).annotations ?? []
-  if (notes.length > 0) props.annotations = await describeAnnotations(notes)
+  if (notes.length > 0) props.annotations = await traced(node, 'annotations', () => describeAnnotations(notes))
   if (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') {
     // Read by id, a component was indistinguishable from a frame: what it can be told, what it is
     // for and where its documentation lives were all things only COMPONENT_CATALOG knew. An agent
@@ -2325,8 +2989,10 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
       (definitions ?? {}) as Parameters<typeof describePropertyDefinitions>[0]
     )
     if (line) props.properties = line
-    const description = (owner.description || '').trim()
-    if (description) props.description = description.length > 200 ? `${description.slice(0, 200)}…` : description
+    // Whole and in markdown, which is what the panel shows and what `description` writes back. It
+    // was cut at 200 characters when it was only something to look at.
+    const description = (owner.descriptionMarkdown || owner.description || '').trim()
+    if (description) props.description = description
     const documentation = (owner.documentationLinks ?? []).map((link) => link.uri)
     if (documentation.length > 0) props.documentation = documentation
     if (node.type === 'COMPONENT' && node.parent?.type === 'COMPONENT_SET') props.variantOf = node.parent.name
@@ -2401,10 +3067,19 @@ async function describeNode(node: SceneNode, withProps: boolean): Promise<Record
     // never returned, so the read could not be sent. Each run carries only what DIFFERS from the
     // layer above — the layer's own values are already in this same object — and the shape is the
     // one `runs` takes on the way in.
-    const runs = await styledRuns(node)
+    const { runs, paragraphs, partlyBound } = await traced(node, 'text runs', () => textRuns(node))
+    // A list the whole text shares is the layer's — one bulleted block is ONE run, never printed.
+    Object.assign(props, paragraphs)
+    // Bound on some characters only: said by the runs, not by the layer.
+    if (props.bind && partlyBound.length > 0) {
+      const bind = { ...(props.bind as Record<string, string>) }
+      for (const field of partlyBound) delete bind[field]
+      if (Object.keys(bind).length > 0) props.bind = bind
+      else delete props.bind
+    }
     if (runs.length > 1) props.runs = runs
   }
-  Object.assign(props, await boardProps(node))
+  Object.assign(props, await traced(node, 'board properties', () => boardProps(node)))
   // A FigJam shape's and a connector's corner is the shape's own business: read-only, and sending
   // it back is refused with "object is not extensible" (measured live).
   if (node.type === 'SHAPE_WITH_TEXT' || node.type === 'CONNECTOR') delete props.cornerRadius
@@ -2768,8 +3443,7 @@ async function buildTokenPackage(flags: {
   docs?: { componentDocs?: boolean; componentPreviews?: boolean; previewBudgetMb?: number }
   tokens?: { includeLibraries?: boolean; emitNative?: boolean }
 }) {
-  const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-  const saved = normalizeExportOptions(stored)
+  const saved = withFileDocs(await loadExportOptions())
   // The call's own flags win over the saved ones: an agent asking for a native package must
   // not depend on what the designer last toggled in a UI it cannot see.
   const options = {
@@ -2780,7 +3454,7 @@ async function buildTokenPackage(flags: {
       ...(flags.tokens?.emitNative === undefined ? {} : { emitNative: flags.tokens.emitNative }),
     },
   }
-  const { graph, libraryNote } = await readGraph(
+  const { graph, libraryNote, aliasNote } = await readGraph(
     options.tokens.includeLibraries,
     options.themeMerges.groups
   )
@@ -2789,14 +3463,39 @@ async function buildTokenPackage(flags: {
   // point at it, then ship COMPONENTS.md and the previews alongside the tokens.
   // The UI sends its live values so a package built right after a toggle reflects it —
   // stored options can still be one save behind.
-  const docsOptions = { ...options.docs, ...(flags.docs ?? {}) }
-  const componentDocs = docsOptions.componentDocs
-    ? await collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb)
+  // What the file pins (docs.configure) wins over both: the same file ships the same docs for
+  // everyone, and a panel one save behind cannot undo a pin set a moment ago.
+  const pinnedDocs = readFileDocsConfig(figma.root as unknown as SharedDataHost)
+  const docsOptions = { ...options.docs, ...(flags.docs ?? {}), ...(pinnedDocs ?? {}) }
+  // Read against a deadline — the budget, or the agent run's own deadline less room to build the
+  // package — and raced against a ceiling for a page load that never settles: past it the tokens
+  // ship complete and the summary says what the docs left out.
+  const docsDeadline = Date.now() + Math.min(COMPONENT_DOCS_BUDGET_MS - 15_000, timeLeft() - COMPONENT_DOCS_RESERVE_MS)
+  const componentDocs: ComponentDocsResult = docsOptions.componentDocs
+    ? await Promise.race([
+        collectComponentDocs(docsOptions.componentPreviews, docsOptions.previewBudgetMb, undefined, docsDeadline),
+        new Promise<ComponentDocsResult>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                docs: [],
+                files: {},
+                note: `Component docs left out: Figma had not loaded this file's pages after ${COMPONENT_DOCS_BUDGET_MS / 1000} s — the tokens are complete; export again in a while for COMPONENTS.md, or turn component docs off in Settings → Documentation`,
+              }),
+            COMPONENT_DOCS_BUDGET_MS
+          )
+        ),
+      ])
     : { docs: [], files: {} }
   // `buildDesignTokens` writes COMPONENTS.md (it owns the token model the descriptions
   // resolve against); the previews are binary and travel separately.
-  const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap())
+  // The file's own guidelines (docs.write) ship with the package under guidelines/, and
+  // DESIGN.md lists them — the instructions travel with the tokens they are about.
+  const guidelines = readGuidelines(figma.root as unknown as SharedDataHost)
+  const guidelinePaths = guidelines.files.map((file) => `guidelines/${file.path}`)
+  const artifacts = buildDesignTokens(graph, options, undefined, componentDocs.docs, readRenameMap(), guidelinePaths)
   for (const path of Object.keys(componentDocs.files)) artifacts.files[path] = componentDocs.files[path]
+  for (const file of guidelines.files) artifacts.files[`guidelines/${file.path}`] = file.text
   artifacts.summary.componentCount = componentDocs.docs.length
   artifacts.summary.previewCount = Object.keys(componentDocs.files).length
   // Previews asked for but none produced is a silent failure otherwise — surface the reason.
@@ -2804,11 +3503,25 @@ async function buildTokenPackage(flags: {
     const reason = componentDocs.docs.find((doc) => doc.previewError)?.previewError
     artifacts.summary.previewError = reason ?? 'no components found to capture'
   }
-  if (libraryNote) {
-    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
-    artifacts.summary.notes = [...existing, libraryNote]
+  const notes: string[] = []
+  if (libraryNote) notes.push(libraryNote)
+  if (aliasNote) notes.push(aliasNote)
+  if (componentDocs.note) notes.push(componentDocs.note)
+  if (pinnedDocs) notes.push(`Documentation settings come from this file (${Object.keys(pinnedDocs).join(', ')}) — the same for everyone who exports it`)
+  if (guidelines.manifest) {
+    const damaged = guidelines.damaged.length > 0 ? ` — ${guidelines.damaged.length} stored incompletely: ${guidelines.damaged.join(', ')}` : ''
+    notes.push(`Guidelines from this file: "${guidelines.manifest.name}", ${guidelines.files.length} file(s) under guidelines/${damaged}`)
+    artifacts.summary.guidelines = guidelinesSummary(guidelines.manifest)
   }
-  return { artifacts, options }
+  const pinnedTokens = readFileTokenConfig()
+  if (pinnedTokens) {
+    notes.push(`Token settings come from this file (${Object.keys(pinnedTokens).join(', ')}) — the same for everyone who exports it`)
+  }
+  if (notes.length > 0) {
+    const existing = Array.isArray(artifacts.summary.notes) ? artifacts.summary.notes : []
+    artifacts.summary.notes = [...existing, ...notes]
+  }
+  return { artifacts, options: { ...options, docs: { ...options.docs, ...(pinnedDocs ?? {}) } } }
 }
 
 /**
@@ -2827,6 +3540,122 @@ async function docsToCanvas(files: Readonly<Record<string, unknown>>): Promise<P
   }
   const docs = docNames(files).map((name) => ({ name, markdown: files[name] as string }))
   return placeDocs(docs, images)
+}
+
+/**
+ * What changed, recorded while somebody asked to know.
+ *
+ * Figma tells a plugin about changes as they happen and never afterwards, so an agent that wants
+ * "what did the designer do since my last write" needs the plugin to have been listening. The page
+ * events are per page under dynamic-page (the document-wide event would load every page first),
+ * so the listener follows the designer from page to page; styles have one event for the file.
+ */
+interface ChangeEntry {
+  seq: number
+  at: string
+  origin: 'LOCAL' | 'REMOTE'
+  kind: string
+  id: string
+  page?: string
+  type?: string
+  name?: string
+  properties?: string[]
+}
+
+const CHANGE_LOG_LIMIT = 1000
+
+const changeWatch: { on: boolean; document: boolean; seq: number; log: ChangeEntry[]; page: PageNode | null } = {
+  on: false,
+  document: false,
+  seq: 1,
+  log: [],
+  page: null,
+}
+
+function recordChange(entry: Omit<ChangeEntry, 'seq' | 'at'>): void {
+  changeWatch.log.push({ seq: changeWatch.seq++, at: new Date().toISOString(), ...entry })
+  if (changeWatch.log.length > CHANGE_LOG_LIMIT) changeWatch.log.splice(0, changeWatch.log.length - CHANGE_LOG_LIMIT)
+}
+
+function onNodeChange(event: NodeChangeEvent): void {
+  const page = changeWatch.page?.name
+  for (const change of event.nodeChanges) {
+    const node = change.node as SceneNode | RemovedNode
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      type: node.type,
+      // A removed node keeps its id and type and nothing else.
+      ...('removed' in node && node.removed ? {} : { name: (node as SceneNode).name }),
+      ...(change.type === 'PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function onStyleChange(event: StyleChangeEvent): void {
+  for (const change of event.styleChanges) {
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(change.style ? { name: change.style.name, type: change.style.type } : {}),
+      ...(change.type === 'STYLE_PROPERTY_CHANGE' ? { properties: [...change.properties] } : {}),
+    })
+  }
+}
+
+function followPage(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = figma.currentPage
+  changeWatch.page.on('nodechange', onNodeChange)
+}
+
+/** The whole document at once — each change says which page it happened on. */
+function onDocumentChange(event: DocumentChangeEvent): void {
+  for (const change of event.documentChanges) {
+    // Styles come through their own event, which is subscribed either way.
+    if (change.type === 'STYLE_CREATE' || change.type === 'STYLE_DELETE' || change.type === 'STYLE_PROPERTY_CHANGE') continue
+    const node = (change as { node?: SceneNode | RemovedNode }).node
+    const alive = node && !('removed' in node && node.removed) ? (node as SceneNode) : null
+    const page = alive ? pageOf(alive)?.name : undefined
+    recordChange({
+      origin: change.origin,
+      kind: change.type,
+      id: change.id,
+      ...(page ? { page } : {}),
+      ...(node ? { type: node.type } : {}),
+      ...(alive ? { name: alive.name } : {}),
+      ...('properties' in change && Array.isArray(change.properties) ? { properties: [...change.properties] as string[] } : {}),
+    })
+  }
+}
+
+async function watchChanges(wholeDocument: boolean): Promise<void> {
+  if (changeWatch.on) return
+  changeWatch.on = true
+  changeWatch.document = wholeDocument
+  if (wholeDocument) {
+    // Under dynamic-page the document-wide event is refused until every page is loaded.
+    await figma.loadAllPagesAsync()
+    figma.on('documentchange', onDocumentChange)
+  } else {
+    followPage()
+    figma.on('currentpagechange', followPage)
+  }
+  figma.on('stylechange', onStyleChange)
+}
+
+function unwatchChanges(): void {
+  changeWatch.page?.off('nodechange', onNodeChange)
+  changeWatch.page = null
+  figma.off('currentpagechange', followPage)
+  if (changeWatch.document) figma.off('documentchange', onDocumentChange)
+  figma.off('stylechange', onStyleChange)
+  changeWatch.on = false
+  changeWatch.document = false
+  changeWatch.log = []
 }
 
 /**
@@ -2912,8 +3741,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
   switch (msg.type) {
     /* ---- design-tokens target ---- */
     case 'SCAN_TOKENS': {
-      // @agent read: build the design-token package (tokens, DESIGN.md, component docs) and hand back the files
-      // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide
+      // @agent read: build the design-token package (tokens, DESIGN.md, component docs, and the file's own guidelines under guidelines/) and hand back the files
+      // @agent cost: tokens in seconds; with component docs on, a freshly opened large file loads its pages first — up to ~90 s, then a partial COMPONENTS.md that names what is missing; the next export completes it. Pass timeoutMs 170000
+      // @agent param docs: what goes into the documentation half — { componentDocs: write the per-component pages, componentPreviews: render a picture for each, previewBudgetMb: how many megabytes of pictures are allowed }. Omitted, the settings the designer saved decide; a field the file pins (docs.configure) always comes from the file
       // @agent param tokens: overrides for this one build — { includeLibraries: read the enabled libraries' variables too (slow, and the only way to export a theme this file consumes rather than owns), emitNative: also write the iOS asset catalogue, res/values-night, Tokens.swift and Tokens.kt }. Omitted, the saved settings decide
       try {
         const { artifacts, options } = await buildTokenPackage(msg)
@@ -3003,8 +3833,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent param files: the package as `{ 'path/file.css': 'text' }`, or `{ base64 }` for bytes
       // @agent param dryRun: change nothing, just report the plan — omit to use the saved default
       try {
-        const stored = await figma.clientStorage.getAsync('exportOptions')
-        const options = normalizeExportOptions(stored)
+        const options = await loadExportOptions()
         const result = await deliverPackage(msg.files || {}, {
           endpoint: options.delivery.endpoint,
           secret: options.delivery.secret,
@@ -3023,8 +3852,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'GENERATE_TYPOGRAPHY': {
       // @agent write: create typography variables and bind text styles to them
       try {
-        const stored = await figma.clientStorage.getAsync('exportOptions')
-        const report = await generateTypographyVariables(normalizeExportOptions(stored))
+        const report = await generateTypographyVariables(await loadExportOptions())
         figma.notify(`Created ${report.created} variables · bound ${report.bound} field(s)` + (report.failed ? ` · ${report.failed} failed` : ''))
         postToUi({ type: 'TYPOGRAPHY_GENERATED', report })
       } catch (err) {
@@ -3477,6 +4305,71 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({ type: 'VARIABLE_COLLECTIONS', ...state, all })
       break
     }
+    case 'THEME_AXES_PREVIEW': {
+      // @agent read: what a theme axes setting would ship — the file's collections and modes, every cell of the grid and how it was filled, the problems, the html to set and the stylesheet's blocks — without saving anything
+      // @agent param tokens: the token settings to preview with, over the saved ones — { themeAxes: the string or the picker's { axes, cells?, sameAs? } object, collectionRoles, slugThemes, themeAttribute }
+      // @agent param detect: also suggest a starting setup read off the file (product collections, a grid of mode names, or one attribute)
+      try {
+        const saved = await loadExportOptions()
+        const options = { ...saved, tokens: { ...saved.tokens, ...(msg.tokens ?? {}) } }
+        const preview = previewThemeAxes(await readLocalVariables(), { ...tokenEmitOptionsFrom(options, readRenameMap()), detect: msg.detect === true })
+        // Who can change it here: Dev Mode cannot write the document (a Dev seat, or a Full seat in
+        // Dev Mode), and a file that pins its token settings overrides each person's own.
+        const pinned = readFileTokenConfig()
+        const access = { editable: figma.editorType !== 'dev', filePins: Boolean(pinned), pinnedAxes: Boolean(pinned && pinned.themeAxes) }
+        postToUi({ type: 'THEME_AXES_PREVIEW_RESULT', preview, access })
+      } catch (err) {
+        postToUi({ type: 'THEME_AXES_PREVIEW_RESULT', error: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'TOKENS_MAPPING': {
+      // @agent read: the Tokens settings screen — the attributes code switches on (any names: data-product, data-theme, data-brand…) and the file data each value is bound to (collections, columns, or a marker in the token names), the role of every other collection, one collection as Figma shows it with every token's name in code and, for a collection on top of the base one, whether each token overrides, repeats or takes the base's value, and what the export ships — the mapping in force (pinned in the file, else read off its older settings, else suggested), nothing saved
+      // @agent param collection: the collection to show as a table, by name
+      // @agent param mapping: a mapping to preview instead of the one in force — { version: 1, attributes: [{ name, from: collections|columns|names, values: [{ value, collections?, columns?, marker?, base?, sameAs? }], shared?, collections?, nested? }], collections?: { Name: palette|breakpoints|export|skip } }
+      // @agent param suggest: preview the mapping suggested from how the file is set up, instead of the one in force
+      // @agent param file: one of the shipped files the answer lists (tokens.css, base.module.css, dark.module.css…), whose text to include
+      // @agent param request: echoed back, so a panel can drop an answer to a request it has since replaced
+      try {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, ...(await mappingAnswer(msg.collection, msg.mapping, msg.suggest === true, typeof msg.file === 'string' ? msg.file : undefined)) })
+      } catch (err) {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, error: String((err as Error)?.message || err) })
+      }
+      break
+    }
+    case 'TOKENS_MAPPING_SET': {
+      // @agent write: pin how this file's variables become code — the attributes, the file data each value is bound to, and the role of every other collection — stored in the file, so everyone who exports it, in the panel, Dev Mode or through an agent, gets the same package; replaces the older collection roles, theme axes and structure
+      // @agent param mapping: the mapping to pin, in the shape TOKENS_MAPPING answers with
+      // @agent param collection: the collection to show in the answer
+      // @agent param file: one of the shipped files the answer lists, whose text to include
+      // @agent param request: echoed back, so a panel can drop an answer to a request it has since replaced
+      try {
+        const { mapping, problems } = normalizeMapping(msg.mapping)
+        if (!mapping || problems.length > 0) throw new Error(`nothing was saved: ${problems.join('; ') || 'no mapping'}`)
+        const missing = mappingFileProblems(await readLocalVariables(), mapping)
+        if (missing.length > 0) throw new Error(`nothing was saved: ${missing.join('; ')}`)
+        const next = withMapping(readFileTokenConfig(), mapping)
+        try {
+          writeFileTokenConfig(next)
+        } catch (err) {
+          throw new Error(`the file is read-only here (Dev Mode or view access) — an editor has to save the mapping: ${String((err as Error)?.message || err)}`)
+        }
+        const stored = readFileTokenConfig()
+        const answer = await mappingAnswer(msg.collection, undefined, false, typeof msg.file === 'string' ? msg.file : undefined)
+        postToUi({
+          type: 'TOKENS_MAPPING_RESULT',
+          request: msg.request,
+          saved: true,
+          verified: JSON.stringify(stored?.mapping) === JSON.stringify(mapping),
+          // The panel's other token settings read the file's config too: hand it back in full.
+          tokens: (await loadExportOptions()).tokens,
+          ...answer,
+        })
+      } catch (err) {
+        postToUi({ type: 'TOKENS_MAPPING_RESULT', request: msg.request, error: String((err as Error)?.message || err) })
+      }
+      break
+    }
     case 'READ_VARIABLES': {
       // @agent read: the raw variable snapshot: collections, modes, values, aliases
       // @agent cost: imports every variable of every enabled library one at a time — 80-90s on a large file. SCAN_TOKENS answers from the local graph in under a second.
@@ -3487,8 +4380,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'EMIT_TOKENS': {
       // @agent read: emit tokens.json / tokens.css / _tokens.scss from the current variables
       // @agent cost: same library import as READ_VARIABLES — 80-90s on a large file
-      const stored = await figma.clientStorage.getAsync('exportOptions')
-      const options = normalizeExportOptions(stored)
+      const options = await loadExportOptions()
       const snapshot = await readAllVariables({ collectionMerges: options.themeMerges.groups })
       const css = emitTokenArtifacts(snapshot, tokenEmitOptionsFrom(options, readRenameMap())).css
       postToUi({ type: 'TOKENS_CSS', css })
@@ -3589,7 +4481,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           refuse('EMIT_REACT', 'nothing in that scope to render')
           break
         }
-        const variableNamesById = tokens.names
+        // The names of what this scope binds, resolved by id like the Django emitter does — so a
+        // library read that ran out of time costs the tokens table, never a `var(--token)` on screen.
+        const variableNamesById = new Map([...(await variableNamesForScope(sceneNodesById.values())), ...tokens.names])
         await annotateVectorLeaves(nodes, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
         // The library the screen leans on, emitted first: its components are the real ones, with
         // every variant and every state, and the screen then imports them rather than building a
@@ -3823,7 +4717,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       await annotateVectorLeaves(pageRoots, sceneNodesById as unknown as ReadonlyMap<string, AssetSourceNode>)
       await addReactionDestinationsToScene(pageRoots, sceneNodesById)
 
-      const previewOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+      const previewOptions = await loadExportOptions()
       const tokensOn = previewOptions.modules.tokens
       const previewThemeSets =
         previewOptions.targetOptions.framework === 'bootstrap' && previewOptions.targetOptions.bootstrapFidelity === 'theme'
@@ -3915,7 +4809,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       const lintMaxDepth =
         typeof msg.lintMaxDepth === 'number'
           ? msg.lintMaxDepth
-          : normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions')).lint.maxNestingDepth
+          : (await loadExportOptions()).lint.maxNestingDepth
       const lint: LintFinding[] = await lintScopeAsync(roots, { maxNestingDepth: lintMaxDepth })
       await annotateUnfixableFindings(lint, index)
 
@@ -4098,7 +4992,32 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       // @agent write: store export options in clientStorage
       // @agent param options: the export settings to store, in part or whole — target, scopeMode, modules, tokens, i18n, delivery, agent, lint, docs
       const stored = await figma.clientStorage.getAsync(EXPORT_OPTIONS_KEY)
-      await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, mergeExportOptions(stored, msg.options))
+      const merged = mergeExportOptions(stored, msg.options)
+      // A file that pins its token settings is edited through the same panel: the pinned fields
+      // go back into the file, so the next person (and agent) builds what was just set — and NOT
+      // into this person's own settings, where they would follow them into every other file.
+      // Read-only (Dev Mode, a viewer) cannot write; the file's config then still wins.
+      const pinned = readFileTokenConfig()
+      const own = pinned ? normalizeExportOptions(stored) : merged
+      const decidedByFile = new Set<FileTokenField>(pinned ? (Object.keys(pinned) as FileTokenField[]) : [])
+      if (pinned?.mapping) for (const field of MAPPING_SUPERSEDES) decidedByFile.add(field)
+      const personal = { ...merged, tokens: { ...merged.tokens } }
+      for (const field of decidedByFile) {
+        if (field === 'mapping') continue
+        ;(personal.tokens as unknown as Record<string, unknown>)[field] = (own.tokens as unknown as Record<string, unknown>)[field]
+      }
+      await figma.clientStorage.setAsync(EXPORT_OPTIONS_KEY, personal)
+      if (pinned) {
+        // The mapping is saved by the Tokens screen itself (TOKENS_MAPPING_SET): a panel save
+        // writes back the switches the file pins beside it, never the mapping or what it decides.
+        const fields = [...decidedByFile].filter((field) => field !== 'mapping' && !(pinned.mapping && MAPPING_SUPERSEDES.includes(field)))
+        try {
+          const kept = pickFileTokenConfig(merged.tokens, fields)
+          writeFileTokenConfig(pinned.mapping ? withMapping(kept, pinned.mapping) : kept)
+        } catch {
+          /* read-only file */
+        }
+      }
       break
     }
     case 'SAVE_UPDATE_PREFERENCES': {
@@ -4118,6 +5037,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         break
       }
       figma.openExternal(msg.url)
+      break
+    }
+    case 'HOST_VISIBILITY': {
+      // @agent deny: panel housekeeping — the panel reports whether Figma's window is visible, so long loops stop paying throttled timers (see utils/budget.ts); an agent has nothing to tell it
+      // @agent param hidden: the panel's document.hidden — true while Figma's window is behind
+      setHostHidden(msg.hidden === true)
       break
     }
     case 'UI_RESIZE': {
@@ -4217,8 +5142,9 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
     case 'NODE_SET': {
       // @agent write: set properties on existing nodes, in batch, with per-property before/after
       // @agent param nodes: an array of { node: "<id>", props: {…} } — the same vocabulary NODE_CREATE takes
-      // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths. The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
-      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names, swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: the node vocabulary — geometry, layout, paints (colour, {variable}, {gradient}, {image}, {shader}, or a list of them), strokes and brushes, effects, text and its runs, styles, variable bindings, prototype links, grids, animation, paths, 3D (transform3d, transformOrigin, and scene3d on a frame, component or instance). The whole list with a sentence on each is `plugin.vocabulary`, read out of the source so it cannot go stale
+      // @agent param props: on an INSTANCE, properties: { Size: "Large", Label: "Continue" } sets component properties by their catalogue names (a text or boolean one may be { variable: "<token>" } to follow a token), swap: "<id|key>" changes which component it is, reset: true drops every override first
+      // @agent param props: transform3d: { translateZ, rotateX, rotateY, rotateZ } is depth in pixels and tilt in degrees, always applied in that order; "none" removes it and an imported FREEFORM one is read-only. keyframes take the same four words plus perspective; a flat layer can take a 3D track directly, and removing transform3d removes its 3D tracks. Beta in Figma's API
       // @agent param props: links take on: click|hover|press|drag|timeout|keyDown|mouseEnter|mouseLeave|mouseUp|mouseDown, to: "<id>"|"back"|"close", as: NAVIGATE|SWAP|OVERLAY|SCROLL_TO|CHANGE_TO, animation: INSTANT|DISSOLVE|SMART_ANIMATE|PUSH_LEFT|MOVE_IN_TOP|…, easing: EASE_OUT|GENTLE|QUICK|BOUNCY|SLOW|… or bezier: [x1,y1,x2,y2] / spring: {mass,stiffness,damping}. Overlay position and background are read-only in Figma's API and cannot be set from here.
       // @agent param props: one link may also carry set: { variable, value } (a literal or { variable } to copy another), mode: { collection, mode } to switch a theme, and url — they run in that order before the navigation, so "remember they agreed and go on" is one interaction
       // @agent param dryRun: true answers with what it would do and changes nothing — the way to see a plan before it lands
@@ -4231,8 +5157,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
@@ -4241,7 +5170,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           // Only when nothing else was said: after "unknown property" it is the same news twice,
           // and it doubled the count a caller reads as the size of its mistake.
           if (plan.steps.length === 0 && plan.problems.length === 0) problems.push(`nodes[${index}].props sets nothing`)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_SET', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -4309,7 +5238,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             refuse('NODE_QUERY', `no node with id ${msg.nodeId}`)
             break
           }
-          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNode(node as SceneNode, wantProps)] })
+          postToUi({ type: 'NODES_FOUND', total: 1, nodes: [await describeNodeCapped(node as SceneNode, wantProps)] })
           break
         }
 
@@ -4350,7 +5279,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           type: 'NODES_FOUND',
           total: found.length,
           truncated: found.length >= limit,
-          nodes: await Promise.all(found.map((node) => describeNode(node, wantProps))),
+          // One after another, not all at once: each read is capped on its own, and a hundred
+          // parallel reads of a wedged lookup would share one ceiling and all miss it.
+          nodes: await (async () => {
+            const out = []
+            for (const node of found) out.push(await describeNodeCapped(node, wantProps))
+            return out
+          })(),
         })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_QUERY', message: String((error as Error)?.message || error) })
@@ -4401,14 +5336,17 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             problems.push(`nodes[${index}] must be { node, props? }`)
             continue
           }
-          const entry = row as { node?: unknown; props?: unknown }
-          if (typeof entry.node !== 'string' || entry.node === '') {
+          const entry = row as { node?: unknown; id?: unknown; props?: unknown }
+          // `id` too: it is what node.find and NODE_CREATE answer with, and the word an agent
+          // reaches for first. Refusing it whole cost a 22-node batch on a Buzz build.
+          const target = entry.node ?? entry.id
+          if (typeof target !== 'string' || target === '') {
             problems.push(`nodes[${index}].node must be a node id`)
             continue
           }
           const plan = planProps(entry.props, `nodes[${index}].props`)
           problems.push(...plan.problems)
-          planned.push({ id: entry.node, steps: plan.steps })
+          planned.push({ id: target, steps: plan.steps })
         }
         if (problems.length > 0) {
           refuse('NODE_CLONE', `${problems.length} problem(s): ${problems.slice(0, 4).join(' · ')}`)
@@ -5503,7 +6441,15 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const paint of paints) {
                 if ((paint as Paint)?.type !== 'SHADER') continue
                 const paintShader = paint as ShaderPaint
-                note(paintShader.id, 'fill', node, paintShader.properties, paintShader.propertyMetadata)
+                // An animated setting is no longer among `properties` on a read (typings 1.143.0):
+                // its id is taken from the node's tracks, or the catalogue would lose it.
+                note(
+                  paintShader.id,
+                  'fill',
+                  node,
+                  { ...paintShader.properties, ...animatedShaderProperties(node, field, paints.indexOf(paint)) },
+                  paintShader.propertyMetadata
+                )
               }
             }
             const effects = (node as unknown as { effects?: readonly Effect[] }).effects
@@ -5511,7 +6457,13 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
               for (const effect of effects) {
                 if (effect?.type !== 'SHADER') continue
                 const effectShader = effect as ShaderEffect
-                note(effectShader.id, 'effect', node, effectShader.properties, effectShader.propertyMetadata)
+                note(
+                  effectShader.id,
+                  'effect',
+                  node,
+                  { ...effectShader.properties, ...animatedShaderProperties(node, 'effects', effects.indexOf(effect)) },
+                  effectShader.propertyMetadata
+                )
               }
             }
           }
@@ -5536,7 +6488,12 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
             // `importShaderById` would fetch the definitions, and that is a write.
             properties: [...entry.keys]
               .map((defId) => {
-                const definition = entry.meta[defId]
+                // An animated setting is missing from the applied shader's metadata as well as
+                // from its properties (seen live); the catalogue entry that defines every setting
+                // of this shader still names it.
+                const definition =
+                  entry.meta[defId] ??
+                  sameShaderInCatalogue([...entry.keys], new Map(offered.map((shader) => [shader.id, shader])))?.[defId]
                 if (!definition) return defId
                 const fallback =
                   definition.defaultValue === undefined
@@ -5902,14 +6859,24 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       postToUi({
         type: 'PAGES',
         current: figma.currentPage.id,
-        pages: figma.root.children.map((page) => ({
-          id: page.id,
-          name: page.name,
-          current: page.id === figma.currentPage.id,
-          // A divider is a page in the list and nothing on the canvas — a section heading in the
-          // pages panel. Without the flag it read as an empty page called "———".
-          ...(page.isPageDivider ? { divider: true } : {}),
-        })),
+        pages: await Promise.all(
+          figma.root.children.map(async (page) => ({
+            id: page.id,
+            name: page.name,
+            current: page.id === figma.currentPage.id,
+            // A divider is a page in the list and nothing on the canvas — a section heading in the
+            // pages panel. Without the flag it read as an empty page called "———".
+            ...(page.isPageDivider ? { divider: true } : {}),
+            // The canvas colour behind everything, and the one the prototype is shown on.
+            background: await describePaints(page.backgrounds),
+            // Figma's default is transparent black, which shows nothing and is not worth a line.
+            ...(page.prototypeBackgrounds.some((paint) => paint.visible !== false && (paint.opacity ?? 1) > 0)
+              ? { prototypeBackground: await describePaints(page.prototypeBackgrounds) }
+              : {}),
+          }))
+        ),
+        // How the file's colours are interpreted — sRGB, Display P3 or legacy.
+        colorProfile: figma.root.documentColorProfile,
       })
       break
     }
@@ -5994,6 +6961,296 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       figma.triggerUndo()
       figma.notify('Undone')
       postToUi({ type: 'UNDONE' })
+      break
+    }
+    case 'PAGE_SET': {
+      // @agent write: rename a page, change the canvas colour behind it or the one its prototype is shown on, or set its ruler guides
+      // @agent param pageId: the page to change; omitted, the open one
+      // @agent param name: the page's new name
+      // @agent param background: the canvas colour, "#RRGGBB" — the same words a fill takes
+      // @agent param prototypeBackground: the colour the prototype is presented on
+      // @agent param guides: [{ axis: "X" | "Y", offset }] on the page itself; [] removes them
+      try {
+        const page = msg.pageId ? await figma.getNodeByIdAsync(msg.pageId) : figma.currentPage
+        if (!page || page.type !== 'PAGE') {
+          refuse('PAGE_SET', `no page with id ${msg.pageId}`)
+          break
+        }
+        const plan = planProps({
+          ...(msg.background === undefined ? {} : { fill: msg.background }),
+          ...(msg.guides === undefined ? {} : { guides: msg.guides }),
+        })
+        const backdrop = msg.prototypeBackground === undefined ? null : planProps({ fill: msg.prototypeBackground })
+        const problems = [...plan.problems, ...(backdrop?.problems ?? []).map((one) => one.replace('props.fill', 'prototypeBackground'))]
+        if (msg.name !== undefined && (typeof msg.name !== 'string' || msg.name.trim() === '')) problems.push('name must be a non-empty string')
+        if (problems.length > 0) {
+          refuse('PAGE_SET', problems.join(' · '))
+          break
+        }
+        const before = { name: page.name, background: await describePaints(page.backgrounds) }
+        if (typeof msg.name === 'string') page.name = msg.name.trim()
+        for (const step of plan.steps) {
+          if (step.step === 'paint') page.backgrounds = await buildPaints(step.ref)
+          if (step.step === 'assign' && step.property === 'guides') page.guides = step.value as Guide[]
+        }
+        const shown = backdrop?.steps.find((step) => step.step === 'paint')
+        if (shown && shown.step === 'paint') page.prototypeBackgrounds = await buildPaints(shown.ref)
+        figma.commitUndo()
+        postToUi({
+          type: 'PAGE_SET_DONE',
+          page: { id: page.id, name: page.name },
+          before,
+          after: {
+            name: page.name,
+            background: await describePaints(page.backgrounds),
+            prototypeBackground: await describePaints(page.prototypeBackgrounds),
+            guides: page.guides.length,
+          },
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'PAGE_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VIEWPORT': {
+      // @agent read: where the designer is looking — the centre, the zoom and the rectangle of canvas on screen
+      const view = figma.viewport
+      postToUi({
+        type: 'VIEWPORT',
+        page: { id: figma.currentPage.id, name: figma.currentPage.name },
+        center: { x: Math.round(view.center.x), y: Math.round(view.center.y) },
+        zoom: Math.round(view.zoom * 1000) / 1000,
+        bounds: {
+          x: Math.round(view.bounds.x),
+          y: Math.round(view.bounds.y),
+          width: Math.round(view.bounds.width),
+          height: Math.round(view.bounds.height),
+        },
+      })
+      break
+    }
+    case 'VIEWPORT_SET': {
+      // @agent write: move the designer's view — fit some nodes, or put a point in the middle at a zoom. Nothing in the document changes; the designer's screen does
+      // @agent param nodes: ids to fit on screen — Figma's own "zoom to selection"
+      // @agent param center: { x, y } on the canvas to put in the middle
+      // @agent param zoom: 1 is 100%; 0.5 shows twice as much
+      try {
+        if (msg.nodes !== undefined) {
+          const targets = await nodesFrom(msg.nodes)
+          if (targets.length === 0) {
+            refuse('VIEWPORT_SET', 'nodes named nothing')
+            break
+          }
+          figma.viewport.scrollAndZoomIntoView(targets)
+        }
+        if (msg.center !== undefined) {
+          const point = msg.center as { x?: unknown; y?: unknown }
+          if (typeof point?.x !== 'number' || typeof point?.y !== 'number') {
+            refuse('VIEWPORT_SET', 'center must be { x, y }')
+            break
+          }
+          figma.viewport.center = { x: point.x, y: point.y }
+        }
+        if (msg.zoom !== undefined) {
+          if (typeof msg.zoom !== 'number' || !(msg.zoom > 0)) {
+            refuse('VIEWPORT_SET', 'zoom must be a number above 0 — 1 is 100%')
+            break
+          }
+          figma.viewport.zoom = msg.zoom
+        }
+        postToUi({
+          type: 'VIEWPORT',
+          page: { id: figma.currentPage.id, name: figma.currentPage.name },
+          center: { x: Math.round(figma.viewport.center.x), y: Math.round(figma.viewport.center.y) },
+          zoom: Math.round(figma.viewport.zoom * 1000) / 1000,
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VIEWPORT_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'STORAGE_KEYS': {
+      // @agent read: what this plugin keeps on this machine (clientStorage) — the keys and how big each is, never the values, which can hold a module's secrets
+      const keys = await figma.clientStorage.keysAsync()
+      const rows = []
+      for (const key of keys.sort()) {
+        const value = await figma.clientStorage.getAsync(key)
+        rows.push({ key, bytes: value === undefined ? 0 : (JSON.stringify(value)?.length ?? 0) })
+      }
+      postToUi({ type: 'STORAGE_KEYS', keys: rows })
+      break
+    }
+    case 'STORAGE_REMOVE': {
+      // @agent write: forget some of what this plugin keeps on this machine — saved settings, panel size, installed modules. Cannot be undone
+      // @agent param keys: the keys to delete, as STORAGE_KEYS lists them
+      const keys = Array.isArray(msg.keys) ? msg.keys.map(String) : typeof msg.keys === 'string' ? [msg.keys] : []
+      if (keys.length === 0) {
+        refuse('STORAGE_REMOVE', 'name the keys to remove — STORAGE_KEYS lists them')
+        break
+      }
+      const known = new Set(await figma.clientStorage.keysAsync())
+      const missing = keys.filter((key) => !known.has(key))
+      if (missing.length > 0) {
+        refuse('STORAGE_REMOVE', `no such key: ${missing.join(', ')}`)
+        break
+      }
+      for (const key of keys) await figma.clientStorage.deleteAsync(key)
+      // The modules live in memory too; what was just forgotten on disk must not keep running.
+      if (keys.includes(MODULES_KEY)) await loadUserModules()
+      postToUi({ type: 'STORAGE_REMOVED', keys })
+      break
+    }
+    case 'UI_POSITION': {
+      // @agent read: where the plugin's own window sits, and move it — panel chrome, nothing in the document
+      // @agent param x: left edge in the canvas's window space, pixels; give x and y together
+      // @agent param y: top edge in the same space
+      if (msg.x !== undefined || msg.y !== undefined) {
+        if (typeof msg.x !== 'number' || typeof msg.y !== 'number') {
+          refuse('UI_POSITION', 'give x and y together, both numbers')
+          break
+        }
+        figma.ui.reposition(msg.x, msg.y)
+      }
+      const at = figma.ui.getPosition()
+      postToUi({
+        type: 'UI_POSITION',
+        window: { x: Math.round(at.windowSpace.x), y: Math.round(at.windowSpace.y) },
+        canvas: { x: Math.round(at.canvasSpace.x), y: Math.round(at.canvasSpace.y) },
+      })
+      break
+    }
+    case 'CHANGES_WATCH': {
+      // @agent read: start or stop recording what changes on the open page and in the styles — by the designer, by collaborators, by this plugin — so CHANGES_READ can say what happened since
+      // @agent param on: true starts (and survives page switches), false stops and forgets
+      // @agent param document: true listens to EVERY page instead of the open one — Figma has to load all pages first, which on a large file takes a while
+      if (msg.on === true) await watchChanges(msg.document === true)
+      else unwatchChanges()
+      postToUi({
+        type: 'CHANGES_WATCH',
+        on: changeWatch.on,
+        scope: changeWatch.document ? 'document' : 'open page',
+        recorded: changeWatch.log.length,
+        next: changeWatch.seq,
+      })
+      break
+    }
+    case 'SELECTION_SET': {
+      // @agent write: select layers for the designer, or a stretch of characters inside a text — the designer's selection changes, the document does not
+      // @agent param nodes: ids to select, all on one page (Figma's rule); the view moves to that page if needed. [] clears the selection
+      // @agent param text: { node, start, end } selects characters inside a text layer instead
+      try {
+        if (msg.text !== undefined) {
+          const asked = msg.text as { node?: unknown; start?: unknown; end?: unknown }
+          const text = typeof asked?.node === 'string' ? await figma.getNodeByIdAsync(asked.node) : null
+          if (!text || text.type !== 'TEXT') {
+            refuse('SELECTION_SET', 'text.node must be the id of a TEXT layer')
+            break
+          }
+          const start = asked.start
+          const end = asked.end
+          if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end > text.characters.length) {
+            refuse('SELECTION_SET', `text.start and text.end must sit within its ${text.characters.length} character(s)`)
+            break
+          }
+          const page = pageOf(text)
+          if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+          figma.currentPage.selectedTextRange = { node: text, start, end }
+          postToUi({ type: 'SELECTED', text: { node: text.id, start, end, characters: text.characters.slice(start, end) } })
+          break
+        }
+        const targets = Array.isArray(msg.nodes) && msg.nodes.length === 0 ? [] : await nodesFrom(msg.nodes ?? [])
+        const pages = new Set(targets.map((node) => pageOf(node)))
+        if (pages.size > 1) {
+          refuse('SELECTION_SET', 'a selection lives on one page — these nodes are on several')
+          break
+        }
+        const [page] = [...pages]
+        if (page && page !== figma.currentPage) await figma.setCurrentPageAsync(page)
+        figma.currentPage.selection = targets
+        postToUi({ type: 'SELECTED', page: figma.currentPage.name, nodes: targets.map((node) => ({ id: node.id, name: node.name })) })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'SELECTION_SET', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'VARIABLE_SUGGEST': {
+      // @agent read: which variables Figma itself thinks a layer's hard-coded values are — per field, the tokens whose value matches. The shortest way from loose numbers and colours to bound ones
+      // @agent param nodes: ids to ask about; omitted, the current selection
+      // @agent cost: Figma answers this from its servers — about 30 s per node cold, under 100 ms warm, and a 10 s "unable to establish connection" when offline
+      try {
+        const targets = await nodesFrom(msg.nodes)
+        if (targets.length === 0) {
+          refuse('VARIABLE_SUGGEST', 'name some nodes, or select something')
+          break
+        }
+        // A suggestion from a library the file has not imported yet has no variable here to name,
+        // and its id is not its key either: the hex in `VariableID:<hex>/<n>` is the LIBRARY's,
+        // shared by every variable in it (seen live). So it stays an id, said to be one.
+        const names = new Map<string, string>()
+        let unnamed = 0
+        const nameOf = async (alias: VariableAlias) => {
+          if (!names.has(alias.id)) {
+            const variable = await figma.variables.getVariableByIdAsync(alias.id).catch(() => null)
+            if (!variable) unnamed++
+            names.set(alias.id, variable?.name ?? alias.id)
+          }
+          return names.get(alias.id)!
+        }
+        const rows = []
+        for (const node of targets) {
+          const inferred =
+            (node as SceneNode & { inferredVariables?: Record<string, VariableAlias[] | VariableAlias[][]> }).inferredVariables ?? {}
+          const fields: Record<string, unknown> = {}
+          const bag = node as unknown as Record<string, unknown>
+          for (const [field, found] of Object.entries(inferred)) {
+            // Figma answers for every field, a zero padding matched against every zero token among
+            // them; only a value the layer actually has is worth a suggestion.
+            if (field === '' || (field !== 'fills' && field !== 'strokes' && !bag[field])) continue
+            // A stroke weight with no stroke to weigh is the default 1, not a design decision.
+            if (/^stroke.*Weight$/.test(field) && !(Array.isArray(bag.strokes) && bag.strokes.length > 0)) continue
+            // Paints answer per paint — fills[0] has its own candidates — everything else per field.
+            if (field === 'fills' || field === 'strokes') {
+              const perPaint = []
+              for (const one of found as VariableAlias[][]) perPaint.push(await Promise.all(one.map(nameOf)))
+              if (perPaint.some((one) => one.length > 0)) fields[field] = perPaint
+            } else if ((found as VariableAlias[]).length > 0) fields[field] = await Promise.all((found as VariableAlias[]).map(nameOf))
+          }
+          rows.push({ node: node.id, name: node.name, suggestions: fields })
+        }
+        postToUi({
+          type: 'VARIABLE_SUGGESTIONS',
+          nodes: rows,
+          ...(unnamed > 0 ? { unnamed: `${unnamed} suggestion(s) are library variables this file has not imported — shown by id` } : {}),
+        })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'VARIABLE_SUGGEST', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'CHANGES_READ': {
+      // @agent read: what changed since a point — node creations, deletions and property changes on the watched pages, and style changes — each with who made it (LOCAL is this machine, REMOTE a collaborator)
+      // @agent param since: the `next` number a previous read or CHANGES_WATCH answered; omitted, everything still held (the last 1000)
+      // @agent param limit: how many entries, newest last; 200 by default
+      // @agent param origin: LOCAL or REMOTE to keep only one side
+      if (!changeWatch.on && changeWatch.log.length === 0) {
+        refuse('CHANGES_READ', 'nothing is being recorded — CHANGES_WATCH with on: true first')
+        break
+      }
+      const since = typeof msg.since === 'number' ? msg.since : 0
+      const limit = Math.min(Math.max(msg.limit ?? 200, 1), 1000)
+      const origin = typeof msg.origin === 'string' ? msg.origin.toUpperCase() : null
+      const kept = changeWatch.log.filter((entry) => entry.seq >= since && (!origin || entry.origin === origin))
+      const shown = kept.slice(-limit)
+      postToUi({
+        type: 'CHANGES',
+        watching: changeWatch.on,
+        next: changeWatch.seq,
+        total: kept.length,
+        ...(kept.length > shown.length ? { truncated: kept.length - shown.length } : {}),
+        // Older entries than the window holds are gone; saying so beats a silent gap.
+        ...(since > 0 && changeWatch.log.length > 0 && changeWatch.log[0].seq > since ? { lost: changeWatch.log[0].seq - since } : {}),
+        changes: shown,
+      })
       break
     }
 
@@ -6368,43 +7625,10 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const dropped: RoundTripFinding[] = []
           const notValues: string[] = []
 
-          // The reading, and the spec it amounts to. Anything the planner will not take is
-          // recorded on the way past rather than quietly left out.
-          const build = async (one: SceneNode, level: number): Promise<CreateSpec | null> => {
-            const reading = await describeNode(one, true)
-            const kids: CreateSpec[] = []
-            // Not into an instance: what is inside it belongs to its component, and copying it
-            // would compare a screen against a screen with everything in it twice.
-            // Nor into a FigJam table: its cells are not layers, and `table` already carries them.
-            if (level > 0 && 'children' in one && one.type !== 'INSTANCE' && String(one.type) !== 'TABLE') {
-              for (const child of (one as SceneNode & ChildrenMixin).children) {
-                const made = await build(child, level - 1)
-                if (made) kids.push(made)
-              }
-            }
-            const of =
-              one.type === 'INSTANCE'
-                ? ((await (one as InstanceNode).getMainComponentAsync().catch(() => null))?.id ?? null)
-                : null
-
-            const built = specFrom(reading, kids, of)
-            if (!built) {
-              dropped.push({
-                property: '(node)',
-                // A code layer is a Figma Make project on the canvas: the Plugin API can see it and
-                // not build one; its source is read, and a new one made, through Figma's own MCP.
-                why: String(one.type) === 'CODE_INSTANCE'
-                  ? 'a code layer is made from a project through Figma\'s MCP (send_code_to_figma), not by NODE_CREATE'
-                  : `a ${one.type} cannot be made by NODE_CREATE`,
-              })
-              return null
-            }
-            for (const entry of built.dropped) dropped.push({ ...entry, property: `${one.name}.${entry.property}` })
-            for (const key of built.notValues) notValues.push(`${one.name}.${key}`)
-            return built.spec
-          }
-
-          const spec = await build(original, depth)
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            const main = await one.getMainComponentAsync().catch(() => null)
+            return main ? { of: main.id } : null
+          })
           if (!spec) {
             reports.push({ node: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
             continue
@@ -6433,8 +7657,11 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
           const { same, diverged } = compare(before, after, ignore)
           const failed = copy.failures ?? []
 
-          if (msg.keep !== true) (made as SceneNode).remove()
-          else figma.commitUndo()
+          if (msg.keep !== true) {
+            ;(made as SceneNode).remove()
+            // A slide removed by a plugin lingers in Figma's slide grid; the grid is re-stated.
+            if ((made as SceneNode).type === 'SLIDE') syncSlideGrid()
+          } else figma.commitUndo()
 
           reports.push({
             node: id,
@@ -6455,6 +7682,209 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
         postToUi({ type: 'ROUNDTRIP', checked: reports.length, broken, nodes: reports })
       } catch (error) {
         postToUi({ type: 'CANVAS_ERROR', command: 'NODE_ROUNDTRIP', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+
+    case 'NODE_SPEC': {
+      // @agent read: a node as a portable spec — the reading another file can build from: library components by key, pictures as bytes, and what could not travel
+      // @agent param nodes: the ids to read
+      // @agent param depth: how many levels of children to carry — 0 is the node alone, 6 by default
+      // @agent param budgetBytes: how many bytes of pictures to carry in one answer — 2 MB by default; past it a picture is named, not sent
+      // @agent param localComponents: "frame" (default) brings an instance of a component that lives in this file across as the frame it shows; "key" sends the component's key, for a file that uses this one as a library
+      // @agent cost: reads the subtree and the bytes of every picture in it
+      try {
+        specTrace = { command: 'NODE_SPEC', startedAt: Date.now() }
+        const ids = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]).map((id) => String(id))
+        const depth = Math.min(Math.max(msg.depth ?? 6, 0), 12)
+        const budget = Math.min(Math.max(msg.budgetBytes ?? 2_000_000, 0), 2_500_000)
+        const out = []
+        const hashes = new Set<string>()
+        for (const id of ids) {
+          const node = await figma.getNodeByIdAsync(id)
+          if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+            out.push({ source: id, ok: false, error: 'no such scene node' })
+            continue
+          }
+          const original = node as SceneNode
+          const dropped: RoundTripFinding[] = []
+          const notValues: string[] = []
+          const detached: string[] = []
+          // Another file can only make an instance from a component it can import: a library
+          // one, by key. A main that lives only in this file — or nowhere — comes across as the
+          // frame it shows, and says so.
+          // Never `getPublishStatusAsync` here: it goes out to the team library, and when that call
+          // hangs it wedges every library read in the session — live, it took the plugin with it
+          // until the designer reopened it. A main from a library travels by key; a main local to
+          // this file comes across as the frame it shows unless the caller vouches that the other
+          // file has this one as a library (`localComponents: "key"`).
+          const { spec } = await readSpecTree(original, depth, dropped, notValues, async (one) => {
+            traceSpec('finding the main component', `${one.name} (${one.id})`)
+            let main: ComponentNode | null
+            try {
+              main = await withCeiling(one.getMainComponentAsync(), 20_000, `the main component of ${one.name}`)
+            } catch (error) {
+              return { detach: true, why: String((error as Error)?.message || error) }
+            }
+            if (!main) return { detach: true, why: 'its main component is gone' }
+            if (main.remote || msg.localComponents === 'key') return { of: main.key }
+            return { detach: true, why: `its main "${main.name}" lives in this file — pass localComponents: "key" if the other file uses this one as a library` }
+          }, detached)
+          if (!spec) {
+            out.push({ source: id, name: original.name, ok: false, error: `a ${original.type} cannot be recreated`, dropped })
+            continue
+          }
+          for (const hash of imageHashesIn(spec)) hashes.add(hash)
+          out.push({
+            source: id,
+            name: original.name,
+            type: original.type,
+            ok: true,
+            spec,
+            before: ((await describeNode(original, true)).props ?? {}) as Record<string, unknown>,
+            ...(dropped.length > 0 ? { dropped } : {}),
+            ...(notValues.length > 0 ? { notValues } : {}),
+            ...(detached.length > 0 ? { detached } : {}),
+          })
+        }
+        // Pictures by hash, once each however many layers paint them. The answer has a ceiling
+        // — the sandbox-to-UI hop stalls past about 3 MB — so past the budget a picture is named
+        // rather than sent, and the building side reports it as not carried.
+        const images: Record<string, string> = {}
+        const skipped: Array<{ hash: string; why: string }> = []
+        let spent = 0
+        for (const hash of hashes) {
+          traceSpec('reading picture bytes', hash)
+          const image = figma.getImageByHash(hash)
+          let bytes: Uint8Array | null = null
+          let why = 'the picture could not be read'
+          try {
+            bytes = image ? await withCeiling(image.getBytesAsync(), 30_000, 'the picture bytes') : null
+          } catch (error) {
+            why = String((error as Error)?.message || error)
+          }
+          if (!bytes) {
+            skipped.push({ hash, why })
+            continue
+          }
+          if (spent + bytes.length > budget) {
+            skipped.push({ hash, why: `over the ${Math.round(budget / 1000)} kB budget for one call (${Math.round(bytes.length / 1000)} kB)` })
+            continue
+          }
+          images[hash] = figma.base64Encode(bytes)
+          spent += bytes.length
+        }
+        const took = Date.now() - (specTrace?.startedAt ?? Date.now())
+        specTrace = null
+        postToUi({ type: 'NODE_SPECS', ms: took, nodes: out, images, ...(skipped.length > 0 ? { imagesSkipped: skipped } : {}) })
+      } catch (error) {
+        specTrace = null
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_SPEC', message: String((error as Error)?.message || error) })
+      }
+      break
+    }
+    case 'TRANSFER_STATUS': {
+      // @agent read: where a portable read (NODE_SPEC) is right now — the layer and the step it is waiting on, and for how long; idle when none is running
+      postToUi({
+        type: 'TRANSFER_STATUS',
+        ...(specTrace
+          ? { running: specTrace.command, step: specTrace.step ?? 'starting', node: specTrace.node ?? null, elapsedMs: Date.now() - specTrace.startedAt, stepMs: specTrace.at ? Date.now() - specTrace.at : null }
+          : { running: null }),
+      })
+      break
+    }
+    case 'NODE_BUILD': {
+      // @agent write: build nodes from portable specs (NODE_SPEC's answer, usually from another file), read them back and say what did not survive
+      // @agent param nodes: an array of { source, spec, before } — NODE_SPEC's nodes, as they came
+      // @agent param images: NODE_SPEC's images — the bytes of each picture, by the hash it had where it came from
+      // @agent param parent: where the copies go — a frame, section or page id; the current page when omitted
+      // @agent param ignore: property names to leave out of the comparison, for the ones a file legitimately changes
+      // @agent param dryRun: true checks every spec plans and changes nothing
+      // @agent cost: one subtree made per node; one call is one undo step
+      try {
+        const rows = (Array.isArray(msg.nodes) ? msg.nodes : [msg.nodes]) as Array<{ source?: unknown; spec?: unknown; before?: unknown }>
+        /** Key → null when it imported, or why it did not — asked once per call, not once per copy. */
+        const componentImports = new Map<string, string | null>()
+        const images = (msg.images && typeof msg.images === 'object' ? msg.images : {}) as Record<string, string>
+        const ignore = new Set((Array.isArray(msg.ignore) ? msg.ignore : []).map((one) => String(one)))
+        const dry = msg.dryRun === true
+        let parent: BaseNode & ChildrenMixin = figma.currentPage
+        if (typeof msg.parent === 'string' && msg.parent !== '') {
+          const found = await figma.getNodeByIdAsync(msg.parent)
+          if (!found || !('appendChild' in found)) {
+            refuse('NODE_BUILD', `${msg.parent} is not a frame, section or page that can hold layers`)
+            break
+          }
+          if (found.type === 'PAGE') await (found as PageNode).loadAsync()
+          parent = found as BaseNode & ChildrenMixin
+        }
+        const reports = []
+        for (const row of rows) {
+          const source = String(row?.source ?? '?')
+          if (!row || typeof row.spec !== 'object' || row.spec === null) {
+            reports.push({ source, ok: false, error: 'no spec to build' })
+            continue
+          }
+          // A picture travels as bytes and gets a new hash here; one already in this file keeps
+          // its own. What did not travel is named rather than painted grey.
+          const missing: string[] = []
+          let spec = withImages(row.spec as CreateSpec, (hash) => (figma.getImageByHash(hash) ? { hash } : images[hash] ? { bytes: images[hash] } : (missing.push(hash), null)))
+          // A component this file cannot import — a library it does not have enabled — would
+          // fail the whole subtree from deep inside it. Each key is tried once, with a ceiling, and
+          // an instance of one that is not here is taken out and named rather than sinking the rest.
+          const unavailable: Array<{ name: string; key: string; why: string }> = []
+          for (const key of instanceKeysIn(spec)) {
+            if (componentImports.has(key)) continue
+            try {
+              await withCeiling(figma.importComponentByKeyAsync(key), 20_000, `importing component ${key.slice(0, 8)}…`)
+              componentImports.set(key, null)
+            } catch (error) {
+              componentImports.set(key, String((error as Error)?.message || error))
+            }
+          }
+          spec = withoutInstances(spec, (key) => componentImports.get(key) ?? null, unavailable)
+          const problems: string[] = []
+          const plan = planCreate(spec, 'spec', problems)
+          if (!plan || problems.length > 0) {
+            reports.push({ source, ok: false, error: problems.slice(0, 6).join(' · ') || 'the spec did not plan' })
+            continue
+          }
+          if (dry) {
+            reports.push({ source, ok: true, dryRun: true, ...(missing.length > 0 ? { imagesMissing: missing } : {}), ...(unavailable.length > 0 ? { unavailable } : {}) })
+            continue
+          }
+          let made: Awaited<ReturnType<typeof createNode>>
+          try {
+            made = await createNode(plan, parent, false)
+          } catch (error) {
+            reports.push({ source, ok: false, error: String((error as Error)?.message || error), ...(unavailable.length > 0 ? { unavailable } : {}) })
+            continue
+          }
+          const copy = await figma.getNodeByIdAsync(made.id)
+          if (!copy || !('type' in copy)) {
+            reports.push({ source, ok: false, error: 'the copy was not made' })
+            continue
+          }
+          const before = imagesBlind((row.before ?? {}) as Record<string, unknown>)
+          const after = imagesBlind(((await describeNode(copy as SceneNode, true)).props ?? {}) as Record<string, unknown>)
+          const { same, diverged } = compare(before, after, ignore)
+          const failed = made.failures ?? []
+          reports.push({
+            source,
+            node: copy.id,
+            name: (copy as SceneNode).name,
+            ok: diverged.length === 0 && failed.length === 0 && missing.length === 0 && unavailable.length === 0,
+            same: same.length,
+            ...(diverged.length > 0 ? { diverged } : {}),
+            ...(failed.length > 0 ? { failed } : {}),
+            ...(missing.length > 0 ? { imagesMissing: missing } : {}),
+            ...(unavailable.length > 0 ? { unavailable } : {}),
+          })
+        }
+        if (!dry && reports.some((one) => 'node' in one)) figma.commitUndo()
+        postToUi({ type: 'NODE_BUILT', dryRun: dry, parent: { id: parent.id, name: (parent as BaseNode).name }, nodes: reports })
+      } catch (error) {
+        postToUi({ type: 'CANVAS_ERROR', command: 'NODE_BUILD', message: String((error as Error)?.message || error) })
       }
       break
     }
@@ -6759,7 +8189,7 @@ async function handleUiMessage(msg: PluginMessage): Promise<void> {
       let stage = 'scan'
       try {
         postToUi({ type: 'EXPORT_PROGRESS', stage: 'scan', percent: 10 })
-        const exportOptions = normalizeExportOptions(await figma.clientStorage.getAsync('exportOptions'))
+        const exportOptions = withFileDocs(await loadExportOptions())
         // The full snapshot is what tokens.css is made of, so it is read only when that module is
         // on; the emitters need names, and those come from the ids the scope binds (60-90s of
         // library import saved on every export that ships templates alone).
@@ -7170,7 +8600,7 @@ function postMail(): void {
   postToUi({ type: 'MAIL_STATE', me: { name: me.name, address: me.user, agent: me.agent }, people, items: shown, now: Date.now() })
 }
 
-if (figma.mode !== 'codegen') {
+if (figma.mode !== 'codegen' && figma.mode !== 'textreview') {
   // Mail arriving while the panel is open says so once, in Figma's own toast; the panel shows it.
   const announced = new Set<string>()
   let first = true

@@ -103,3 +103,63 @@ test('every platform at once is the union, and the themes are reported', async (
     assert.ok(paths(all).some((name) => name.endsWith(expected)), `missing ${expected}`)
   }
 })
+
+/* ------------------------------------------------------------ the file's own token config */
+
+function setFigmaWithRoot(options: { readOnly?: boolean } = {}) {
+  setFigma()
+  const store = new Map<string, string>()
+  ;(globalThis as { figma: Record<string, unknown> }).figma.root = {
+    getSharedPluginData: (ns: string, key: string) => store.get(`${ns}:${key}`) ?? '',
+    setSharedPluginData: (ns: string, key: string, value: string) => {
+      if (options.readOnly) throw new Error('Cannot call setSharedPluginData in read-only mode')
+      store.set(`${ns}:${key}`, value)
+    },
+  }
+  return store
+}
+
+test('tokens.configure pins the file\'s token settings, verifies them, and previews the themes', async () => {
+  const store = setFigmaWithRoot()
+  const op = OPS_BY_NAME.get('tokens.configure')!
+  const read = (await op.run({})) as { before: unknown; after: unknown; changed: boolean }
+  assert.equal(read.before, null)
+  assert.equal(read.changed, false)
+
+  const dry = (await op.run({ set: { slugThemes: true, themeAttribute: 'data-theme-name' }, dryRun: true })) as any
+  assert.equal(store.size, 0, 'a dry run writes nothing')
+  assert.deepEqual(dry.preview.themes, ['light', 'dark'])
+  assert.equal(dry.preview.selector, '[data-theme-name="light"]')
+
+  const done = (await op.run({ set: { slugThemes: true, themeAttribute: 'data-theme-name', collectionRoles: 'Theme: themes, Nope: hidden' } })) as any
+  assert.equal(done.verified, true)
+  assert.deepEqual(JSON.parse(store.get('allcrewChannel:tokenExport')!), { slugThemes: true, themeAttribute: 'data-theme-name', collectionRoles: 'Theme: themes, Nope: hidden' })
+  assert.deepEqual(done.preview.unknownCollections, ['Nope'], 'a role naming no collection is pointed out')
+
+  // null unpins one field; a bad value refuses the whole call.
+  const unpinned = (await op.run({ set: { themeAttribute: null } })) as any
+  assert.equal('themeAttribute' in unpinned.after, false)
+  await assert.rejects(op.run({ set: { slugThemes: 'yes' } }), /nothing was written: "slugThemes" must be true or false/)
+  await assert.rejects(op.run({ set: { delivery: 'git' } }), /unknown setting "delivery"/)
+
+  const cleared = (await op.run({ clear: true })) as any
+  assert.equal(cleared.after, null)
+  assert.equal(store.get('allcrewChannel:tokenExport'), '')
+})
+
+test('tokens.configure says plainly when the file is read-only', async () => {
+  setFigmaWithRoot({ readOnly: true })
+  await assert.rejects(OPS_BY_NAME.get('tokens.configure')!.run({ set: { slugThemes: true } }), /read-only here \(Dev Mode or view access\)/)
+})
+
+test('tokens.emit builds with the file\'s config unless the call says otherwise', async () => {
+  const store = setFigmaWithRoot()
+  store.set('allcrewChannel:tokenExport', JSON.stringify({ slugThemes: true, themeAttribute: 'data-theme-name' }))
+  const op = OPS_BY_NAME.get('tokens.emit')!
+  const pinned = (await op.run({ platform: 'web', library: false })) as any
+  assert.deepEqual(pinned.themes, ['light', 'dark'])
+  assert.deepEqual(pinned.fileConfig, { slugThemes: true, themeAttribute: 'data-theme-name' })
+  const own = (await op.run({ platform: 'web', library: false, fileConfig: false })) as any
+  assert.deepEqual(own.themes, ['Light', 'Dark'])
+  assert.equal(own.fileConfig, undefined)
+})

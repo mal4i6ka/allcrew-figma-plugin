@@ -37,18 +37,18 @@ node agent/api-coverage.mjs --releases 1.107.0
 | --- | ---: | ---: | --- |
 | AnnotationsAPI | 3 | 0 | — |
 | BuzzAPI | 7 | 0 | — |
-| ClientStorageAPI | 4 | 2 | deleteAsync, keysAsync |
-| CodegenAPI | 6 | 2 | callback, refresh |
+| ClientStorageAPI | 4 | 0 | — |
+| CodegenAPI | 6 | 1 | callback |
 | ConstantsAPI | 1 | 1 | colors |
 | DevResourcesAPI | 4 | 4 | callback, off, on, once |
 | MotionAPI | 3 | 0 | — |
 | ParametersAPI | 3 | 3 | off, on, once |
 | PaymentsAPI | 6 | 6 | getPluginPaymentTokenAsync, getUserFirstRanSecondsAgo, initiateCheckoutAsync, requestCheckout, setPaymentStatusInDevelopment, status |
-| PluginAPI | 141 | 17 | callback, closePlugin, createBooleanOperation, createNodeFromJSXAsync, getFileThumbnailNode, getLocalCustomAnimationStyles, getLocalEffectStyles, getLocalGridStyles … |
+| PluginAPI | 141 | 15 | callback, closePlugin, createBooleanOperation, createNodeFromJSXAsync, getFileThumbnailNode, getLocalCustomAnimationStyles, getLocalEffectStyles, getLocalGridStyles … |
 | TeamLibraryAPI | 2 | 0 | — |
 | TextReviewAPI | 3 | 3 | isEnabled, requestToBeDisabledAsync, requestToBeEnabledAsync |
 | TimerAPI | 7 | 0 | — |
-| UIAPI | 11 | 2 | getPosition, reposition |
+| UIAPI | 11 | 0 | — |
 | UtilAPI | 7 | 1 | alphaOverride |
 | VariablesAPI | 27 | 5 | createVariableAliasByIdAsync, getLocalVariableCollections, getLocalVariables, getVariableById, getVariableCollectionById |
 | ViewportAPI | 6 | 0 | — |
@@ -95,9 +95,9 @@ NonResizableTextMixin.getRangeTextWrapStyle, SublayerDimensionsMixin, TextWrapSt
 
 VideoExportConstraint, VideoExportScale
 
-### 1.130.0 — 2026-06-24  (+98, не тронуто 12)
+### 1.130.0 — 2026-06-24  (+98, не тронуто 11)
 
-Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTrack.keyframeOperation, ManualKeyframeTracks, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
+Animations, AvailableAnimationStylePropValue, ComponentPropKeyframeBindings, ComponentPropKeyframeTracks, EffectKeyframeBindings, EffectKeyframeFieldName, EffectManualKeyframeTracks, ManualKeyframeTracks, PaintKeyframeBinding, PaintManualKeyframeTrack, ShaderPropertyValue
 
 ### 1.128.0 — 2026-06-03  (+2, не тронуто 0)
 
@@ -147,9 +147,9 @@ FontStyle
 
 всё тронуто
 
-### 1.115.0 — 2025-07-08  (+19, не тронуто 2)
+### 1.115.0 — 2025-07-08  (+19, не тронуто 1)
 
-GridLayoutMixin.appendChildAt, UIAPI.getPosition
+GridLayoutMixin.appendChildAt
 
 ### 1.114.0 — 2025-06-13  (+1, не тронуто 0)
 
@@ -159,9 +159,9 @@ GridLayoutMixin.appendChildAt, UIAPI.getPosition
 
 всё тронуто
 
-### 1.111.0 — 2025-05-07  (+89, не тронуто 16)
+### 1.111.0 — 2025-05-07  (+89, не тронуто 15)
 
-BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeTextStyleId, NoiseEffect, NonResizableTextPathMixin, TextPathNode.handleMirroring
+BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable, BaseNonResizableTextMixin.getRangeFillStyleId, BaseNonResizableTextMixin.getRangeFills, BaseNonResizableTextMixin.getRangeFontSize, BaseNonResizableTextMixin.getRangeFontWeight, BaseNonResizableTextMixin.getRangeHyperlink, BaseNonResizableTextMixin.getRangeLetterSpacing, BaseNonResizableTextMixin.getRangeOpenTypeFeatures, BaseNonResizableTextMixin.getRangeTextCase, BaseNonResizableTextMixin.getRangeTextStyleId, BaseNonResizableTextMixin.setRangeFillStyleId, BaseNonResizableTextMixin.setRangeTextStyleId, NoiseEffect, NonResizableTextPathMixin
 
 ### 1.110.0 — 2025-04-17  (+15, не тронуто 0)
 
@@ -231,9 +231,10 @@ BaseNonResizableTextMixin.Pick, BaseNonResizableTextMixin.getRangeBoundVariable,
   `lightIntensity`). Значение цвета — `"#RRGGBB"`, `"#RRGGBB @0.5"` или CSS-цвет; чтение отдаёт
   ту же строку.
 
-`ManualKeyframeTrack.keyframeOperation` (SET/OFFSET/SCALE) осознанно не читается: это поле
-сводного `animations`, где лежат и дорожки от стилей анимации, а ручные дорожки всегда
-абсолютные — для round-trip оно ничего не меняет.
+`ManualKeyframeTrack.keyframeOperation` (SET/OFFSET/SCALE) есть только у типа для чтения —
+записать относительную дорожку Plugin API не даёт. Чтение говорит `operation`, когда она не SET,
+а запись отказывает OFFSET / SCALE по имени: копия сообщает, что движение не переносится, вместо
+того чтобы тихо превратить «сдвинь на 20 px» в «поставь в x = 20».
 
 ### 4. Figma Draw — переменная ширина ЗАКРЫТА
 
@@ -403,8 +404,9 @@ node agent/allcrew-channel.mjs call plugin.call '{"command":"NODE_ROUNDTRIP","pa
   разделитель, чтение не печатало того, чего нет, оверрайд терялся и копия возвращалась с линией
   компонента. Теперь у инстанса пустая заливка и пустая обводка читаются как `"none"` — на
   инстансе пусто это решение, а не обычное дело.
-- **`network`, `brush`, `timelines`, `shader` читаются сводкой** («13 point(s), 13 segment(s)»).
-  Для обычного чтения это правильно, но скопированный вектор выходит пустым.
+- **`brush`, `timelines`, `shader` читаются сводкой.** `network` — уже нет: до 200 точек он
+  читается самой сетью в коротких формах записи (`[[0,0],[80,0],[40,70]]`), и скопированный
+  вектор больше не выходит пустым; сводкой остаётся только сеть больше этого.
 - ~~**Прототипные связи** читаются прозой~~ — **закрыто**. `links` читаются массивом в том виде,
   в каком запись их берёт: триггер словом, миллисекунды секундами, направление обратно в слово
   (`PUSH` + `LEFT` → `PUSH_LEFT`), пружина пружиной, условие как `if` / `then` / `else`. Чего
@@ -437,5 +439,51 @@ node agent/allcrew-channel.mjs call plugin.call '{"command":"NODE_ROUNDTRIP","pa
 - Design-only команды (компоненты, стили) в других редакторах отказывают с именем нужного
   редактора, а не падают на «not a function». `editor.capabilities` — что можно здесь.
 - Осознанно нет: запись состояния чужого виджета (API разрешает только самому виджету),
-  `rescale` (есть `width`/`height`), запись `authorName` (подделка авторства).
+  запись `authorName` (подделка авторства). `rescale` теперь есть — `scale`, см. пункт 12.
 
+## 12. Узел, документ и вид дизайнера — проход 27.10 из апстрима
+
+Перенесено из исходного плагина то, чего у нас ещё не было; что у нас уже было своим (гриды,
+`gridCell`, `textStart`, `repeat`, узоры, видео, списки и `decoration` в диапазонах, слоты,
+`SELECTION_COLORS`, обложка, `UNDO`, категории аннотаций), не дублировалось.
+
+- **Узел.** `isMask` / `maskType`, `cornerSmoothing`, `strokeMiterLimit`, `pointCount` (звезда и
+  многоугольник), `innerRadius` (звезда), `arc` у эллипса в градусах (`arcData` хранит радианы),
+  `booleanOperation`, `handleMirroring` у вектора и `mirror` у вершины; `transform` (вся матрица —
+  единственный способ сказать зеркало или скос), `flip`, `scale` (`rescale`, инструмент K),
+  `aspectLock`; `exports` (пресеты экспорта), `devStatus`, `contentsHidden` у секции, `expanded`,
+  `guides`, `exposed` у вложенного инстанса, `description` (markdown, целиком) и `documentation`
+  у компонента; `modes` — режим коллекции на узле, включая библиотечные коллекции (локальный
+  резолвер не мог поставить тот единственный режим, который ставят); `sharedData` по пространству
+  имён (дефис Figma отвергает — проверено вживую, отвергаем раньше) и `relaunch`;
+  `layout.alignContent` у переноса. Чтение — те же слова, плюс `rotation`, матрица, когда в ней
+  зеркало или скос, и сама векторная сеть до 200 точек. Фигмовские имена (`arcData`,
+  `exportSettings`, `layoutGrow`…) отвечают «здесь это `…`».
+- **Стили на слое.** `fillStyle` / `strokeStyle` / `textStyle` / `effectStyle` / `gridStyle`
+  читаются (библиотечный — ключом, имя рядом в `styleNames`); запись значения, которое уже даёт
+  стиль, пропускается с `kept: "follows H1"` — Figma рвёт связь со стилем при ЛЮБОМ присваивании.
+- **Текст.** Список и глубина, общие для всего текста, поднимаются на слой (`list`, `indent`) и
+  пишутся там же; `replace: [{ match, with }]` меняет слова на месте, сохраняя их стиль
+  (`insertCharacters` / `deleteCharacters`); `bind` в диапазоне (`setRangeBoundVariable`) и
+  поле считается привязкой слоя, только если оно одно на всех диапазонах; один неразрешимый
+  диапазон больше не роняет остальные; шрифт грузится один раз за сессию (повторный
+  `loadFontAsync` вживую ждал 11–60 с); шаг дольше полсекунды сообщает `ms`; пустой текстовый
+  слой просит свой `fontName`, а не пустой диапазон (`getRangeAllFontNames(0, 0)` бросает).
+- **Краски.** У картинки и видео — `filters` (семь ползунков панели, читаются до трёх знаков, а
+  не 32-битным шумом) и `rotation` четвертями; у картинки — `tile` (только TILE) и `crop`
+  (только CROP).
+- **Гриды разметки.** `{ variable }` вместо числа колонок, гаттера, поля, ширины/высоты/ячейки —
+  `setBoundVariableForLayoutGrid` после сборки списка; чтение называет переменную.
+- **Dev Mode.** `annotations` и `devLinks` — свойства словаря целым списком, так что копия экрана
+  уносит заметки для разработчика. Codegen предлагает rem (`codegenPreferences`, 16 по
+  умолчанию), CSS пересчитывается на выходе, `figma.codegen.refresh()` по `stylechange`.
+- **Команды.** `PAGE_SET` (имя, фон холста и прототипа, направляющие страницы; `PAGE_LIST`
+  говорит цвета и `documentColorProfile`), `VIEWPORT` / `VIEWPORT_SET`, `SELECTION_SET` (узлы или
+  диапазон символов), `VARIABLE_SUGGEST` (`inferredVariables` — только для значений, которые у слоя
+  есть; ответ идёт с серверов Figma), `STORAGE_KEYS` / `STORAGE_REMOVE` (размеры, не значения),
+  `UI_POSITION`, `CHANGES_WATCH` / `CHANGES_READ` (страница вслед за дизайнером или, с
+  `document: true`, весь документ; журнал на 1000 записей с LOCAL / REMOTE).
+  `sandbox.capabilities` говорит `pluginId` и `vscode`.
+
+Не перенесено: `variables.get` по расширенной коллекции с `overridden` — у нас расширение
+сворачивается в корень своим способом (пункт 2), и второй вид той же коллекции не добавлялся.

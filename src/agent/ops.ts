@@ -24,6 +24,7 @@ import { styledRuns } from '../canvas/text-runs.ts'
 import { readEffects } from '../canvas/effect-reader.ts'
 import {
   describePaint,
+  animatedShaderProperties,
   describeShader,
   imagePlacement,
   type PaintStopSummary,
@@ -45,9 +46,15 @@ import { TEXT_OPS } from './text-ops.ts'
 import { TOKENS_OPS } from './tokens-ops.ts'
 import { WRITE_OPS } from './write-ops.ts'
 import { PLUGIN_OPS } from './plugin-ops.ts'
+import { TRANSFER_OPS } from './transfer-ops.ts'
 import { MODULE_OPS } from './module-ops.ts'
 import { EDITOR_OPS } from './editor-ops.ts'
 import { DATA_OPS } from './data-ops.ts'
+import { DOCS_OPS } from './docs-ops.ts'
+import { readFileTokenConfig } from '../tokens/file-config.ts'
+import { guidelinesSummary, readFileDocsConfig, readGuidelinesManifest, type SharedDataHost } from '../docs/file-docs.ts'
+import { LISTEN_OPS } from './listen-ops.ts'
+import { REACH_OPS } from './reach-ops.ts'
 import { INBOX_OPS } from './inbox-ops.ts'
 import { COMPONENT_READ_OPS, COMPONENT_WRITE_OPS } from './component-ops.ts'
 import { ADMIN_OPS } from './admin-ops.ts'
@@ -640,12 +647,16 @@ async function describePaints(
   const shaders = hasShader(node.fills) || hasShader(node.strokes) ? await shadersFor(catalogue) : undefined
   if (Array.isArray(node.fills)) {
     out.fills = []
-    for (const [index, paint] of node.fills.entries()) out.fills.push(await describePaint(paint, index, shaders))
+    for (const [index, paint] of node.fills.entries()) {
+      out.fills.push(await describePaint(paint, index, shaders, undefined, animatedShaderProperties(node, 'fills', index)))
+    }
     out.fillStyle = await paintStyleName(node, 'fillStyleId')
   }
   if (Array.isArray(node.strokes)) {
     out.strokes = []
-    for (const [index, paint] of node.strokes.entries()) out.strokes.push(await describePaint(paint, index, shaders))
+    for (const [index, paint] of node.strokes.entries()) {
+      out.strokes.push(await describePaint(paint, index, shaders, undefined, animatedShaderProperties(node, 'strokes', index)))
+    }
     out.strokeStyle = await paintStyleName(node, 'strokeStyleId')
   }
   const regions = regionFills(node)
@@ -886,7 +897,7 @@ function readPropertyDefinitions(node: ComponentNode | ComponentSetNode): {
 export const READ_OPS: readonly OpDef[] = [
   {
     name: 'document.info',
-    summary: 'File name, editor type, current page and the list of pages.',
+    summary: 'File name, editor type, current page and the list of pages — and the guidelines the file carries, when it has some.',
     mutates: false,
     params: {},
     async run() {
@@ -903,6 +914,12 @@ export const READ_OPS: readonly OpDef[] = [
          * big file and nothing at all afterwards, so a caller planning a sweep wants to know
          * how much of that bill is already paid - see `loading.ts`. */
         warmPages: warmPages(),
+        /* The file's own instructions, when its owners stored some (docs.write): an agent's first
+         * call is this one, so this is where it learns there is something to read before it acts. */
+        guidelines: guidelinesSummary(readGuidelinesManifest(figma.root as unknown as SharedDataHost)),
+        /* What the file pins for its exports — null means each person's own panel settings. */
+        /* What the file pins for its exports — null/false means each person's own panel settings. */
+        pinned: { tokens: readFileTokenConfig() !== null, docs: readFileDocsConfig(figma.root as unknown as SharedDataHost) },
       }
     },
   },
@@ -2743,10 +2760,21 @@ export const READ_OPS: readonly OpDef[] = [
       return {
         apiVersion: figma.apiVersion,
         editorType: figma.editorType,
+        // default, inspect (Dev Mode's Plugins tab), codegen (Dev Mode's code view, panel hidden)
+        mode: figma.mode,
+        // The unit a developer picked in Dev Mode's code settings — only there to be read.
+        ...(figma.mode === 'codegen' ? { codegenPreferences: figma.codegen.preferences } : {}),
         fileName: figma.root.name,
         fileKey: figma.fileKey ?? null,
+        // Which plugin this sandbox is, and whether it is running inside VS Code's Figma panel.
+        pluginId: figma.pluginId ?? null,
+        ...(figma.vscode ? { vscode: true } : {}),
         ...probe('eval', () => (0, eval)('1 + 1')),
         ...probe('newFunction', () => new Function('return 1 + 1')()),
+        // Figma Specs (Markdown documents, embedded as SPEC_BLOCK nodes) exist in the runtime only
+        // when the file's plan has Specs enabled, and are absent from the public typings — ask
+        // the runtime instead of the typings whether this plugin can reach them.
+        spec: specSurface(),
       }
     },
   },
@@ -2826,8 +2854,24 @@ export const ALL_OPS: readonly OpDef[] = [
   ...MODULE_OPS,
   ...EDITOR_OPS,
   ...DATA_OPS,
+  ...DOCS_OPS,
+  ...LISTEN_OPS,
+  ...REACH_OPS,
   ...INBOX_OPS,
+  ...TRANSFER_OPS,
   ...PLUGIN_OPS,
 ]
 
 export const OPS_BY_NAME: ReadonlyMap<string, OpDef> = new Map(ALL_OPS.map((op) => [op.name, op]))
+
+/** What `figma.spec` offers this sandbox, if anything (see sandbox.capabilities). */
+function specSurface(): { available: boolean; methods?: string[]; comments?: string[] } {
+  const spec = (figma as unknown as { spec?: Record<string, unknown> }).spec
+  if (!spec || typeof spec !== 'object') return { available: false }
+  const names = (o: unknown) => {
+    const out = new Set<string>()
+    for (let p = o; p && p !== Object.prototype; p = Object.getPrototypeOf(p)) for (const k of Object.getOwnPropertyNames(p)) if (k !== 'constructor') out.add(k)
+    return [...out].sort()
+  }
+  return { available: true, methods: names(spec), ...(spec.comments ? { comments: names(spec.comments) } : {}) }
+}

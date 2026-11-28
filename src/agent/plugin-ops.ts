@@ -150,6 +150,24 @@ function serialize<T>(work: () => Promise<T>): Promise<T> {
   return next
 }
 
+/**
+ * One native panel command, run in the same queue as plugin.call, with its replies handed back
+ * raw — not digested into files. For ops that are a command underneath and must return what it
+ * said in full (node.spec's picture bytes go on to another file; on disk they would be no use).
+ */
+export async function runCommandRaw(command: string, params: Record<string, unknown>, timeoutMs = DEFAULT_CALL_TIMEOUT_MS): Promise<unknown[]> {
+  if (!runner) throw new Error('the plugin cannot run panel commands in this context')
+  const run = runner
+  const capture = await serialize(() => withCapture(async () => { await run({ ...params, type: command }) }, timeoutMs))
+  if (capture.timedOut) throw new Error(`"${command}" did not answer within ${Math.round(timeoutMs / 1000)}s — it is still running in the plugin`)
+  const failed = capture.replies.find((reply) => {
+    const type = (reply as { type?: unknown })?.type
+    return type === 'COMMAND_REFUSED' || type === 'CANVAS_ERROR'
+  }) as { reason?: unknown; message?: unknown } | undefined
+  if (failed) throw new Error(`"${command}" failed: ${String(failed.reason ?? failed.message ?? 'no reason given')}`)
+  return capture.replies
+}
+
 /* --------------------------------------------------------------------------- ops */
 
 /**

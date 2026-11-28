@@ -6,9 +6,9 @@
 
 import { toClassName } from '../css-emitter.ts'
 import { pickBackend } from './backend.ts'
-import { emitNodeAnimationCss } from './css-emitter.ts'
+import { emitNodeAnimationCss, emitTransform3dPropertyRules, hasTransform3dTrack } from './css-emitter.ts'
 import { emitGsapTimeline, type GsapPluginName, type GsapTimelineNode } from './gsap-emitter.ts'
-import type { MotionSnapshot, MotionTimeline, MotionTrack } from './types.ts'
+import type { MotionSnapshot, MotionStaticTransform3d, MotionTimeline, MotionTrack } from './types.ts'
 
 export interface MotionExportNode {
   readonly nodeId: string
@@ -40,6 +40,7 @@ export const EMPTY_MOTION_EXPORT_ARTIFACTS: MotionExportArtifacts = {
 interface TimelineNodeTracks {
   readonly nodeId: string
   readonly tracks: MotionTrack[]
+  readonly transform3d?: MotionStaticTransform3d
 }
 
 interface TimelineGroup {
@@ -93,7 +94,7 @@ function groupTimelines(nodes: readonly MotionExportNode[]): TimelineGroup[] {
       if (!groups.has(timeline.id)) groups.set(timeline.id, group)
 
       if (group.duration <= 0 && track.timelineDuration > 0) group.duration = track.timelineDuration
-      const nodeTracks = group.nodes.get(node.nodeId) ?? { nodeId: node.nodeId, tracks: [] }
+      const nodeTracks = group.nodes.get(node.nodeId) ?? { nodeId: node.nodeId, tracks: [], transform3d: node.snapshot.transform3d }
       nodeTracks.tracks.push(track)
       group.nodes.set(node.nodeId, nodeTracks)
     }
@@ -141,6 +142,9 @@ function emitCssTimeline(group: TimelineGroup): string {
         selector,
         tracks,
         nameForTrack: (track) => animationName(node.nodeId, group.id, track),
+        transform3d: node.transform3d,
+        // Written once at the top of the stylesheet, not once per node.
+        registerProperties: false,
       })
     )
   }
@@ -153,6 +157,7 @@ function emitGsapTimelineGroup(group: TimelineGroup): { js: string; usedPlugins:
     nodeId: node.nodeId,
     selector: nodeSelector(node.nodeId),
     tracks: node.tracks,
+    transform3d: node.transform3d,
   }))
   return emitGsapTimeline({ timelineId: group.id, duration: group.duration, nodes })
 }
@@ -161,6 +166,7 @@ export function emitMotionExportArtifacts(nodes: readonly MotionExportNode[]): M
   const cssBlocks: string[] = []
   const jsBlocks: string[] = []
   const usedPlugins = new Set<GsapPluginName>()
+  let needsTransform3dProperties = false
 
   for (const group of groupTimelines(nodes)) {
     const nodeTracks = [...group.nodes.values()]
@@ -171,6 +177,7 @@ export function emitMotionExportArtifacts(nodes: readonly MotionExportNode[]): M
     if (decision.backend === 'css') {
       const css = emitCssTimeline(group)
       if (css) cssBlocks.push(css)
+      if (css && hasTransform3dTrack(tracks)) needsTransform3dProperties = true
       continue
     }
 
@@ -184,7 +191,7 @@ export function emitMotionExportArtifacts(nodes: readonly MotionExportNode[]): M
   }
 
   const animation: MotionAnimationOutput = {
-    css: cssBlocks.join('\n\n'),
+    css: [...(needsTransform3dProperties ? [emitTransform3dPropertyRules()] : []), ...cssBlocks].join('\n\n'),
     js: jsBlocks.join('\n\n'),
     gsapPlugins: [...usedPlugins],
   }

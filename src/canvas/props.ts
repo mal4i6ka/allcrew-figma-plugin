@@ -169,6 +169,25 @@ export interface ImageRef {
   image: { hash?: string; url?: string; bytes?: string }
   scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
   opacity?: number
+  /** Exposure, contrast, saturation, temperature, tint, highlights, shadows — each -1 to 1. */
+  filters?: ImageFilterSpec
+  /** Quarter turns of the picture inside the layer. */
+  rotation?: 0 | 90 | 180 | 270
+  /** TILE only: the size of each tile against the picture's own. */
+  tile?: number
+  /** CROP only: the crop as the 2×3 matrix Figma keeps, `[[a, b, x], [c, d, y]]` in the layer's 0–1 space. */
+  crop?: [[number, number, number], [number, number, number]]
+}
+
+/** The image panel's sliders, each -1 to 1 with 0 untouched. */
+export interface ImageFilterSpec {
+  exposure?: number
+  contrast?: number
+  saturation?: number
+  temperature?: number
+  tint?: number
+  highlights?: number
+  shadows?: number
 }
 
 /**
@@ -200,6 +219,8 @@ export interface VideoRef {
   video: { hash?: string; bytes?: string }
   scaleMode?: 'FILL' | 'FIT' | 'CROP' | 'TILE'
   opacity?: number
+  filters?: ImageFilterSpec
+  rotation?: 0 | 90 | 180 | 270
 }
 
 /**
@@ -262,10 +283,27 @@ export type EffectSpec =
  * Figma spells each as a pattern with an alignment, a gutter, a count and sometimes a width; a
  * person says "12 columns, 16 apart, 24 in from each side".
  */
+/** A grid number, or the variable it follows — `{ variable: "grid/columns" }`. */
+export type GridNumber = number | { variable: string }
+
 export type GridSpec =
-  | { columns: number; gutter?: number; margin?: number; width?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
-  | { rows: number; gutter?: number; margin?: number; height?: number; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
-  | { square: number; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { columns: GridNumber; gutter?: GridNumber; margin?: GridNumber; width?: GridNumber; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { rows: GridNumber; gutter?: GridNumber; margin?: GridNumber; height?: GridNumber; align?: GridAlign; color?: ColourInput; opacity?: number; visible?: boolean }
+  | { square: GridNumber; color?: ColourInput; opacity?: number; visible?: boolean }
+
+/** The fields of a layout grid Figma binds a variable to. */
+export type GridTokenField = 'count' | 'gutterSize' | 'offset' | 'sectionSize'
+
+/** The grid words that can name a variable, against the field Figma binds. */
+export const GRID_TOKEN_FIELDS: Readonly<Record<string, GridTokenField>> = {
+  columns: 'count',
+  rows: 'count',
+  gutter: 'gutterSize',
+  margin: 'offset',
+  width: 'sectionSize',
+  height: 'sectionSize',
+  square: 'sectionSize',
+}
 
 export type GridAlign = 'MIN' | 'MAX' | 'CENTER' | 'STRETCH'
 
@@ -334,8 +372,8 @@ export interface LayoutProps {
   gap?: number
   /** Between wrapped lines. Only a wrapping layout has a second gap to set. */
   wrapGap?: number
-  /** One number for all four, or [top, right, bottom, left]. */
-  padding?: number | [number, number, number, number]
+  /** One number for all four, [top, right, bottom, left], or `{ top, right, bottom, left }` with a side left out as 0. */
+  padding?: number | [number, number, number, number] | { top?: number; right?: number; bottom?: number; left?: number }
   /** The three distributing values (`SPACE_BETWEEN`, `SPACE_AROUND`, `SPACE_EVENLY`) space the
    * children out themselves and ignore `gap`. */
   primaryAxis?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN' | 'SPACE_AROUND' | 'SPACE_EVENLY'
@@ -368,6 +406,8 @@ export interface LayoutProps {
    * at, counted against the order BEFORE the move. Children travel with their tracks. */
   moveRows?: TrackMove
   moveColumns?: TrackMove
+  /** A wrapping layout: how the wrapped lines share the cross axis — packed (`AUTO`) or spread (`SPACE_BETWEEN`). */
+  alignContent?: 'AUTO' | 'SPACE_BETWEEN'
 }
 
 export interface RepeatSpec {
@@ -463,6 +503,26 @@ export interface NodeProps {
   height?: number
   /** Degrees, -180 to 180. */
   rotation?: number
+  /**
+   * Depth and tilt, always in Figma's order translateZ → rotateX → rotateY → rotateZ: `{ translateZ: 40, rotateY: 30 }`,
+   * pixels and degrees. A number left out keeps what the layer has, or 0. `backfaceVisible: false` hides the layer
+   * when it faces away; `visible: false` switches the transform off and keeps its numbers. `"none"` or `null` removes
+   * it, and with it the layer's 3D keyframe tracks. An imported (FREEFORM) transform can be read and replaced, never
+   * written. Beta in Figma's API.
+   */
+  transform3d?: Transform3dProps | null
+  /**
+   * The point a 3D transform turns around, measured from the layer's top-left: `{ x: 0, y: "50%" }` is a door hinge.
+   * A number is pixels, `"50%"` a share of the width or height; an axis left out is the centre, `"50%"`.
+   */
+  transformOrigin?: { x?: number | string; y?: number | string }
+  /**
+   * FRAME, COMPONENT and INSTANCE only: the 3D space the children stand in — `{ perspective: 800, preserve3d: true }`.
+   * `perspective` is a distance in pixels and -1 switches it off. `preserve3d` lets children overlap by depth instead
+   * of layer order, and stops this container's own opacity, blend mode, effects and clipping from rendering.
+   * `"none"` or `null` clears it. Beta in Figma's API.
+   */
+  scene3d?: Scene3dProps | null
   /** Whether a frame hides what sticks out of it. */
   clipsContent?: boolean
 
@@ -566,6 +626,10 @@ export interface NodeProps {
   truncate?: boolean
   /** Stop after this many lines. `null` lets it run on. */
   maxLines?: number | null
+  /** The whole text as a bulleted (`UNORDERED`) or numbered (`ORDERED`) list, or not (`NONE`). */
+  list?: 'ORDERED' | 'UNORDERED' | 'NONE'
+  /** How deep in a list the whole text sits — 0 is the outermost level. */
+  indent?: number
   /** A link on the whole layer. `null` removes it. */
   link?: string | null
   /** Space between list items. */
@@ -585,14 +649,16 @@ export interface NodeProps {
   /** Movement on a timeline: `[{ field: "opacity", from: 0, at: [{ time: 0, value: 0 }, …] }]`. A `time` of
    * `"playhead"` is wherever the designer has the Motion timeline parked. `field` is a property
    * (`x`, `gap`…), a paint's colour (`fill`, `stroke[1]`) or an effect's setting (`effect.radius`,
-   * `effect[1].color`). `at: null` takes that track off; `[]` or `null` takes them all off. */
+   * `effect[1].color`). A shader's setting moves the same way, with `shader: { setting: "scale" }` in place of
+   * `field`. `at: null` takes that track off; `[]` or `null` takes them all off. While the timeline plays, a
+   * track starts from its first keyframe, not from `from`. */
   keyframes?: KeyframeTrack[] | null
   /** How long this node's timeline runs, in seconds. */
   timeline?: number
   /** INSTANCE only: what the designer changed INSIDE it — `[{ at: "<child id within the instance>", props }]`. */
   overrides?: Array<{ at: string; props: unknown }>
-  /** INSTANCE only: component properties by their catalogue names — variants, text, booleans. */
-  properties?: Record<string, string | boolean>
+  /** INSTANCE only: component properties by their catalogue names — variants, text, booleans; a text or boolean may be `{ variable }`. */
+  properties?: Record<string, string | boolean | { variable: string }>
   /** INSTANCE only: the component to become — an id or a published key. */
   swap?: string
   /** INSTANCE: throw away every override first. SLOT: put back the content the component's slot ships with. */
@@ -652,9 +718,100 @@ export interface NodeProps {
   stuckTo?: string | null
   /** Buzz: what the asset is for — INSTA_STORY, YOUTUBE_THUMBNAIL, CUSTOM… */
   assetType?: (typeof BUZZ_ASSET_TYPES)[number]
+  /** Whether this layer masks the layers above it in the same parent. */
+  isMask?: boolean
+  /** How a mask cuts: by `ALPHA`, by the `VECTOR` outline alone, or by `LUMINANCE`. */
+  maskType?: 'ALPHA' | 'VECTOR' | 'LUMINANCE'
+  /** Squircle corners, 0 to 1: 0 is a plain arc, 0.6 is what iOS draws. */
+  cornerSmoothing?: number
+  /** How far a sharp MITER join may reach before Figma bevels it, as a ratio of the stroke weight. */
+  strokeMiterLimit?: number
+  /** POLYGON and STAR only: how many corners, 3 or more. */
+  pointCount?: number
+  /** STAR only: how deep the points cut in, 0 to 1. */
+  innerRadius?: number
+  /** ELLIPSE only: part of a circle in degrees — `{ start: 0, end: 270 }` — and a hole, 0 to 1, for a ring. */
+  arc?: { start?: number; end?: number; inner?: number }
+  /** BOOLEAN_OPERATION only: how its children combine. */
+  booleanOperation?: 'UNION' | 'INTERSECT' | 'SUBTRACT' | 'EXCLUDE'
+  /** The whole 2×3 matrix, `[[a, b, x], [c, d, y]]` — what a flip or a skew is, which `rotation` cannot say. */
+  transform?: [[number, number, number], [number, number, number]]
+  /** Mirror the layer across its own centre, where it stands. */
+  flip?: 'HORIZONTAL' | 'VERTICAL'
+  /** Scale the layer AND what it is drawn with — strokes, radii, text, effects — the way the K tool does. */
+  scale?: number
+  /** Keep the width-to-height ratio when the layer is resized by hand. */
+  aspectLock?: boolean
+  /** Export presets on the layer — `[{ format: "PNG", scale: 2, suffix: "@2x" }, "SVG"]`. `[]` removes them. */
+  exports?: Array<string | ExportSpec>
+  /** Dev Mode status: `READY_FOR_DEV` or `COMPLETED`, or `{ type, description }`. `null` clears it. */
+  devStatus?: 'READY_FOR_DEV' | 'COMPLETED' | { type: 'READY_FOR_DEV' | 'COMPLETED'; description?: string } | null
+  /** SECTION only: hide what is inside it on the canvas. */
+  contentsHidden?: boolean
+  /** Whether the layer is opened out in the layers panel. */
+  expanded?: boolean
+  /** Which mode of a variable collection this layer is drawn in — `{ "Business": "Dark" }`. `null` inherits again. */
+  modes?: Record<string, string | null>
+  /** Ruler guides on a frame: `[{ axis: "X", offset: 24 }]`. `[]` removes them. */
+  guides?: Array<{ axis: 'X' | 'Y'; offset: number }>
+  /** COMPONENT and COMPONENT_SET only: what it is for, as the panel shows it. Markdown is kept. */
+  description?: string
+  /** COMPONENT and COMPONENT_SET only: links to its documentation. */
+  documentation?: string[]
+  /** A nested INSTANCE inside a component: offer its properties on every instance of the outer one. */
+  exposed?: boolean
+  /** VECTOR only: how a curve's two handles move together — `NONE`, `ANGLE` or `ANGLE_AND_LENGTH`. */
+  handleMirroring?: 'NONE' | 'ANGLE' | 'ANGLE_AND_LENGTH'
+  /** What other plugins keep on the layer, by their namespace — `{ "tokens": { "ref": "x" } }`. A null value clears a key. */
+  sharedData?: Record<string, Record<string, string | null>>
+  /** Words changed where they stand — `[{ match: "Sign in", with: "Log in" }]` or `{ from, to, with }` —
+   * so the new words keep the style of the ones they replace, where `text` restyles the whole layer. */
+  replace?: Array<{ match?: string; from?: number; to?: number; with: string }>
+  /** INSTANCE only: the scale the instance is drawn at against its component, as the K tool leaves it. */
+  scaleFactor?: number
+  /** Dev Mode notes, the whole list — `[{ label, properties?, category? }]` as a read gives them; `[]` removes them. */
+  annotations?: Array<{ label?: string; properties?: string[]; category?: string }>
+  /** Dev Mode links to code, the whole list — `[{ url, name? }]`; links not named are removed. */
+  devLinks?: Array<{ url: string; name?: string }>
+  /** Relaunch buttons Figma shows on the layer, by manifest command — `{ "reexport": "Re-export this frame" }`. `{}` clears them. */
+  relaunch?: Record<string, string>
+}
+
+/** One export preset, as the layer's Export panel holds it. */
+export interface ExportSpec {
+  format: 'PNG' | 'JPG' | 'SVG' | 'PDF'
+  /** Density, for PNG and JPG: `2` is @2x. Or a target `width` or `height` in pixels instead. */
+  scale?: number
+  width?: number
+  height?: number
+  suffix?: string
+  contentsOnly?: boolean
+  useAbsoluteBounds?: boolean
+  colorProfile?: 'DOCUMENT' | 'SRGB' | 'DISPLAY_P3_V4'
+  /** SVG only: text as outlines, layer names as ids, strokes simplified. */
+  svgOutlineText?: boolean
+  svgIdAttribute?: boolean
+  svgSimplifyStroke?: boolean
 }
 
 export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
+
+/** The writable half of a `FIXED_ORDER` 3D transform; see `NodeProps.transform3d`. */
+export interface Transform3dProps {
+  translateZ?: number
+  rotateX?: number
+  rotateY?: number
+  rotateZ?: number
+  backfaceVisible?: boolean
+  visible?: boolean
+}
+
+/** See `NodeProps.scene3d`. */
+export interface Scene3dProps {
+  perspective?: number
+  preserve3d?: boolean
+  visible?: boolean
+}
 
 /**
  * One styled stretch inside a text layer.
@@ -671,10 +828,28 @@ export type ConstraintKind = 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE'
  * `STACK_SPACING` — while everything else in this vocabulary is spelled the way the property is:
  * `x`, `gap`. The words here are ours, and the map to Figma's is one place, below.
  */
+/** One planned track on a shader setting; `track` is absent when the track is being removed. */
+export interface ShaderTrackPlan {
+  collection: 'fills' | 'strokes' | 'effects'
+  /** The shader's place in the stack; absent means the first shader found there. */
+  index?: number
+  /** The setting by the author's name, or by its property-definition id. */
+  setting: string
+  track?: unknown
+}
+
 export interface KeyframeTrack {
   /** What moves: opacity, x, y, rotation, scale, width, height, cornerRadius, gap, padding… — or
-   * `fill`, `stroke[n]`, `effect[n].radius|x|y|spread|color|opacity|…` for a paint or an effect. */
-  field: string
+   * `fill`, `stroke[n]`, `effect[n].radius|x|y|spread|color|opacity|…` for a paint or an effect.
+   * Left out when `shader` names a shader setting instead. */
+  field?: string
+  /**
+   * A setting of a shader on this layer, instead of `field`: `{ setting: "scale" }` — by the
+   * author's name or by id. `in` is `fill` (the default), `stroke` or `effect`; `index` is the
+   * shader's place in that stack, and without it the first shader there is meant. A value is a
+   * number, `{ x, y }`, `true`/`false`, or a colour as `"#RRGGBB"`.
+   */
+  shader?: { setting: string; in?: 'fill' | 'stroke' | 'effect'; index?: number }
   /** The value before the first keyframe. Without it the node's own value stands. */
   from?: number | { x: number; y: number } | string
   /** The keyframes themselves, in seconds along the timeline. `null` takes the track off. */
@@ -721,6 +896,8 @@ export interface TextRun {
   paragraphIndent?: number
   /** How these characters' underline or strikethrough is drawn — the same object as on the node. */
   decoration?: DecorationSpec
+  /** Variables on just these characters — `{ fontSize: "type/size/l" }`; `null` unbinds. */
+  bind?: Record<string, string | null>
 }
 
 /**
@@ -776,7 +953,7 @@ export interface FlowLink {
 /* ---------------------------------------------------------------------- plan */
 
 export type PropStep =
-  | { step: 'assign'; property: string; value: string | number | boolean }
+  | { step: 'assign'; property: string; value: string | number | boolean | null | Readonly<Record<string, unknown>> | readonly unknown[] }
   | { step: 'space3d'; property: Space3dProperty; value: Space3dValue }
   | { step: 'font'; font: FontSpec }
   | { step: 'text'; characters: string }
@@ -795,7 +972,13 @@ export type PropStep =
       /** Variables to bind afterwards: which effect, which field, which variable. */
       bind: Array<{ index: number; field: string; variable: string }>
     }
-  | { step: 'grid'; grids: LayoutGrid[]; summary: string }
+  | {
+      step: 'grid'
+      grids: LayoutGrid[]
+      summary: string
+      /** Token-driven numbers, bound on the grid itself — the node's bindings never hold them. */
+      bind?: Array<{ index: number; field: GridTokenField; variable: string }>
+    }
   | {
       step: 'animation'
       styles: Array<{ style: string; duration?: number; offset?: number; props: Record<string, unknown> }>
@@ -805,6 +988,16 @@ export type PropStep =
   | { step: 'brush'; brush: ComplexStrokeProperties; loads: 'STRETCH' | 'SCATTER' | null; summary: string }
   | { step: 'bound'; property: string; value: number | null }
   | { step: 'runs'; runs: TextRun[] }
+  | { step: 'textRange'; field: 'list' | 'indent'; value: string | number }
+  | { step: 'flip'; axis: 'HORIZONTAL' | 'VERTICAL' }
+  | { step: 'rescale'; factor: number }
+  | { step: 'aspect'; locked: boolean }
+  | { step: 'modes'; modes: Record<string, string | null> }
+  | { step: 'sharedData'; data: Record<string, Record<string, string | null>> }
+  | { step: 'relaunch'; data: Record<string, string> }
+  | { step: 'replace'; edits: Array<{ match?: string; from?: number; to?: number; with: string }> }
+  | { step: 'annotations'; notes: Array<{ label?: string; properties?: string[]; category?: string }> }
+  | { step: 'devLinks'; links: Array<{ url: string; name?: string }> }
   | { step: 'link'; url: string | null }
   | { step: 'sizing'; horizontal?: SizingMode; vertical?: SizingMode }
   | { step: 'bind'; bindings: Array<{ field: string; variable: string | null; wants: string }> }
@@ -813,10 +1006,16 @@ export type PropStep =
   | { step: 'network'; network: VectorNetwork; summary: string }
   | { step: 'reset' }
   | { step: 'swap'; component: string }
-  | { step: 'properties'; properties: Record<string, string | boolean> }
+  | { step: 'properties'; properties: Record<string, string | boolean | { variable: string }> }
   | { step: 'overrides'; overrides: Array<{ at: string; steps: PropStep[] }> }
   | { step: 'strokeProfile'; profile: unknown }
-  | { step: 'keyframes'; tracks: Array<{ name: string; field: unknown; track: unknown | null }>; clear?: boolean }
+  | {
+      step: 'keyframes'
+      tracks: Array<{ name: string; field: unknown; track: unknown | null }>
+      clear?: boolean
+      /** Tracks on a shader's settings — addressed by stack, place and setting, resolved on the node. */
+      shaderTracks?: ShaderTrackPlan[]
+    }
   | { step: 'timeline'; seconds: number }
   | { step: 'gridCell'; row: number; column: number }
   | { step: 'textStart'; segment: number; position: number }
@@ -939,6 +1138,7 @@ const LAYOUT_KEYS = [
   'positioning',
   'moveRows',
   'moveColumns',
+  'alignContent',
 ]
 
 /**
@@ -1029,7 +1229,11 @@ const ORDER = [
   'overrides',
   'visible',
   'locked',
+  'expanded',
   'clipsContent',
+  'isMask',
+  'maskType',
+  'contentsHidden',
   'layout',
   // Validated in the loop, applied after it: the two sizing steps are computed from the layout and
   // this together, and they land either side of the resize.
@@ -1038,8 +1242,16 @@ const ORDER = [
   // Before the geometry: an absolutely-positioned child is the only kind whose x and y mean
   // anything inside an auto-layout parent.
   'absolute',
+  // Before the size. Buzz snaps an asset to its format's preset (FACEBOOK_POST is 1200×630,
+  // TWITTER_POST 1200×675…) and a plain resize afterwards keeps the format (both seen live). Set
+  // after the size, the preset overwrote the size the caller asked for and stretched the layers.
+  'assetType',
   'width',
   'height',
+  // After the size it multiplies, and before anything that reads the size it produces.
+  'scale',
+  'scaleFactor',
+  'aspectLock',
   'minWidth',
   'maxWidth',
   'minHeight',
@@ -1061,21 +1273,29 @@ const ORDER = [
   'skipped',
   'transition',
   'stuckTo',
-  // Before the size: an asset type is a format, and a format comes with dimensions.
-  'assetType',
   'x',
   'y',
   'rotation',
+  // After x, y and rotation, which it contains — the matrix is the last word on where the layer
+  // stands — and the flip after it, since a flip is taken across wherever the layer ended up.
+  'transform',
+  'flip',
   // 3D (beta): the origin before the transform it turns about, the scene on the container.
   'transformOrigin',
   'transform3d',
   'scene3d',
   'opacity',
   'cornerRadius',
+  'cornerSmoothing',
+  'pointCount',
+  'innerRadius',
+  'arc',
+  'booleanOperation',
   // Before the paints: the shape decides what there is to fill.
   'path',
   'paths',
   'network',
+  'handleMirroring',
   // Before the paints and the type: following a style sets the whole bundle, and a colour named
   // in the same breath is meant to override it, not to be overwritten by it.
   'fillStyle',
@@ -1089,6 +1309,7 @@ const ORDER = [
   'strokeAlign',
   'strokeCap',
   'strokeJoin',
+  'strokeMiterLimit',
   'strokeDashes',
   'strokeProfile',
   'brush',
@@ -1126,12 +1347,29 @@ const ORDER = [
   // and was gone by the time anyone looked.
   'truncate',
   'maxLines',
+  // After the whole text and before the runs, which may style the words it puts in.
+  'replace',
+  // After the characters: a list is a range of them, and there is no range in an empty box. Before
+  // the runs, which may make one paragraph of the list something else.
+  'list',
+  'indent',
   'runs',
   'bind',
   'scroll',
   'fixedChildren',
   'links',
   'data',
+  'sharedData',
+  'relaunch',
+  'modes',
+  'exports',
+  'devStatus',
+  'annotations',
+  'devLinks',
+  'guides',
+  'description',
+  'documentation',
+  'exposed',
   'parent',
   'index',
 ] as const
@@ -1181,6 +1419,33 @@ const FIGMA_NAMES: Record<string, string> = {
   connectorStart: 'connector.start',
   connectorEnd: 'connector.end',
   connectorLineType: 'connector.line',
+  listOptions: 'list',
+  indentation: 'indent',
+  arcData: 'arc',
+  relativeTransform: 'transform',
+  exportSettings: 'exports',
+  constrainProportions: 'aspectLock',
+  sectionContentsHidden: 'contentsHidden',
+  isExposedInstance: 'exposed',
+  explicitVariableModes: 'modes',
+  documentationLinks: 'documentation',
+  descriptionMarkdown: 'description',
+  gridChildHorizontalAlign: 'gridAlign.horizontal',
+  gridChildVerticalAlign: 'gridAlign.vertical',
+  gridColumnSizes: 'layout.columnSizes',
+  gridRowSizes: 'layout.rowSizes',
+  gridItemsPositioning: 'layout.positioning',
+  gridRowAnchorIndex: 'gridCell',
+  gridColumnAnchorIndex: 'gridCell',
+  counterAxisAlignContent: 'layout.alignContent',
+  horizontalPadding: 'layout.padding',
+  verticalPadding: 'layout.padding',
+  primaryAxisSizingMode: 'sizing',
+  counterAxisSizingMode: 'sizing',
+  layoutGrow: 'sizing',
+  layoutAlign: 'sizing',
+  mainComponent: 'swap',
+  backgrounds: 'fill',
 }
 
 /** What to tell a caller about a key we do not know: the one it meant, or what there is. */
@@ -1206,6 +1471,9 @@ const PLACED = [
   'layoutPositioning',
   'x',
   'y',
+  'relativeTransform',
+  // Exposing is about the component the instance is nested IN, which it is not until placed.
+  'isExposedInstance',
   'gridRowSpan',
   'gridColumnSpan',
   'gridChildVerticalAlign',
@@ -1247,6 +1515,8 @@ export function dependsOnPlacement(step: PropStep): boolean {
   if (step.step === 'timeline') return true
   // A cell is a place in the parent's grid; a detached node has no grid to be placed in.
   if (step.step === 'gridCell') return true
+  // A flip is taken across where the node stands, and a detached node is not standing there yet.
+  if (step.step === 'flip') return true
   return step.step === 'assign' && PLACED.includes(step.property)
 }
 
@@ -1518,6 +1788,225 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
         } else steps.push({ step: 'gridCell', row: cell.row as number, column: cell.column as number })
         break
       }
+      case 'isMask':
+      case 'expanded':
+      case 'contentsHidden':
+      case 'exposed': {
+        if (typeof props[key] !== 'boolean') fail(`${key} must be true or false`)
+        else steps.push({ step: 'assign', property: FIGMA_FLAG_NAMES[key] ?? key, value: props[key] as boolean })
+        break
+      }
+      case 'aspectLock': {
+        if (typeof props.aspectLock !== 'boolean') fail('aspectLock must be true or false')
+        else steps.push({ step: 'aspect', locked: props.aspectLock })
+        break
+      }
+      case 'maskType':
+      case 'booleanOperation':
+      case 'handleMirroring': {
+        const allowed = SHAPE_ENUMS[key]
+        const value = typeof props[key] === 'string' ? normaliseEnum(props[key] as string) : props[key]
+        if (typeof value !== 'string' || !allowed.includes(value)) fail(`${key} must be one of: ${allowed.join(', ')}`)
+        else steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'cornerSmoothing':
+      case 'innerRadius': {
+        const value = number(key, 0, 1)
+        if (value !== null) steps.push({ step: 'assign', property: key, value })
+        break
+      }
+      case 'strokeMiterLimit': {
+        const value = number('strokeMiterLimit', 1)
+        if (value !== null) steps.push({ step: 'assign', property: 'strokeMiterLimit', value })
+        break
+      }
+      case 'pointCount': {
+        const value = props.pointCount
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 3) fail('pointCount must be a whole number of at least 3')
+        else steps.push({ step: 'assign', property: 'pointCount', value })
+        break
+      }
+      case 'arc': {
+        const arc = planArc(props.arc)
+        if (typeof arc === 'string') fail(`arc ${arc}`)
+        else steps.push({ step: 'assign', property: 'arcData', value: { ...arc } })
+        break
+      }
+      case 'transform': {
+        const matrix = props.transform
+        const row = (one: unknown) => Array.isArray(one) && one.length === 3 && one.every((n) => typeof n === 'number' && Number.isFinite(n))
+        if (!Array.isArray(matrix) || matrix.length !== 2 || !row(matrix[0]) || !row(matrix[1])) {
+          fail('transform must be [[a, b, x], [c, d, y]] — six numbers in two rows')
+        } else steps.push({ step: 'assign', property: 'relativeTransform', value: matrix as unknown[] })
+        break
+      }
+      case 'flip': {
+        const value = typeof props.flip === 'string' ? normaliseEnum(props.flip) : props.flip
+        if (value !== 'HORIZONTAL' && value !== 'VERTICAL') fail('flip must be HORIZONTAL or VERTICAL')
+        else steps.push({ step: 'flip', axis: value })
+        break
+      }
+      case 'scale': {
+        const value = number('scale', 0.01)
+        if (value !== null) steps.push({ step: 'rescale', factor: value })
+        break
+      }
+      case 'exports': {
+        const presets = planExports(props.exports)
+        if (typeof presets === 'string') fail(`exports${presets}`)
+        else steps.push({ step: 'assign', property: 'exportSettings', value: presets as unknown as readonly unknown[] })
+        break
+      }
+      case 'devStatus': {
+        const value = props.devStatus
+        const kinds = ['READY_FOR_DEV', 'COMPLETED']
+        if (value === null) steps.push({ step: 'assign', property: 'devStatus', value: null })
+        else if (typeof value === 'string' && kinds.includes(normaliseEnum(value))) {
+          steps.push({ step: 'assign', property: 'devStatus', value: { type: normaliseEnum(value) } })
+        } else if (
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          typeof (value as { type?: unknown }).type === 'string' &&
+          kinds.includes(normaliseEnum((value as { type: string }).type)) &&
+          ['undefined', 'string'].includes(typeof (value as { description?: unknown }).description)
+        ) {
+          const { type, description } = value as { type: string; description?: string }
+          steps.push({ step: 'assign', property: 'devStatus', value: { type: normaliseEnum(type), ...(description ? { description } : {}) } })
+        } else fail(`devStatus must be ${kinds.join(' or ')}, { type, description? }, or null`)
+        break
+      }
+      case 'modes': {
+        const value = props.modes
+        if (typeof value !== 'object' || value === null || Array.isArray(value) || Object.keys(value).length === 0) {
+          fail('modes must be { "<collection>": "<mode>" }, a null mode to inherit again')
+          break
+        }
+        const bad = Object.entries(value as Record<string, unknown>).filter(
+          ([, mode]) => !(mode === null || (typeof mode === 'string' && mode.trim() !== ''))
+        )
+        if (bad.length > 0) fail(`modes.${bad[0][0]} must be a mode name or id, or null`)
+        else steps.push({ step: 'modes', modes: value as Record<string, string | null> })
+        break
+      }
+      case 'guides': {
+        const value = props.guides
+        const guide = (one: unknown) =>
+          typeof one === 'object' &&
+          one !== null &&
+          ((one as { axis?: unknown }).axis === 'X' || (one as { axis?: unknown }).axis === 'Y') &&
+          typeof (one as { offset?: unknown }).offset === 'number' &&
+          Number.isFinite((one as { offset: number }).offset)
+        if (!Array.isArray(value) || !value.every(guide)) fail('guides must be [{ axis: "X" | "Y", offset }]')
+        else steps.push({ step: 'assign', property: 'guides', value: value.map((one) => ({ axis: one.axis, offset: one.offset })) })
+        break
+      }
+      case 'description': {
+        if (typeof props.description !== 'string') fail('description must be a string')
+        // Markdown is what the panel renders; plain text is markdown with nothing to render.
+        else steps.push({ step: 'assign', property: 'descriptionMarkdown', value: props.description })
+        break
+      }
+      case 'documentation': {
+        const value = props.documentation
+        if (!Array.isArray(value) || !value.every((uri) => typeof uri === 'string' && uri.trim() !== '')) {
+          fail('documentation must be a list of URLs')
+        } else steps.push({ step: 'assign', property: 'documentationLinks', value: value.map((uri) => ({ uri: uri.trim() })) })
+        break
+      }
+      case 'sharedData': {
+        const value = props.sharedData
+        // Figma's rule for a namespace: at least three characters of letters, numbers, `_` and `.`.
+        // A hyphen is refused by Figma at write time (found live), so it is refused here first.
+        const space = /^[A-Za-z0-9_.]{3,}$/
+        const ok =
+          typeof value === 'object' &&
+          value !== null &&
+          !Array.isArray(value) &&
+          Object.entries(value).every(
+            ([namespace, entries]) =>
+              space.test(namespace) &&
+              typeof entries === 'object' &&
+              entries !== null &&
+              !Array.isArray(entries) &&
+              Object.values(entries).every((one) => typeof one === 'string' || one === null)
+          )
+        if (!ok) fail('sharedData must be { "<namespace: 3+ letters, numbers, _ or .>": { key: "value" | null } }')
+        else steps.push({ step: 'sharedData', data: value as Record<string, Record<string, string | null>> })
+        break
+      }
+      case 'scaleFactor': {
+        const value = number('scaleFactor', 0.01)
+        if (value !== null) steps.push({ step: 'assign', property: 'scaleFactor', value })
+        break
+      }
+      case 'replace': {
+        const value = props.replace
+        const edits: Array<{ match?: string; from?: number; to?: number; with: string }> = []
+        for (const [index, one] of (Array.isArray(value) ? value : [value]).entries()) {
+          const edit = one as { match?: unknown; from?: unknown; to?: unknown; with?: unknown } | null
+          const at = `replace[${index}]`
+          if (typeof edit !== 'object' || edit === null || typeof edit.with !== 'string') fail(`${at} must be { match, with } or { from, to, with }`)
+          else if (edit.match !== undefined && (edit.from !== undefined || edit.to !== undefined)) fail(`${at}: name either a match or a from/to range, not both`)
+          else if (edit.match !== undefined) {
+            if (typeof edit.match !== 'string' || edit.match === '') fail(`${at}.match must be the words to replace`)
+            else edits.push({ match: edit.match, with: edit.with })
+          } else if (
+            typeof edit.from === 'number' &&
+            typeof edit.to === 'number' &&
+            Number.isInteger(edit.from) &&
+            Number.isInteger(edit.to) &&
+            edit.from >= 0 &&
+            edit.to > edit.from
+          ) {
+            edits.push({ from: edit.from, to: edit.to, with: edit.with })
+          } else fail(`${at} must name a match, or whole numbers from < to`)
+        }
+        if (edits.length > 0) steps.push({ step: 'replace', edits })
+        break
+      }
+      case 'annotations': {
+        const value = props.annotations
+        const notes: Array<{ label?: string; properties?: string[]; category?: string }> = []
+        if (!Array.isArray(value)) fail('annotations must be a list of { label?, properties?, category? } — [] removes them')
+        else
+          for (const [index, one] of value.entries()) {
+            const note = one as { label?: unknown; properties?: unknown; category?: unknown } | null
+            const at = `annotations[${index}]`
+            const properties = note?.properties === undefined ? [] : note.properties
+            if (typeof note !== 'object' || note === null) fail(`${at} must be { label?, properties?, category? }`)
+            else if (note.label !== undefined && typeof note.label !== 'string') fail(`${at}.label must be text (markdown)`)
+            else if (!Array.isArray(properties) || !properties.every((name) => typeof name === 'string' && ANNOTATION_PROPERTIES.includes(name))) {
+              fail(`${at}.properties must name some of: ${ANNOTATION_PROPERTIES.join(', ')}`)
+            } else if (!note.label && properties.length === 0) fail(`${at} says nothing — give a label or some properties`)
+            else if (note.category !== undefined && typeof note.category !== 'string') fail(`${at}.category must be a category label or id`)
+            else
+              notes.push({
+                ...(note.label ? { label: note.label as string } : {}),
+                ...(properties.length > 0 ? { properties: properties as string[] } : {}),
+                ...(note.category ? { category: note.category as string } : {}),
+              })
+          }
+        if (Array.isArray(value) && notes.length === value.length) steps.push({ step: 'annotations', notes })
+        break
+      }
+      case 'devLinks': {
+        const value = props.devLinks
+        const links = Array.isArray(value)
+          ? value.map((one) => (typeof one === 'string' ? { url: one } : (one as { url?: unknown; name?: unknown })))
+          : null
+        if (!links || !links.every((one) => typeof one?.url === 'string' && one.url.trim() !== '' && (one.name === undefined || typeof one.name === 'string'))) {
+          fail('devLinks must be a list of { url, name? } — [] removes them')
+        } else steps.push({ step: 'devLinks', links: links.map((one) => ({ url: (one.url as string).trim(), ...(one.name ? { name: one.name as string } : {}) })) })
+        break
+      }
+      case 'relaunch': {
+        const value = props.relaunch
+        if (typeof value !== 'object' || value === null || Array.isArray(value) || !Object.values(value).every((one) => typeof one === 'string')) {
+          fail('relaunch must be { "<manifest command>": "description" } — {} clears it')
+        } else steps.push({ step: 'relaunch', data: value as Record<string, string> })
+        break
+      }
       case 'strokeWeight': {
         const value = number('strokeWeight', 0)
         if (value !== null) steps.push({ step: 'assign', property: 'strokeWeight', value })
@@ -1589,6 +2078,18 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           const lines = number('maxLines', 1)
           if (lines !== null) steps.push({ step: 'bound', property: 'maxLines', value: lines })
         }
+        break
+      }
+      case 'list': {
+        const value = typeof props.list === 'string' ? props.list.toUpperCase() : props.list
+        if (typeof value !== 'string' || !LIST_TYPES.includes(value)) fail(`list must be one of: ${LIST_TYPES.join(', ')}`)
+        else steps.push({ step: 'textRange', field: 'list', value })
+        break
+      }
+      case 'indent': {
+        const value = props.indent
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) fail('indent must be a whole number >= 0')
+        else steps.push({ step: 'textRange', field: 'indent', value })
         break
       }
       case 'link': {
@@ -1844,12 +2345,15 @@ export function planProps(raw: unknown, where = 'props'): PropPlan {
           fail('properties must be an object of { propertyName: value }')
           break
         }
-        const wanted: Record<string, string | boolean> = {}
+        const wanted: Record<string, string | boolean | { variable: string }> = {}
         for (const [name, setting] of Object.entries(value as Record<string, unknown>)) {
           // Which names exist depends on the component, so that is checked against the instance
           // at apply time; the plan only insists on a value Figma could accept at all.
           if (typeof setting === 'string' || typeof setting === 'boolean') wanted[name] = setting
-          else fail(`properties.${name} must be a string or a boolean`)
+          // `{ variable }` binds the property to a token instead — a label that follows copy.
+          else if (typeof setting === 'object' && setting !== null && typeof (setting as { variable?: unknown }).variable === 'string' && (setting as { variable: string }).variable.trim() !== '') {
+            wanted[name] = { variable: (setting as { variable: string }).variable.trim() }
+          } else fail(`properties.${name} must be a string, a boolean, or { variable }`)
         }
         if (Object.keys(wanted).length > 0) steps.push({ step: 'properties', properties: wanted })
         else if (Object.keys(value as object).length === 0) fail('properties must name at least one property')
@@ -2579,6 +3083,156 @@ function buildTransition(
   }
 }
 
+/** Our words for flags Figma spells longer. */
+const FIGMA_FLAG_NAMES: Readonly<Record<string, string>> = {
+  contentsHidden: 'sectionContentsHidden',
+  exposed: 'isExposedInstance',
+}
+
+const SHAPE_ENUMS: Readonly<Record<string, readonly string[]>> = {
+  maskType: ['ALPHA', 'VECTOR', 'LUMINANCE'],
+  booleanOperation: ['UNION', 'INTERSECT', 'SUBTRACT', 'EXCLUDE'],
+  handleMirroring: ['NONE', 'ANGLE', 'ANGLE_AND_LENGTH'],
+}
+
+const DEGREES = Math.PI / 180
+
+/**
+ * An ellipse's arc in degrees, as Figma's own panel shows it — `arcData` stores radians, and
+ * nobody writes `4.71238898` for three-quarters of a circle. Absent ends are a whole circle, the
+ * way Figma's own default reads.
+ */
+export function planArc(raw: unknown): ArcData | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return 'must be { start?, end?, inner? }'
+  const arc = raw as Record<string, unknown>
+  for (const key of Object.keys(arc)) {
+    if (!['start', 'end', 'inner'].includes(key)) return `: unknown key "${key}" — accepted: start, end, inner`
+  }
+  const start = arc.start ?? 0
+  const end = arc.end ?? 360
+  const inner = arc.inner ?? 0
+  if (typeof start !== 'number' || !Number.isFinite(start)) return '.start must be a number of degrees'
+  if (typeof end !== 'number' || !Number.isFinite(end)) return '.end must be a number of degrees'
+  if (typeof inner !== 'number' || inner < 0 || inner > 1) return '.inner must be between 0 and 1'
+  return { startingAngle: start * DEGREES, endingAngle: end * DEGREES, innerRadius: inner }
+}
+
+/** The arc back in the words `arc` takes, or nothing for a plain full ellipse. */
+export function readArc(data: ArcData): { start?: number; end?: number; inner?: number } | null {
+  const round = (value: number) => Math.round(value * 100) / 100
+  const start = round(data.startingAngle / DEGREES)
+  const end = round(data.endingAngle / DEGREES)
+  const inner = round(data.innerRadius)
+  const whole = Math.abs(end - start - 360) < 0.01
+  if (whole && inner === 0) return null
+  return { ...(start !== 0 ? { start } : {}), ...(end !== 360 ? { end } : {}), ...(inner !== 0 ? { inner } : {}) }
+}
+
+const EXPORT_FORMATS = ['PNG', 'JPG', 'SVG', 'PDF']
+const EXPORT_KEYS = ['format', 'scale', 'width', 'height', 'suffix', 'contentsOnly', 'useAbsoluteBounds', 'colorProfile', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']
+
+/**
+ * Export presets, refused key by key rather than handed to Figma, whose validation names its own
+ * internals ("Expected 'SCALE' | 'WIDTH' | 'HEIGHT'") instead of the word the caller wrote.
+ */
+export function planExports(raw: unknown): ExportSettings[] | string {
+  if (!Array.isArray(raw)) return ' must be a list of presets — "SVG", or { format: "PNG", scale: 2, suffix: "@2x" }'
+  const out: ExportSettings[] = []
+  for (const [index, one] of raw.entries()) {
+    const at = `[${index}]`
+    const spec = (typeof one === 'string' ? { format: one } : one) as Record<string, unknown> | null
+    if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) return `${at} must be a format or { format, … }`
+    for (const key of Object.keys(spec)) if (!EXPORT_KEYS.includes(key)) return `${at}: unknown key "${key}" — accepted: ${EXPORT_KEYS.join(', ')}`
+    const format = typeof spec.format === 'string' ? spec.format.toUpperCase().replace('JPEG', 'JPG') : ''
+    if (!EXPORT_FORMATS.includes(format)) return `${at}.format must be one of: ${EXPORT_FORMATS.join(', ')}`
+    const sizing = (['scale', 'width', 'height'] as const).filter((key) => spec[key] !== undefined)
+    if (sizing.length > 1) return `${at}: give one of scale, width or height, not ${sizing.join(' and ')}`
+    if (sizing.length === 1 && (format === 'SVG' || format === 'PDF')) return `${at}: a ${format} is vector — it takes no ${sizing[0]}`
+    const amount = sizing.length === 1 ? spec[sizing[0]] : undefined
+    if (amount !== undefined && (typeof amount !== 'number' || amount <= 0)) return `${at}.${sizing[0]} must be a number > 0`
+    for (const flag of ['contentsOnly', 'useAbsoluteBounds', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']) {
+      if (spec[flag] !== undefined && typeof spec[flag] !== 'boolean') return `${at}.${flag} must be true or false`
+      if (spec[flag] !== undefined && flag.startsWith('svg') && format !== 'SVG') return `${at}.${flag} is an SVG setting`
+    }
+    if (spec.suffix !== undefined && typeof spec.suffix !== 'string') return `${at}.suffix must be text`
+    if (spec.colorProfile !== undefined && !['DOCUMENT', 'SRGB', 'DISPLAY_P3_V4'].includes(String(spec.colorProfile))) {
+      return `${at}.colorProfile must be DOCUMENT, SRGB or DISPLAY_P3_V4`
+    }
+    const preset: Record<string, unknown> = { format }
+    if (amount !== undefined) preset.constraint = { type: sizing[0].toUpperCase(), value: amount }
+    for (const key of ['suffix', 'contentsOnly', 'useAbsoluteBounds', 'colorProfile', 'svgOutlineText', 'svgIdAttribute', 'svgSimplifyStroke']) {
+      if (spec[key] !== undefined) preset[key] = spec[key]
+    }
+    out.push(preset as unknown as ExportSettings)
+  }
+  return out
+}
+
+/** What Figma puts in a preset when nobody said otherwise — only a departure from it is news. */
+const EXPORT_DEFAULTS: Readonly<Record<string, unknown>> = {
+  suffix: '',
+  contentsOnly: true,
+  useAbsoluteBounds: false,
+  colorProfile: 'DOCUMENT',
+  svgOutlineText: true,
+  svgIdAttribute: false,
+  svgSimplifyStroke: true,
+}
+
+/** Export presets back in the words `exports` takes: a bare format when that is all there is. */
+export function readExports(settings: ReadonlyArray<ExportSettings>): Array<string | Record<string, unknown>> {
+  return settings.map((setting) => {
+    const bag = setting as unknown as Record<string, unknown>
+    const out: Record<string, unknown> = { format: setting.format }
+    const constraint = bag.constraint as { type: string; value: number } | undefined
+    if (constraint && !(constraint.type === 'SCALE' && constraint.value === 1)) out[constraint.type.toLowerCase()] = constraint.value
+    for (const [key, fallback] of Object.entries(EXPORT_DEFAULTS)) {
+      if (bag[key] !== undefined && bag[key] !== fallback) out[key] = bag[key]
+    }
+    return Object.keys(out).length === 1 ? setting.format : out
+  })
+}
+
+/** Past this, a network is reported as a count: a read is for reading, and an icon is not 200 points. */
+export const NETWORK_READ_LIMIT = 200
+
+/**
+ * A vector network in the words `network` takes — the short forms where they say everything, so a
+ * triangle reads as `[[0,0],[80,0],[40,70]]` and not as three objects of defaults. It used to read
+ * as "13 point(s), 13 segment(s)" only, and a copied vector came out empty.
+ */
+export function readNetwork(network: VectorNetwork): Record<string, unknown> {
+  const round = (value: number) => Math.round(value * 1000) / 1000
+  const vertices = network.vertices.map((vertex) => {
+    const extra = {
+      ...(vertex.strokeCap && vertex.strokeCap !== 'NONE' ? { cap: vertex.strokeCap } : {}),
+      ...(vertex.strokeJoin && vertex.strokeJoin !== 'MITER' ? { join: vertex.strokeJoin } : {}),
+      ...(vertex.cornerRadius ? { cornerRadius: round(vertex.cornerRadius) } : {}),
+      ...(vertex.handleMirroring && vertex.handleMirroring !== 'NONE' ? { mirror: vertex.handleMirroring } : {}),
+    }
+    return Object.keys(extra).length === 0 ? [round(vertex.x), round(vertex.y)] : { x: round(vertex.x), y: round(vertex.y), ...extra }
+  })
+  const segments = network.segments.map((segment) => {
+    const bent = [segment.tangentStart, segment.tangentEnd].some((tangent) => tangent && (tangent.x !== 0 || tangent.y !== 0))
+    if (!bent) return [segment.start, segment.end]
+    return {
+      start: segment.start,
+      end: segment.end,
+      curve: [
+        round(segment.tangentStart?.x ?? 0),
+        round(segment.tangentStart?.y ?? 0),
+        round(segment.tangentEnd?.x ?? 0),
+        round(segment.tangentEnd?.y ?? 0),
+      ],
+    }
+  })
+  const regions = (network.regions ?? []).map((region) => ({
+    loops: region.loops.map((loop) => [...loop]),
+    ...(region.windingRule === 'EVENODD' ? { windingRule: 'EVENODD' } : {}),
+  }))
+  return { vertices, segments, ...(regions.length > 0 ? { regions } : {}) }
+}
+
 const DECORATIONS = ['NONE', 'UNDERLINE', 'STRIKETHROUGH']
 const TEXT_CASES = ['ORIGINAL', 'UPPER', 'LOWER', 'TITLE']
 const RUN_KEYS = [
@@ -2602,6 +3256,29 @@ const RUN_KEYS = [
   'paragraphSpacing',
   'paragraphIndent',
   'decoration',
+  'bind',
+]
+
+/** The text fields Figma binds per range, and the kind of variable each takes. */
+export const RANGE_BINDABLE: Readonly<Record<string, 'FLOAT' | 'STRING'>> = {
+  fontFamily: 'STRING',
+  fontStyle: 'STRING',
+  fontWeight: 'FLOAT',
+  fontSize: 'FLOAT',
+  letterSpacing: 'FLOAT',
+  lineHeight: 'FLOAT',
+  paragraphSpacing: 'FLOAT',
+  paragraphIndent: 'FLOAT',
+}
+
+/** Every property Dev Mode can pin beside a note — the list the API takes, in its own order. */
+export const ANNOTATION_PROPERTIES = [
+  'width', 'height', 'maxWidth', 'minWidth', 'maxHeight', 'minHeight',
+  'fills', 'strokes', 'effects', 'strokeWeight', 'cornerRadius',
+  'textStyleId', 'textAlignHorizontal', 'fontFamily', 'fontStyle', 'fontSize', 'fontWeight',
+  'lineHeight', 'letterSpacing', 'itemSpacing', 'padding', 'layoutMode', 'alignItems', 'opacity',
+  'mainComponent', 'gridRowGap', 'gridColumnGap', 'gridRowCount', 'gridColumnCount',
+  'gridRowAnchorIndex', 'gridColumnAnchorIndex', 'gridRowSpan', 'gridColumnSpan',
 ]
 
 const LIST_TYPES = ['ORDERED', 'UNORDERED', 'NONE']
@@ -2703,6 +3380,16 @@ function planRuns(raw: unknown, where: string, problems: string[]): PropStep | n
       }
     }
     check('indent', typeof run.indent === 'number' && Number.isInteger(run.indent) && run.indent >= 0, 'indent must be a whole number >= 0')
+    if (run.bind !== undefined) {
+      const bind = run.bind
+      const ok =
+        typeof bind === 'object' &&
+        bind !== null &&
+        !Array.isArray(bind) &&
+        Object.keys(bind).length > 0 &&
+        Object.entries(bind).every(([field, ref]) => field in RANGE_BINDABLE && ((typeof ref === 'string' && ref.trim() !== '') || ref === null))
+      check('bind', ok, `bind must be { field: "variable" | null } with fields from: ${Object.keys(RANGE_BINDABLE).join(', ')}`)
+    }
     for (const key of ['listSpacing', 'paragraphSpacing', 'paragraphIndent'] as const) {
       check(key, typeof run[key] === 'number' && Number.isFinite(run[key]) && (run[key] as number) >= 0, `${key} must be a number of pixels >= 0`)
     }
@@ -3057,6 +3744,102 @@ const KEYFRAME_FIELDS: Readonly<Record<string, string>> = {
 /** A pair moves as a vector; everything else is one number. */
 const VECTOR_FIELDS = ['TRANSLATION_XY', 'SCALE_XY']
 
+/** The `at` list of one track as Figma's keyframes — the same for a layer's property and a shader's setting. */
+function planFrames(
+  frames: unknown[],
+  at: string,
+  valueOf: (value: unknown, at: string) => unknown | null,
+  problems: string[]
+): unknown[] {
+  const keyframes: unknown[] = []
+  for (const [k, frame] of frames.entries()) {
+    const spot = `${at}.at[${k}]`
+    const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
+    // "playhead" is wherever the designer has parked the timeline (Update 132) — the way a
+    // keyframe is placed by hand, and the one time a caller cannot know without asking.
+    let time = asked?.time
+    if (time === 'playhead') {
+      time = playheadPosition()
+      if (time === undefined) {
+        problems.push(`${spot}.time is "playhead", but no Motion timeline is open — there is no playhead to read`)
+        continue
+      }
+    }
+    if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) {
+      problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`)
+      continue
+    }
+    const value = valueOf(asked.value, `${spot}.value`)
+    if (value === null) continue
+    const easing = asked.easing === undefined && asked.bezier === undefined
+      ? null
+      : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
+    keyframes.push({
+      timelinePosition: time,
+      value,
+      ...(easing ? { easing } : {}),
+    })
+  }
+  return keyframes
+}
+
+const SHADER_STACKS = { fill: 'fills', fills: 'fills', stroke: 'strokes', strokes: 'strokes', effect: 'effects', effects: 'effects' } as const
+
+/** A shader setting's value, typed by its shape — the plan cannot know what the setting is. */
+function shaderValue(value: unknown, at: string, problems: string[]): unknown | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return { type: 'FLOAT', value }
+  if (typeof value === 'boolean') return { type: 'BOOL', value }
+  if (typeof value === 'string') {
+    const colour = keyframeColour(value, colourFrom)
+    if (colour) return { type: 'COLOR', value: colour }
+  }
+  const held = value as { x?: unknown; y?: unknown; r?: unknown; g?: unknown; b?: unknown; a?: unknown } | null
+  if (held && typeof held === 'object') {
+    if (typeof held.x === 'number' && typeof held.y === 'number') return { type: 'VECTOR', value: { x: held.x, y: held.y } }
+    if (typeof held.r === 'number' && typeof held.g === 'number' && typeof held.b === 'number') {
+      return { type: 'COLOR', value: { r: held.r, g: held.g, b: held.b, a: typeof held.a === 'number' ? held.a : 1 } }
+    }
+  }
+  problems.push(`${at} must be a number, { x, y }, true/false or a colour like "#0063B4" — what a shader setting can hold`)
+  return null
+}
+
+/** `{ shader: { setting, in?, index? }, at }` — a track on a shader's setting, resolved on the node. */
+function planShaderTrack(one: { shader?: unknown; from?: unknown; at?: unknown }, at: string, problems: string[]): ShaderTrackPlan | null {
+  const spec = one.shader as { setting?: unknown; in?: unknown; index?: unknown } | null
+  if (!spec || typeof spec !== 'object' || typeof spec.setting !== 'string' || spec.setting.trim() === '') {
+    problems.push(`${at}.shader must be { setting, in?, index? } — setting is the shader setting's name or id`)
+    return null
+  }
+  for (const key of Object.keys(spec)) {
+    if (!['setting', 'in', 'index'].includes(key)) {
+      problems.push(`${at}.shader.${key} is not accepted — the keys are setting, in, index`)
+      return null
+    }
+  }
+  const stack = spec.in === undefined ? 'fills' : SHADER_STACKS[String(spec.in).trim().toLowerCase() as keyof typeof SHADER_STACKS]
+  if (!stack) {
+    problems.push(`${at}.shader.in must be fill, stroke or effect`)
+    return null
+  }
+  if (spec.index !== undefined && (typeof spec.index !== 'number' || !Number.isInteger(spec.index) || spec.index < 0)) {
+    problems.push(`${at}.shader.index must be the shader's place in its stack, 0 being the bottom`)
+    return null
+  }
+  const target = { collection: stack, ...(spec.index === undefined ? {} : { index: spec.index as number }), setting: spec.setting.trim() }
+  // `at: null` takes the track off, as it does for a property.
+  if (one.at === null) return target
+  if (!Array.isArray(one.at) || one.at.length === 0) {
+    problems.push(`${at}.at must be a non-empty array of { time, value } — or null to take the track off`)
+    return null
+  }
+  const valueOf = (value: unknown, where: string) => shaderValue(value, where, problems)
+  const keyframes = planFrames(one.at as unknown[], at, valueOf, problems)
+  if (keyframes.length === 0) return null
+  const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
+  return { ...target, track: { keyframes, ...(base ? { baseValue: base } : {}) } }
+}
+
 function planKeyframes(raw: unknown, where: string, problems: string[]): PropStep | null {
   // `null` and `[]` take every manual track off, the way they do for links and effects.
   if (raw === null || (Array.isArray(raw) && raw.length === 0)) return { step: 'keyframes', tracks: [], clear: true }
@@ -3066,16 +3849,30 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
   }
 
   const tracks: Array<{ name: string; field: unknown; track: unknown | null }> = []
+  const shaderTracks: ShaderTrackPlan[] = []
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
-    const one = entry as { field?: unknown; from?: unknown; at?: unknown }
+    const one = entry as { field?: unknown; shader?: unknown; from?: unknown; at?: unknown; operation?: unknown }
+    if (one?.shader !== undefined) {
+      const planned = planShaderTrack(one, at, problems)
+      if (planned) shaderTracks.push(planned)
+      continue
+    }
     const word = typeof one?.field === 'string' ? one.field.trim() : ''
+    // A relative track — "move 20 px from wherever it is" — has no write in the plugin API; taken
+    // as absolute it would quietly become "move to x = 20", so it is refused by name instead.
+    if (one?.operation !== undefined && one.operation !== 'SET') {
+      problems.push(
+        `${at}.operation ${JSON.stringify(one.operation)} cannot be written — Figma's plugin API reads relative (OFFSET / SCALE) tracks and only writes absolute ones`
+      )
+      continue
+    }
     const property = KEYFRAME_FIELDS[word]
     const indexed = property ? null : parseIndexedField(word)
     if (!property && !indexed) {
       problems.push(
         `${at}.field must be one of: ${Object.keys(KEYFRAME_FIELDS).join(', ')} — or fill, stroke[n], ` +
-          `effect[n].<${EFFECT_KEYFRAME_WORDS.join('|')}>`
+          `effect[n].<${EFFECT_KEYFRAME_WORDS.join('|')}> — or give shader: { setting } to move a shader's setting`
       )
       continue
     }
@@ -3122,42 +3919,16 @@ function planKeyframes(raw: unknown, where: string, problems: string[]): PropSte
       return { type: 'FLOAT', value }
     }
 
-    const keyframes: unknown[] = []
-    for (const [k, frame] of (one.at as unknown[]).entries()) {
-      const spot = `${at}.at[${k}]`
-      const asked = frame as { time?: unknown; value?: unknown; easing?: unknown; bezier?: unknown }
-      // "playhead" is wherever the designer has parked the timeline (Update 132) — the way a
-      // keyframe is placed by hand, and the one time a caller cannot know without asking.
-      let time = asked?.time
-      if (time === 'playhead') {
-        time = playheadPosition()
-        if (time === undefined) {
-          problems.push(`${spot}.time is "playhead", but no Motion timeline is open — there is no playhead to read`)
-          continue
-        }
-      }
-      if (typeof time !== 'number' || !Number.isFinite(time) || time < 0) {
-        problems.push(`${spot}.time must be a number of seconds from the start, or "playhead"`)
-        continue
-      }
-      const value = valueOf(asked.value, `${spot}.value`)
-      if (value === null) continue
-      const easing = asked.easing === undefined && asked.bezier === undefined
-        ? null
-        : buildEasing(asked as Record<string, unknown>, (message) => problems.push(`${spot}: ${message}`))
-      keyframes.push({
-        timelinePosition: time,
-        value,
-        ...(easing ? { easing } : {}),
-      })
-    }
+    const keyframes = planFrames(one.at as unknown[], at, valueOf, problems)
     if (keyframes.length === 0) continue
 
     const base = one.from === undefined ? null : valueOf(one.from, `${at}.from`)
     tracks.push({ name, field, track: { keyframes, ...(base ? { baseValue: base } : {}) } })
   }
 
-  return tracks.length > 0 ? { step: 'keyframes', tracks } : null
+  return tracks.length > 0 || shaderTracks.length > 0
+    ? { step: 'keyframes', tracks, ...(shaderTracks.length > 0 ? { shaderTracks } : {}) }
+    : null
 }
 
 /** The Motion timeline's playhead in seconds, or `undefined` with no timeline open — and in the
@@ -3454,12 +4225,17 @@ function planNetwork(raw: unknown, where: string, problems: string[]): PropStep 
       problems.push(`${at}.cornerRadius must be a number >= 0`)
       continue
     }
+    if (point.mirror !== undefined && (typeof point.mirror !== 'string' || !SHAPE_ENUMS.handleMirroring.includes(point.mirror))) {
+      problems.push(`${at}.mirror must be one of: ${SHAPE_ENUMS.handleMirroring.join(', ')}`)
+      continue
+    }
     vertices.push({
       x: point.x,
       y: point.y,
       ...(point.cap ? { strokeCap: point.cap as StrokeCap } : {}),
       ...(point.join ? { strokeJoin: point.join as StrokeJoin } : {}),
       ...(point.cornerRadius === undefined ? {} : { cornerRadius: point.cornerRadius }),
+      ...(point.mirror ? { handleMirroring: point.mirror as HandleMirroring } : {}),
     })
   }
 
@@ -3589,6 +4365,7 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
 
   const grids: LayoutGrid[] = []
   const summary: string[] = []
+  const bind: Array<{ index: number; field: GridTokenField; variable: string }> = []
 
   for (const [index, entry] of raw.entries()) {
     const at = `${where}[${index}]`
@@ -3597,7 +4374,22 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
       fail('must be { columns }, { rows } or { square }')
       continue
     }
-    const spec = entry as Record<string, unknown>
+    // Any number may name a variable instead — `{ columns: { variable: "grid/columns" } }` — which
+    // is how a grid follows the breakpoint tokens instead of copying them. The grid is built with
+    // a stand-in and bound once the list exists, the way an effect's numbers are.
+    const tokens: Array<{ field: GridTokenField; variable: string }> = []
+    const spec = Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, value]) => {
+        const field = GRID_TOKEN_FIELDS[key]
+        const named = typeof value === 'object' && value !== null && typeof (value as { variable?: unknown }).variable === 'string'
+        if (field && named) {
+          tokens.push({ field, variable: (value as { variable: string }).variable })
+          return [key, key === 'gutter' || key === 'margin' ? 0 : 1]
+        }
+        return [key, value]
+      })
+    ) as Record<string, unknown>
+    const before = grids.length
 
     const paint = (): { color?: RGBA } | null => {
       if (spec.color === undefined) return {}
@@ -3627,7 +4419,8 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
       const colour = paint()
       if (!colour) continue
       grids.push({ pattern: 'GRID', sectionSize: size, visible: spec.visible !== false, ...colour } as LayoutGrid)
-      summary.push(`square ${size}`)
+      summary.push(`square ${tokens.length > 0 ? `var:${tokens[0].variable}` : size}`)
+      for (const token of tokens) bind.push({ index: before, ...token })
       continue
     }
 
@@ -3672,22 +4465,27 @@ function planGrids(raw: unknown, where: string, problems: string[]): PropStep | 
     const colour = paint()
     if (!colour) continue
 
+    // A margin that follows a token is a margin even while its stand-in is zero.
+    const margined = margin !== 0 || tokens.some((token) => token.field === 'offset')
     grids.push({
       pattern: vertical ? 'COLUMNS' : 'ROWS',
       alignment: align as GridAlign,
       gutterSize: gutter,
       count,
       ...(size === undefined ? {} : { sectionSize: size }),
-      ...(margin === 0 ? {} : { offset: margin }),
+      ...(margined ? { offset: margin } : {}),
       visible: spec.visible !== false,
       ...colour,
     } as LayoutGrid)
+    const said = (field: string, value: unknown) => tokens.find((token) => token.field === field)?.variable ?? value
+    const tokenGutter = tokens.some((token) => token.field === 'gutterSize')
     summary.push(
-      `${count} ${vertical ? 'column' : 'row'}(s) ${align.toLowerCase()}${gutter ? ` gutter ${gutter}` : ''}${margin ? ` margin ${margin}` : ''}${size ? ` at ${size}` : ''}`
+      `${said('count', count)} ${vertical ? 'column' : 'row'}(s) ${align.toLowerCase()}${gutter || tokenGutter ? ` gutter ${said('gutterSize', gutter)}` : ''}${margined ? ` margin ${said('offset', margin)}` : ''}${size ? ` at ${said('sectionSize', size)}` : ''}`
     )
+    for (const token of tokens) bind.push({ index: before, ...token })
   }
 
-  return { step: 'grid', grids, summary: summary.join(' · ') || 'none' }
+  return { step: 'grid', grids, summary: summary.join(' · ') || 'none', ...(bind.length > 0 ? { bind } : {}) }
 }
 
 function planLayout(raw: unknown, where: string, problems: string[]): { step: PropStep | null; layout: LayoutProps } | null {
@@ -3720,7 +4518,16 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
       value.padding.every((one) => typeof one === 'number' && Number.isFinite(one))
     ) {
       layout.padding = value.padding as [number, number, number, number]
-    } else fail('padding must be a number or [top, right, bottom, left]')
+    } else if (typeof value.padding === 'object' && value.padding !== null && !Array.isArray(value.padding)) {
+      // The CSS-shaped spelling an agent writes first; a side left out is 0, a word that is not a
+      // side is refused rather than dropped.
+      const sides = value.padding as Record<string, unknown>
+      const stray = Object.keys(sides).filter((key) => !['top', 'right', 'bottom', 'left'].includes(key))
+      const numbers = ['top', 'right', 'bottom', 'left'].map((side) => sides[side] ?? 0)
+      if (stray.length > 0 || !numbers.every((one) => typeof one === 'number' && Number.isFinite(one))) {
+        fail(`padding takes top, right, bottom and left as numbers${stray.length > 0 ? ` — not ${stray.join(', ')}` : ''}`)
+      } else layout.padding = numbers as [number, number, number, number]
+    } else fail('padding must be a number, [top, right, bottom, left] or { top, right, bottom, left }')
   }
   if (value.primaryAxis !== undefined) {
     if (typeof value.primaryAxis !== 'string' || !PRIMARY_AXIS.includes(value.primaryAxis)) {
@@ -3756,6 +4563,10 @@ function planLayout(raw: unknown, where: string, problems: string[]): { step: Pr
   if (value.autoTracks !== undefined) {
     if (value.autoTracks !== 'NONE' && value.autoTracks !== 'ROWS') fail('autoTracks must be NONE or ROWS')
     else layout.autoTracks = value.autoTracks
+  }
+  if (value.alignContent !== undefined) {
+    if (value.alignContent !== 'AUTO' && value.alignContent !== 'SPACE_BETWEEN') fail('alignContent must be AUTO or SPACE_BETWEEN')
+    else layout.alignContent = value.alignContent
   }
   for (const gap of ['rowGap', 'columnGap'] as const) {
     if (value[gap] === undefined) continue
@@ -4322,6 +5133,25 @@ function videoProblem(entry: { video?: unknown; scaleMode?: unknown; opacity?: u
   if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
     return 'opacity must be between 0 and 1'
   }
+  return pictureExtrasProblem(entry as Record<string, unknown>)
+}
+
+const FILTERS = ['exposure', 'contrast', 'saturation', 'temperature', 'tint', 'highlights', 'shadows']
+
+/** The picture extras an image and a video share: the sliders and the quarter turns. */
+function pictureExtrasProblem(entry: Record<string, unknown>): string | null {
+  if (entry.filters !== undefined) {
+    if (typeof entry.filters !== 'object' || entry.filters === null || Array.isArray(entry.filters)) {
+      return `filters must be { ${FILTERS.join(', ')} }`
+    }
+    for (const [name, amount] of Object.entries(entry.filters as Record<string, unknown>)) {
+      if (!FILTERS.includes(name)) return `filters: unknown "${name}" — accepted: ${FILTERS.join(', ')}`
+      if (typeof amount !== 'number' || amount < -1 || amount > 1) return `filters.${name} must be between -1 and 1`
+    }
+  }
+  if (entry.rotation !== undefined && ![0, 90, 180, 270].includes(entry.rotation as number)) {
+    return 'rotation must be 0, 90, 180 or 270'
+  }
   return null
 }
 
@@ -4343,5 +5173,17 @@ function imageProblem(entry: { image?: unknown; scaleMode?: unknown; opacity?: u
   if (entry.opacity !== undefined && (typeof entry.opacity !== 'number' || entry.opacity < 0 || entry.opacity > 1)) {
     return 'opacity must be between 0 and 1'
   }
-  return null
+  const extras = entry as Record<string, unknown>
+  if (extras.tile !== undefined) {
+    if (typeof extras.tile !== 'number' || extras.tile <= 0) return 'tile must be a number > 0'
+    if (entry.scaleMode !== 'TILE') return 'tile is the size of a tile — it needs scaleMode TILE'
+  }
+  if (extras.crop !== undefined) {
+    const row = (one: unknown) => Array.isArray(one) && one.length === 3 && one.every((n) => typeof n === 'number')
+    if (!Array.isArray(extras.crop) || extras.crop.length !== 2 || !row(extras.crop[0]) || !row(extras.crop[1])) {
+      return 'crop must be [[a, b, x], [c, d, y]]'
+    }
+    if (entry.scaleMode !== 'CROP') return 'crop needs scaleMode CROP'
+  }
+  return pictureExtrasProblem(extras)
 }
