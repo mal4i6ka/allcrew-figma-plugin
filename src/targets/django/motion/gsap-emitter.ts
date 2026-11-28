@@ -7,10 +7,16 @@
  * low-bounce springs, a sampled `registerEase` curve otherwise). Nodes are addressed via
  * `data-node-id`; the emitted script starts the timeline on first intersection
  * (DOMContentLoaded + IntersectionObserver, §2.5) — the only trigger this task covers.
+ *
+ * 3D transform tracks (typings 1.143.0, beta) do not go through GSAP's own `z` / `rotationX` /
+ * `rotationY` / `rotation`: GSAP composes those in its own order, and Figma's is fixed as
+ * translateZ → rotateX → rotateY → rotateZ. They tween the same custom properties the CSS emitter
+ * animates, read by one composite `transform` written on the element in Figma's order.
  */
 
 import { BEZIER_PRESETS, perceptualAngularFrequency, resolveSpringBounce, sampleSpring } from '../easing/index.ts'
-import type { MotionTrack } from './types.ts'
+import { formatTransform3dDeclaration } from './css-emitter.ts'
+import type { MotionStaticTransform3d, MotionTrack } from './types.ts'
 
 export type GsapPluginName = 'CustomEase' | 'DrawSVGPlugin' | 'TextPlugin'
 
@@ -19,6 +25,8 @@ export interface GsapTimelineNode {
   /** Optional production selector. Preview keeps using data-node-id; Django export uses node classes. */
   readonly selector?: string
   readonly tracks: readonly MotionTrack[]
+  /** The node's static FIXED_ORDER transform — the untracked axes of the composite `transform`. */
+  readonly transform3d?: MotionStaticTransform3d
 }
 
 export interface GsapTimelineInput {
@@ -77,7 +85,28 @@ const SCALAR_PROPERTY_MAP: Partial<Record<KeyframePropertyFieldName, string>> = 
   STACK_PADDING_BOTTOM: 'paddingBottom',
   GRID_ROW_GAP: 'rowGap',
   GRID_COLUMN_GAP: 'columnGap',
+  // On the container that holds the scene; GSAP writes a unitless number here as pixels.
+  SCENE_3D_PERSPECTIVE: 'perspective',
 }
+
+/** 3D transform track → the custom property it tweens, and the unit its values carry. */
+const TRANSFORM_3D_PROPERTY_MAP: Partial<Record<KeyframePropertyFieldName, { property: string; unit: string }>> = {
+  TRANSFORM_3D_TRANSLATION_Z: { property: '--motion-translate-z', unit: 'px' },
+  TRANSFORM_3D_ROTATION_X: { property: '--motion-rotate-x', unit: 'deg' },
+  TRANSFORM_3D_ROTATION_Y: { property: '--motion-rotate-y', unit: 'deg' },
+  TRANSFORM_3D_ROTATION_Z: { property: '--motion-rotate-z', unit: 'deg' },
+}
+
+/** Tracks GSAP renders into the element's inline `transform`, which would overwrite a composite one. */
+const GSAP_OWN_TRANSFORM_FIELDS: readonly KeyframePropertyFieldName[] = [
+  'TRANSLATION_X',
+  'TRANSLATION_Y',
+  'TRANSLATION_XY',
+  'ROTATION',
+  'SCALE_X',
+  'SCALE_Y',
+  'SCALE_XY',
+]
 
 /** `TRANSLATION_XY`/`SCALE_XY` (VECTOR value) → two GSAP properties in the same keyframe. */
 const VECTOR_PROPERTY_MAP: Partial<Record<KeyframePropertyFieldName, readonly [string, string]>> = {
@@ -210,12 +239,14 @@ function ensureTerminalKeyframe(keyframes: Record<string, unknown>, lastPercent:
   }
 }
 
-function trackValueVars(value: KeyframeValue, gsapKeys: readonly string[], context: string): Record<string, number> {
+function trackValueVars(value: KeyframeValue, gsapKeys: readonly string[], context: string, unit?: string): Record<string, number | string> {
   if (gsapKeys.length === 2) {
     const vector = requireVector(value, context)
     return { [gsapKeys[0]]: vector.x, [gsapKeys[1]]: vector.y }
   }
-  return { [gsapKeys[0]]: requireFloat(value, context) }
+  const float = requireFloat(value, context)
+  // A custom property has no unit of its own for GSAP to assume, so the value carries it.
+  return { [gsapKeys[0]]: unit === undefined ? float : `${round(float, 4)}${unit}` }
 }
 
 /**
@@ -228,9 +259,10 @@ function buildPropertyTween(
   gsapKeys: readonly string[],
   timelineDuration: number,
   registry: EaseRegistry,
-  plugins: Set<GsapPluginName>
+  plugins: Set<GsapPluginName>,
+  unit?: string
 ): TweenVars {
-  const fromVars = trackValueVars(track.baseValue, gsapKeys, `${track.field} baseValue`)
+  const fromVars = trackValueVars(track.baseValue, gsapKeys, `${track.field} baseValue`, unit)
   const sorted = [...track.keyframes].sort((a, b) => a.timelinePosition - b.timelinePosition)
 
   const keyframes: Record<string, unknown> = {}
@@ -239,7 +271,7 @@ function buildPropertyTween(
   let lastPositionSec = 0
 
   for (const keyframe of sorted) {
-    const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`)
+    const vars = trackValueVars(keyframe.value, gsapKeys, `${track.field} keyframe ${keyframe.id}`, unit)
     lastVars = vars
     if (keyframe.timelinePosition <= 0) {
       lastPercent = 0
@@ -254,6 +286,13 @@ function buildPropertyTween(
 
   ensureTerminalKeyframe(keyframes, lastPercent, lastVars)
   return { fromVars, keyframes }
+}
+
+/** The composite `transform`, written straight onto the element: GSAP's own `transform` handling
+ * would parse it apart and recompose it in GSAP's order. */
+function renderTransform3dSetup(selector: string, tracks: readonly MotionTrack[], fixed?: MotionStaticTransform3d): string {
+  const value = formatTransform3dDeclaration(tracks, fixed).replace(/^transform: /, '')
+  return `      q(${JSON.stringify(selector)}).forEach(function (el) { el.style.transform = ${JSON.stringify(value)}; });`
 }
 
 /** `TEXT_DATA` track → TextPlugin (`text: { value }`); no interpolation, just per-keyframe strings. */
@@ -421,8 +460,31 @@ export function emitGsapTimeline(input: GsapTimelineInput): GsapEmitResult {
       tweenStatements.push(renderTween(selector, input.duration, buildDrawSvgTween(pathTrimStart, pathTrimEnd, input.duration, registry, plugins)))
     }
 
+    const tracks3d = node.tracks.filter((track) => TRANSFORM_3D_PROPERTY_MAP[track.field])
+    // GSAP writes x / y / rotation / scale into the element's inline `transform`, over the
+    // composite one the 3D tracks read. Both cannot hold the same property, and recomposing
+    // Figma's order out of GSAP's would be a guess — so the 3D tracks are left out, loudly.
+    const clash = tracks3d.length > 0 && node.tracks.some((track) => GSAP_OWN_TRANSFORM_FIELDS.includes(track.field))
+    if (clash) {
+      console.warn(
+        `[gsap-emitter] node "${node.nodeId}" animates both 2D transform tracks and 3D transform tracks; GSAP cannot hold both in one transform, skipping the 3D tracks:`,
+        tracks3d.map((track) => track.field).join(', ')
+      )
+    } else if (tracks3d.length > 0) {
+      tweenStatements.push(renderTransform3dSetup(selector, tracks3d, node.transform3d))
+    }
+
     for (const track of node.tracks) {
       if (track.field === 'PATH_TRIM_START' || track.field === 'PATH_TRIM_END') continue
+
+      const custom = TRANSFORM_3D_PROPERTY_MAP[track.field]
+      if (custom) {
+        if (clash) continue
+        tweenStatements.push(
+          renderTween(selector, input.duration, buildPropertyTween(track, [custom.property], input.duration, registry, plugins, custom.unit))
+        )
+        continue
+      }
 
       if (track.baseValue.type === 'TEXT_DATA') {
         tweenStatements.push(renderTween(selector, input.duration, buildTextTween(track, input.duration, registry, plugins)))

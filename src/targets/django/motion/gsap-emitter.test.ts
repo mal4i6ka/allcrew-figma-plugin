@@ -350,3 +350,73 @@ test('overall script structure matches the DOMContentLoaded + IntersectionObserv
   assert.match(result.js, /prefers-reduced-motion/)
   assert.match(result.js, /data-timeline="hero"/)
 })
+
+/* ------------------------------------------------- 3D transforms (typings 1.143.0, beta) */
+
+const turn3d = (field: MotionTrack['field'], from: number, to: number): MotionTrack =>
+  makeTrack({
+    field,
+    baseValue: { type: 'FLOAT', value: from },
+    keyframes: [{ id: 'kf-1', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: to } }],
+  })
+
+test('a 3D track tweens a custom property with its unit, not GSAP’s own rotationY', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [makeNode({ selector: '.card', tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180), turn3d('TRANSFORM_3D_TRANSLATION_Z', 0, 40)] })],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.card"\), \{"--motion-rotate-y":"0deg"\}/)
+  assert.match(result.js, /"100%":\{"--motion-rotate-y":"180deg","ease":"none"\}/)
+  assert.match(result.js, /\{"--motion-translate-z":"0px"\}/)
+  assert.doesNotMatch(result.js, /rotationY|"z":/)
+})
+
+test('the composite transform is written on the element in Figma’s order, with the static axes filled in', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'flip',
+    duration: 1,
+    nodes: [
+      makeNode({
+        selector: '.card',
+        tracks: [turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)],
+        transform3d: { translateZ: 40, rotateX: 10, rotateY: 0, rotateZ: 0 },
+      }),
+    ],
+  })
+  assert.match(
+    result.js,
+    /q\("\.card"\)\.forEach\(function \(el\) \{ el\.style\.transform = "translateZ\(40px\) rotateX\(10deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\)"; \}\);/
+  )
+  // Before the tween that drives it.
+  assert.ok(result.js.indexOf('el.style.transform') < result.js.indexOf('--motion-rotate-y":"0deg"'))
+})
+
+test('3D tracks are left out, with a warning, when GSAP owns the same element’s transform', () => {
+  const warnings: string[] = []
+  const original = console.warn
+  console.warn = (...args: unknown[]) => void warnings.push(args.join(' '))
+  try {
+    const result = emitGsapTimeline({
+      timelineId: 'mixed',
+      duration: 1,
+      nodes: [makeNode({ nodeId: '7:7', selector: '.card', tracks: [turn3d('TRANSLATION_X', 0, 100), turn3d('TRANSFORM_3D_ROTATION_Y', 0, 180)] })],
+    })
+    assert.match(result.js, /\{"x":0\}/)
+    assert.doesNotMatch(result.js, /--motion-rotate-y|el\.style\.transform/)
+  } finally {
+    console.warn = original
+  }
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /node "7:7" animates both 2D transform tracks and 3D transform tracks.*TRANSFORM_3D_ROTATION_Y/)
+})
+
+test('a perspective track is a plain tween on the container', () => {
+  const result = emitGsapTimeline({
+    timelineId: 'scene',
+    duration: 1,
+    nodes: [makeNode({ selector: '.scene', tracks: [turn3d('SCENE_3D_PERSPECTIVE', 800, 400)] })],
+  })
+  assert.match(result.js, /tl\.fromTo\(q\("\.scene"\), \{"perspective":800\}/)
+  assert.doesNotMatch(result.js, /el\.style\.transform/)
+})

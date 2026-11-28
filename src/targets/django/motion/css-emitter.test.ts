@@ -253,3 +253,73 @@ test('emitNodeAnimationCss matches the Dev Mode MCP get_motion_context reference
     ].join('\n\n')
   )
 })
+
+/* ------------------------------------------------- 3D transforms (typings 1.143.0, beta) */
+
+const turn = (field: MotionTrack['field'], from: number, to: number): MotionTrack =>
+  makeTrack({
+    field,
+    baseValue: { type: 'FLOAT', value: from },
+    keyframes: [{ id: 'kf-1', timelinePosition: 1, easing: { type: 'LINEAR' }, value: { type: 'FLOAT', value: to } }],
+  })
+
+test('a 3D track animates a registered custom property, in the unit Figma holds it in', () => {
+  assert.equal(
+    emitKeyframesRule('flip', turn('TRANSFORM_3D_ROTATION_Y', 0, 180)),
+    ['@keyframes flip {', '  0% { --motion-rotate-y: 0deg; animation-timing-function: linear; }', '  100% { --motion-rotate-y: 180deg; }', '}'].join('\n')
+  )
+  assert.match(emitKeyframesRule('depth', turn('TRANSFORM_3D_TRANSLATION_Z', 0, 40)), /--motion-translate-z: 40px;/)
+  assert.match(emitKeyframesRule('x', turn('TRANSFORM_3D_ROTATION_X', 0, 10)), /--motion-rotate-x: 10deg;/)
+  assert.match(emitKeyframesRule('z', turn('TRANSFORM_3D_ROTATION_Z', 0, 10)), /--motion-rotate-z: 10deg;/)
+})
+
+test('the composite transform keeps Figma’s order whatever order the tracks arrive in', () => {
+  const css = emitNodeAnimationCss({
+    selector: '.card',
+    // Deliberately backwards.
+    tracks: [turn('TRANSFORM_3D_ROTATION_Z', 0, 90), turn('TRANSFORM_3D_ROTATION_Y', 0, 180), turn('TRANSFORM_3D_ROTATION_X', 0, 45), turn('TRANSFORM_3D_TRANSLATION_Z', 0, 40)],
+  })
+  assert.match(
+    css,
+    /  transform: translateZ\(var\(--motion-translate-z\)\) rotateX\(var\(--motion-rotate-x\)\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(var\(--motion-rotate-z\)\);/
+  )
+  // One declaration, not one per track.
+  assert.equal(css.match(/^  transform:/gm)?.length, 1)
+})
+
+test('an axis without a track is the layer’s own number, and zero when nothing was given', () => {
+  const tracks = [turn('TRANSFORM_3D_ROTATION_Y', 30, 180)]
+  const withStatic = emitNodeAnimationCss({ selector: '.card', tracks, transform3d: { translateZ: 40, rotateX: 5.5, rotateY: 30, rotateZ: 0 } })
+  assert.match(withStatic, /  transform: translateZ\(40px\) rotateX\(5\.5deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\);/)
+  // The tracked axis starts from the track's base value, not from the static transform.
+  assert.match(withStatic, /  --motion-rotate-y: 30deg;/)
+
+  const bare = emitNodeAnimationCss({ selector: '.card', tracks })
+  assert.match(bare, /  transform: translateZ\(0px\) rotateX\(0deg\) rotateY\(var\(--motion-rotate-y\)\) rotateZ\(0deg\);/)
+})
+
+test('the custom properties are registered so they interpolate, and a caller may write them once itself', () => {
+  const tracks = [turn('TRANSFORM_3D_ROTATION_Y', 0, 180)]
+  const css = emitNodeAnimationCss({ selector: '.card', tracks })
+  assert.ok(css.startsWith("@property --motion-translate-z { syntax: '<length>'; inherits: false; initial-value: 0px; }"))
+  assert.match(css, /@property --motion-rotate-y \{ syntax: '<angle>'; inherits: false; initial-value: 0deg; \}/)
+  assert.equal(css.match(/@property/g)?.length, 4)
+
+  assert.doesNotMatch(emitNodeAnimationCss({ selector: '.card', tracks, registerProperties: false }), /@property/)
+  // No 3D track, no registration and no composite transform.
+  const flat = emitNodeAnimationCss({ selector: '.card', tracks: [turn('OPACITY', 0, 1)] })
+  assert.doesNotMatch(flat, /@property|transform:/)
+})
+
+test('a 3D track sits beside the standalone 2D properties without touching them', () => {
+  const css = emitNodeAnimationCss({ selector: '.card', tracks: [turn('ROTATION', 0, 90), turn('TRANSFORM_3D_ROTATION_X', 0, 45)] })
+  assert.match(css, /  rotate: 0deg;/)
+  assert.match(css, /  transform: translateZ\(0px\) rotateX\(var\(--motion-rotate-x\)\) rotateY\(0deg\) rotateZ\(0deg\);/)
+})
+
+test('perspective is plain CSS on the container, and needs no composite transform', () => {
+  const css = emitNodeAnimationCss({ selector: '.scene', tracks: [turn('SCENE_3D_PERSPECTIVE', 800, 400)] })
+  assert.match(css, /  perspective: 800px;/)
+  assert.match(css, /100% \{ perspective: 400px; \}/)
+  assert.doesNotMatch(css, /@property|transform:/)
+})
